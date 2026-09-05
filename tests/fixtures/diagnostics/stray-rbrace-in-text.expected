@@ -1,0 +1,4 @@
+error: unexpected `}` here; write `{"}"}` to include a literal `}` in text
+ --> stray-rbrace-in-text.rsx:4:15
+error: missing closing tag `</div>`
+ --> stray-rbrace-in-text.rsx:4:5

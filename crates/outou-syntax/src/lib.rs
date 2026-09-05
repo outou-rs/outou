@@ -1,14 +1,22 @@
-//! Front end for Outou sources: a mode-aware lexer, a recovering parser and
-//! the AST shared by every backend.
+//! Front end for Outou sources: mode-aware lexing primitives, a recovering
+//! parser that drives them, and the AST shared by every backend.
 //!
 //! The grammar is Rust plus JSX expressions. See `docs/grammar.md` in the
 //! repository for the normative description. The parser always recovers:
 //! an incomplete tag such as `<div cl` still yields a [`ast::File`] with an
 //! [`ast::ErrorNode`] where the broken syntax was, so IDE features keep
 //! working while the user types.
+//!
+//! There is exactly one compiler: [`parser::parse`] is the only entry point
+//! that produces an AST, and [`lexer`] exposes only the primitives it is
+//! built from (see the [`lexer`] module doc for why a separate,
+//! context-free tokenizer was tried and then removed in Phase 0).
 
 pub mod ast;
 pub mod lexer;
+pub mod parser;
+pub mod render;
+pub mod whitespace;
 
 pub use outou_sourcemap::Span;
 
@@ -42,6 +50,10 @@ pub struct Parsed {
     pub file: ast::File,
     /// Syntax diagnostics, in source order.
     pub diagnostics: Vec<Diagnostic>,
+    /// The exact source text that was parsed. Kept so that
+    /// [`Parsed::render_diagnostics`] can turn a byte-offset [`Span`] into
+    /// a 1-based line and column without the caller re-supplying the text.
+    pub source: String,
 }
 
 /// Parses one `.rsx` source text.
@@ -49,6 +61,5 @@ pub struct Parsed {
 /// Parsing never fails: recoverable errors become [`ast::ErrorNode`]s and
 /// [`Diagnostic`]s rather than an `Err`.
 pub fn parse(source: &str) -> Parsed {
-    let _ = source;
-    todo!("outou-syntax: parser is implemented in Phase 0, Week 3 (Gate 1)")
+    parser::parse(source)
 }

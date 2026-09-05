@@ -316,12 +316,18 @@ At minimum the following MUST recover with the rest of the file intact, each wit
 | Unterminated attribute value (island) | `incomplete/unterminated-attribute-value.rsx` | ``unexpected end of file, expected `}` to close the value of attribute `name` `` |
 | Empty attribute-value island | — | ``expected an expression for the value of attribute `name` `` |
 | Unclosed island at end of file | — | ``unexpected end of file, expected `}` to close this expression`` |
-| Stray `}` in element content | — | ``unexpected `}` here; write `{"}"}` to include a literal `}` in text`` |
+| Stray `}` in element content | `diagnostics/stray-rbrace-in-text.rsx` | ``unexpected `}` here; write `{"}"}` to include a literal `}` in text`` |
 | Reserved syntax (§10) | — | ``fragments are not supported in Phase 0`` · ``dotted tag names are not supported in Phase 0`` · ``namespaced names are not supported in Phase 0`` · ``spread attributes are not supported in Phase 0`` · ``generic arguments on a tag are not supported in Phase 0`` · ``a JSX expression cannot be followed by `.`, `?`, `(` or `[`; parenthesize it`` · ``duplicate attribute `value` on this tag`` · ``` `Self` is not a valid component name ``` · ``attribute values must be double-quoted strings or `{…}` expressions`` |
+| JSX element nested more than 128 levels deep | — | ``this element is nested too deeply (Outou supports at most 128 levels)`` |
+| Inline `mod` nested more than 128 levels deep | — | ``modules are nested too deeply (Outou supports at most 128 levels)`` |
 
 Each fixture under `tests/fixtures/incomplete/` and `tests/fixtures/diagnostics/` has a sibling `.expected` with these strings verbatim; the fixture, not this table, is the ground truth for issue #4.
 
 A backend's parser MUST never see broken JSX, and its errors MUST never be shown for `.rsx` files.
+
+**Nesting limit.** The parser recurses once per nested JSX element and once per nested inline `mod`; unbounded input would overflow the call stack before an AST could ever be produced, violating this section's first sentence. Both kinds of nesting are therefore capped at **128 levels** (decision D4, issue #4): the level that would exceed the cap is diagnosed with one of the two messages above instead of being parsed further, and the rest of the file is recovered on a best-effort basis rather than by fully reconstructing the over-deep structure. 128 was chosen with roughly 3x margin over the deepest nesting observed to overflow a 2 MiB thread stack in a debug build (500 JSX levels, 1000 inline-module levels), while comfortably exceeding any real UI's nesting.
+
+**The round-trip contract (source-driven splicing).** The AST does not carry a structured Rust grammar: Rust content is kept as verbatim source slices (`Expr::Rust`, item-level Rust), never re-parsed. Reconstructing the original source is nonetheless always possible, by walking the tree and splicing each node's text in order, because: (1) every JSX element's span is the exact byte range of that element, from its opening `<` to its self-close, matching close, or recovery terminator, and is never widened over adjacent trivia; (2) an island's parts, a block's statements and tail, and a run of item-level Rust each exactly partition their construct's content range — no gaps, no overlaps; (3) codegen emits `source[span]` verbatim for each `Expr::Rust` and generated Rust for each `Expr::Jsx`. Leaf nodes inside a JSX element (tag, attribute and text spans) are informational only, for the source map and the LSP, and are not required to partition the element. This is what lets a JSX element be found anywhere Rust permits an expression — a `const` initializer, an `impl` method body, any island — without a structural Rust parser: everything that is not JSX stays an opaque slice, and the contract above guarantees the pieces recombine losslessly.
 
 ## 10. Reserved
 

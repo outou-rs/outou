@@ -23,8 +23,12 @@ pub enum Item {
     /// `mod name;` or `#[path = "…"] mod name;`. Inline modules keep their
     /// items.
     Module(Module),
-    /// Any other Rust item, copied verbatim.
-    Rust(RustSource),
+    /// Any other Rust item (`struct`, `impl`, `trait`, `const`, `static`,
+    /// `use`, …), scanned for JSX at any brace depth (decision D1). Method
+    /// bodies inside an `impl`/`trait` stay inside `parts` rather than
+    /// becoming their own [`Item::Function`] — Phase 0 does not need a
+    /// structural Rust item scanner, only to find every JSX expression.
+    Rust(RustItem),
     /// Recovered garbage.
     Error(ErrorNode),
 }
@@ -97,6 +101,13 @@ pub struct JsxElement {
     /// Closing tag. `None` for self-closing elements, `Some(IncompleteTag)`
     /// when it is missing or mismatched.
     pub close: Option<JsxTag>,
+    /// Stray, uncatalogued bytes skipped while scanning this element's
+    /// opening tag (grammar §4.1's `<div!>` row, M8), each paired with
+    /// the [`crate::Diagnostic`] already reported for it. Attributes and
+    /// children have no slot for a byte that belongs to neither, so this
+    /// is where it is recorded losslessly instead of only ever appearing
+    /// in the diagnostics list.
+    pub errors: Vec<ErrorNode>,
 }
 
 /// One tag of an element.
@@ -130,7 +141,7 @@ pub enum JsxAttributeValue {
     /// `"text"`.
     Text(JsxText),
     /// `{expr}`.
-    Expression(Expr),
+    Expression(Island),
     /// `{` with no closing brace, or otherwise unrecoverable.
     Error(ErrorNode),
 }
@@ -142,11 +153,30 @@ pub enum JsxChild {
     /// Normalized text.
     Text(JsxText),
     /// A `{ … }` Rust expression island.
-    Expression(Expr),
+    Expression(Island),
     /// A nested element.
     Element(JsxElement),
     /// Recovered garbage.
     Error(ErrorNode),
+}
+
+/// A Rust expression island: the content of a JSX child or attribute-value
+/// `{ … }` (grammar §6), kept as an ordered sequence of nodes rather than
+/// collapsed into one opaque slice or a single expression.
+///
+/// `parts` exactly partitions `span` (the content between the braces, not
+/// including them): no gaps, no overlaps. This is what lets every JSX
+/// element nested anywhere inside an island — as a statement, as the tail,
+/// at any depth of `if`/`match`/closures — surface as its own
+/// [`Expr::Jsx`] node instead of being swallowed into one
+/// [`Expr::Rust`] text slice (grammar §2.1, §9; see the Phase 0 round-trip
+/// contract in `docs/grammar.md` §9 and this crate's `README.md`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Island {
+    /// Span of the island's content, between (not including) the braces.
+    pub span: Span,
+    /// The island's nodes, in source order, partitioning `span`.
+    pub parts: Vec<Expr>,
 }
 
 /// Text content after JSX whitespace normalization.
@@ -174,6 +204,22 @@ pub struct RustSource {
     pub span: Span,
     /// The text.
     pub text: String,
+}
+
+/// A contiguous run of item-level Rust between recognized `fn`/`mod`
+/// items (grammar §1; decision D1), scanned for JSX at any brace depth so
+/// that a `const`/`static` initializer, an `impl`/`trait` method body, or
+/// any other nested item can contain JSX just as a free function's body
+/// can.
+///
+/// `parts` exactly partitions `span`: no gaps, no overlaps (the Phase 0
+/// round-trip contract, `docs/grammar.md` §9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RustItem {
+    /// Span of the whole run.
+    pub span: Span,
+    /// The run's nodes, in source order, partitioning `span`.
+    pub parts: Vec<Expr>,
 }
 
 /// A region the parser could not understand. Codegen in recovery mode
