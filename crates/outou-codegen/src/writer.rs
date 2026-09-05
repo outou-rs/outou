@@ -20,6 +20,17 @@ pub struct Writer {
     // invariant, never on caller-controlled data.
     builder: Option<SourceMapBuilder>,
     source: SourceId,
+    /// Backend-defined bookkeeping bit, set via [`Writer::mark`] and read
+    /// via [`Writer::marked`]. Exists for state a backend can only decide
+    /// *while* lowering (by the same code path that produces the real
+    /// output, so it can never drift out of sync with it) but needs
+    /// available *after* lowering finishes, without adding a parameter to
+    /// every lowering function it would otherwise have to thread through.
+    /// `outou-backend-dioxus` uses this to record whether any attribute
+    /// island in the file kept its synthesized braces, which is what
+    /// decides whether the file needs its own `#![allow(unused_braces)]`
+    /// (issue #8 fix list step 7).
+    marked: bool,
 }
 
 impl Writer {
@@ -31,7 +42,19 @@ impl Writer {
             output: String::new(),
             builder: Some(builder),
             source,
+            marked: false,
         }
+    }
+
+    /// Sets the backend-defined bookkeeping bit (see the field's doc).
+    /// Idempotent: once set, stays set for the life of this writer.
+    pub fn mark(&mut self) {
+        self.marked = true;
+    }
+
+    /// Whether [`Writer::mark`] has been called at any point so far.
+    pub fn marked(&self) -> bool {
+        self.marked
     }
 
     /// The [`SourceId`] every mapping produced by this writer refers to.
@@ -152,5 +175,15 @@ mod tests {
         assert_eq!(w.offset(), 0);
         w.raw("abc");
         assert_eq!(w.offset(), 3);
+    }
+
+    #[test]
+    fn mark_is_unset_by_default_and_sticky_once_set() {
+        let mut w = writer();
+        assert!(!w.marked());
+        w.mark();
+        assert!(w.marked());
+        w.raw("more output");
+        assert!(w.marked(), "marked stays set for the life of the writer");
     }
 }

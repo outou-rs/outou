@@ -43,12 +43,27 @@ pub struct GenerateOptions {
     pub generated_uri: Uri,
     /// URI of the `.rsx` source being lowered.
     pub source_uri: Uri,
-    /// Lookup key ([`module_paths_key`]) → path string to emit in
-    /// `#[path = "…"]` for that module's declaration (`mod name;`). A
-    /// module whose key is absent from this map has its declaration
-    /// emitted verbatim, unchanged — the common case for an inline
-    /// module, or when the caller has not resolved the module graph yet.
-    pub module_paths: BTreeMap<String, String>,
+    /// Declaration identity (the `mod` item's own `span.start`, in this
+    /// unit's source file) → path string to emit in `#[path = "…"]` for
+    /// that module's declaration (`mod name;`). A module whose span start
+    /// is absent from this map has its declaration emitted verbatim,
+    /// unchanged — the common case for an inline module, or when the
+    /// caller has not resolved the module graph yet.
+    ///
+    /// Keyed by span start rather than by name (issue #8 fix list step
+    /// 2): a name-keyed map cannot distinguish two sibling `mod`
+    /// declarations that legally share a name (the `cfg`-exclusive `mod
+    /// imp;` idiom, `crates/outou-modules/README.md`) from two *different*
+    /// declarations that happen to share a name only by coincidence of
+    /// inline nesting (`mod a { pub mod helper; }` next to `mod b { pub
+    /// mod helper; }`) — the latter is not disambiguated by any attribute
+    /// at all. A source span start is unique within one source file
+    /// (`GenerateOptions::module_paths` is always per-unit = per-source-file),
+    /// needs no extra threading (`outou_modules::ModuleNode::span` is
+    /// literally `ast::Module::span`), and both the planner
+    /// (`outou-cli`'s `plan.rs`) and the backend (`outou-backend-dioxus`'s
+    /// `module.rs`) read it from the same field.
+    pub module_paths: BTreeMap<u32, String>,
 }
 
 impl GenerateOptions {
@@ -62,53 +77,10 @@ impl GenerateOptions {
     }
 
     /// Returns options with one more `module_paths` entry, keyed by the
-    /// bare module name (no original `#[path]` attribute to disambiguate
-    /// — see [`module_paths_key`]). Every caller that has not resolved a
-    /// full module graph (every existing test in this repository) uses
-    /// this; a real module-graph caller (`outou-cli`'s build pipeline)
-    /// computes the key itself with [`module_paths_key`] so that the
-    /// `cfg`-exclusive `mod imp;` idiom (two sibling declarations sharing
-    /// one name, each with its own explicit `#[path]`) is disambiguated.
-    pub fn with_module_path(
-        mut self,
-        module_name: impl Into<String>,
-        path: impl Into<String>,
-    ) -> Self {
-        self.module_paths.insert(module_name.into(), path.into());
+    /// declaring `mod` item's own `span.start`.
+    pub fn with_module_path_at(mut self, span_start: u32, path: impl Into<String>) -> Self {
+        self.module_paths.insert(span_start, path.into());
         self
-    }
-}
-
-/// Computes the [`GenerateOptions::module_paths`] lookup key for one `mod`
-/// declaration.
-///
-/// The common case — no other sibling shares this module's name — uses
-/// the bare module name: this is what every plain `mod name;` or
-/// `#[path = "…"]`-pinned `mod name;` declaration looks up, and what
-/// every existing test in this repository builds with
-/// [`GenerateOptions::with_module_path`].
-///
-/// A `BTreeMap<String, String>` cannot hold two different values under
-/// one key, yet two `mod` declarations *can* legally share a name in one
-/// scope: the `cfg`-exclusive idiom (`crates/outou-modules/README.md`),
-/// e.g. `#[cfg(unix)] #[path = "unix.rs"] mod imp;` next to
-/// `#[cfg(windows)] #[path = "windows.rs"] mod imp;`. Only one of the two
-/// is ever compiled (`rustc` strips the other by `#[cfg]`), but codegen
-/// still has to know *which* generated file each one's own `#[path]`
-/// should point to. Since this idiom is only reachable with an *explicit*
-/// `#[path]` on every occurrence (an implicit `mod imp;` searches for one
-/// fixed candidate file and cannot express "a different file per `cfg`
-/// branch" at all), the declaration's own original `#[path]` attribute
-/// text — verbatim, before rewriting — is a distinguishing value already
-/// available wherever this key is computed, on both the caller
-/// (`outou-cli`'s planner, from `ModuleNode::attributes`) and the backend
-/// (`outou-backend-dioxus`, from `ast::Module::attributes`) side, so
-/// appending it disambiguates the idiom without changing
-/// [`GenerateOptions::module_paths`]'s type.
-pub fn module_paths_key(name: &str, own_path_attribute: Option<&str>) -> String {
-    match own_path_attribute {
-        Some(attribute) => format!("{name}\u{0}{attribute}"),
-        None => name.to_string(),
     }
 }
 
@@ -227,11 +199,11 @@ mod tests {
     }
 
     #[test]
-    fn generate_options_builder_accumulates_module_paths() {
+    fn generate_options_builder_accumulates_module_paths_by_span_start() {
         let opts = GenerateOptions::new(Uri::new("file:///g.rs"), Uri::new("file:///a.rsx"))
-            .with_module_path("components", "components.rs");
+            .with_module_path_at(42, "components.rs");
         assert_eq!(
-            opts.module_paths.get("components").map(String::as_str),
+            opts.module_paths.get(&42).map(String::as_str),
             Some("components.rs")
         );
     }

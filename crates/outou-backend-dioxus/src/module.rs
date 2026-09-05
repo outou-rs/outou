@@ -1,13 +1,13 @@
 //! Lowering an [`ast::Module`] declaration or definition.
 //!
 //! See `crates/outou-modules/README.md` for the generated-path convention
-//! this follows: a file-based module (`mod name;`) whose
-//! [`module_paths_key`] appears in [`GenerateOptions::module_paths`] gets
-//! its `#[path]` rewritten to point at the generated file; codegen does
-//! not resolve the module graph itself, it only applies a mapping the
-//! caller already computed.
+//! this follows: a file-based module (`mod name;`) whose own declaration
+//! span start appears in [`GenerateOptions::module_paths`] gets its
+//! `#[path]` rewritten to point at the generated file; codegen does not
+//! resolve the module graph itself, it only applies a mapping the caller
+//! already computed.
 
-use outou_codegen::{module_paths_key, GenerateOptions, Mode, Writer};
+use outou_codegen::{GenerateOptions, Mode, Writer};
 use outou_sourcemap::{MappingKind, Span};
 use outou_syntax::ast as syntax_ast;
 
@@ -21,10 +21,10 @@ use crate::item::{item_span, lower_items};
 ///   copied verbatim and its items are lowered exactly like top-level
 ///   items (JSX inside a nested module's items is lowered the same way as
 ///   anywhere else — grammar §1, decision D1).
-/// - A file-based module (`mod name;`) whose name is a key of
-///   `opts.module_paths` gets `#[path = "<value>"]` emitted in place of
-///   its original `#[path]` (if it had one), with its other attributes and
-///   qualifiers preserved verbatim.
+/// - A file-based module (`mod name;`) whose own declaration `span.start`
+///   is a key of `opts.module_paths` gets `#[path = "<value>"]` emitted in
+///   place of its original `#[path]` (if it had one), with its other
+///   attributes and qualifiers preserved verbatim.
 /// - A file-based module absent from `opts.module_paths` (the module
 ///   graph has not been resolved into paths yet, or this module is not
 ///   one of its own generated units) is copied verbatim, unchanged.
@@ -40,13 +40,7 @@ pub fn lower_module(
         return;
     }
 
-    let own_path_attribute = module
-        .attributes
-        .iter()
-        .find(|attribute| is_path_attribute(&attribute.text))
-        .map(|attribute| attribute.text.as_str());
-    let key = module_paths_key(&module.name.name, own_path_attribute);
-    match opts.module_paths.get(&key) {
+    match opts.module_paths.get(&module.span.start) {
         None => writer.verbatim(source, module.span, MappingKind::Expression, None),
         Some(path) => lower_file_module_with_new_path(writer, source, module, path),
     }

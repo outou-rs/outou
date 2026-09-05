@@ -49,6 +49,8 @@ pub fn run() -> Result<(), String> {
         "raw-ident",
         "root-name",
         "inline",
+        "inline-dup",
+        "inline-dup-rs",
     ] {
         targets.push((
             name.to_string(),
@@ -143,6 +145,14 @@ fn generate_via_independent_path(name: &str, manifest_dir: &Path) -> Result<(), 
         .map_err(|e| format!("{name}: creating {}: {e}", planned.generated_dir.display()))?;
 
     for unit in &planned.units {
+        // N1 (issue #8 fix list step 3): the same directory-existence
+        // requirement `outou_cli::build::emit` handles for the build
+        // path, needed here too since this independent path never goes
+        // through `emit`.
+        for dir in &unit.inline_base_dirs {
+            fs::create_dir_all(dir)
+                .map_err(|e| format!("{name}: creating {}: {e}", dir.display()))?;
+        }
         let source = fs::read_to_string(&unit.source_file)
             .map_err(|e| format!("{name}: reading {}: {e}", unit.source_file.display()))?;
         let parsed = outou_syntax::parse(&source);
@@ -234,6 +244,21 @@ fn compare_trees(left: &Path, right: &Path, target: &str, label: &str) -> Result
 /// so two trees generated into different temp directories become
 /// comparable (the header comment and every source-map URI embed the
 /// generating/source file's absolute path).
+///
+/// This only normalizes away *location*-dependence between two temp
+/// copies of the same source tree; it does not (and is not meant to)
+/// paper over actual *non*-determinism, since both trees are normalized
+/// the same way (LOW-9, issue #8: raised and rejected as misframed — a
+/// global string replace here cannot hide a real difference in generated
+/// bytes, only a difference in where the two copies happened to live on
+/// disk).
+///
+/// TODO(phase0, ADR 0008): the generated header still embeds an absolute
+/// `file://` source URI by design (`outou_sourcemap::file_uri`), which is
+/// exactly what makes this normalization necessary in the first place. `outou
+/// package` (ADR 0008, pre-generated publish artifacts) will need a
+/// relative or repo-root-relative form instead, since a published crate's
+/// generated file cannot embed the path of the machine that generated it.
 fn normalize(text: &str, root: &Path) -> String {
     text.replace(&root.display().to_string(), "<root>")
 }

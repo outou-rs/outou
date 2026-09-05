@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use outou_backend_dioxus::DioxusBackend;
 use outou_codegen::{Backend, GenerateOptions, Mode};
-use outou_sourcemap::Uri;
+pub use outou_sourcemap::file_uri;
 
 use super::plan::{Plan, PlannedUnit};
 
@@ -50,7 +50,13 @@ pub enum EmitError {
         rendered: String,
     },
     /// The backend refused to lower a construct.
-    #[error("{}: {backend}: {message}", path.display())]
+    ///
+    /// `backend` is kept as a field (for diagnostics/logging that want it)
+    /// but deliberately left out of `Display` (LOW-12, issue #8): a
+    /// backend name (`dioxus`, …) in any user-facing message is backend
+    /// vocabulary, forbidden by `AGENTS.md` regardless of how unlikely
+    /// this variant is to actually be constructed today.
+    #[error("{}: {message}", path.display())]
     Unsupported {
         /// The `.rsx` file being generated.
         path: PathBuf,
@@ -84,46 +90,74 @@ pub enum EmitError {
 
 /// Generates every unit in `plan` and writes it (and its source map)
 /// atomically under `plan.generated_dir`.
-pub fn emit(plan: &Plan, mode: Mode) -> Result<EmitOutput, EmitError> {
+///
+/// Transactional (MEDIUM-5, issue #8 fix list step 4): every unit is read
+/// and generated *before* anything is written. A build that fails partway
+/// through — one broken unit among several sound ones — therefore leaves
+/// every previously generated file exactly as it was; the old
+/// generate-then-write-immediately loop would already have overwritten
+/// every unit planned before the broken one with its *new* text, leaving
+/// `src/.generated/` holding a mix of old and new generation that `cargo
+/// build` would silently compile.
+///
+/// Always runs [`Mode::Strict`] (decision 3, issue #8 fix list step 1):
+/// `outou build` is the one step before `cargo build`, which can never
+/// tolerate a syntax error. [`generate_unit`] remains mode-parameterized
+/// for callers that need Recovery directly.
+pub fn emit(plan: &Plan) -> Result<EmitOutput, EmitError> {
+    let mut output = EmitOutput::default();
+    let mut writes: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+
+    for unit in &plan.units {
+        let source =
+            fs::read_to_string(&unit.source_file).map_err(|source| EmitError::ReadSource {
+                path: unit.source_file.clone(),
+                source,
+            })?;
+
+        let generated = generate_unit(unit, &source, Mode::Strict)?;
+
+        let map_json = generated
+            .source_map
+            .to_json(&generated.rust, &[&source])
+            .map_err(|source| EmitError::SourceMapJson {
+                path: unit.generated_file.clone(),
+                source,
+            })?;
+        let map_text = serde_json::to_string_pretty(&map_json)
+            .expect("SourceMapJson always serializes")
+            + "\n";
+
+        writes.push((unit.generated_file.clone(), generated.rust.into_bytes()));
+        writes.push((unit.map_file.clone(), map_text.into_bytes()));
+        output.generated_files.push(unit.generated_file.clone());
+        output.map_files.push(unit.map_file.clone());
+    }
+
+    // Nothing is written above this line: every unit generated
+    // successfully, so it is now safe to create directories and write
+    // files without risking a half-applied rebuild.
     fs::create_dir_all(&plan.generated_dir).map_err(|source| EmitError::Write {
         path: plan.generated_dir.clone(),
         source,
     })?;
-
-    let mut output = EmitOutput::default();
     for unit in &plan.units {
-        emit_unit(unit, mode)?;
-        output.generated_files.push(unit.generated_file.clone());
-        output.map_files.push(unit.map_file.clone());
+        // N1 (issue #8 fix list step 3): an inline module's own base
+        // directory must exist before this unit's `#[path]` values are
+        // written, even when no generated file is ever placed directly
+        // inside it (a plain-Rust child reached through a `../` escape).
+        for dir in &unit.inline_base_dirs {
+            fs::create_dir_all(dir).map_err(|source| EmitError::Write {
+                path: dir.clone(),
+                source,
+            })?;
+        }
     }
+    for (path, contents) in &writes {
+        atomic_write(path, contents)?;
+    }
+
     Ok(output)
-}
-
-/// Generates and writes exactly one unit. Exposed at crate visibility so
-/// `cargo xtask determinism`'s independent second code path can reuse the
-/// URI/error conventions without going through [`emit`]'s file-management
-/// (it writes into its own separate directory tree).
-pub(crate) fn emit_unit(unit: &PlannedUnit, mode: Mode) -> Result<(), EmitError> {
-    let source = fs::read_to_string(&unit.source_file).map_err(|source| EmitError::ReadSource {
-        path: unit.source_file.clone(),
-        source,
-    })?;
-
-    let generated = generate_unit(unit, &source, mode)?;
-
-    let map_json = generated
-        .source_map
-        .to_json(&generated.rust, &[&source])
-        .map_err(|source| EmitError::SourceMapJson {
-            path: unit.generated_file.clone(),
-            source,
-        })?;
-    let map_text =
-        serde_json::to_string_pretty(&map_json).expect("SourceMapJson always serializes") + "\n";
-
-    atomic_write(&unit.generated_file, generated.rust.as_bytes())?;
-    atomic_write(&unit.map_file, map_text.as_bytes())?;
-    Ok(())
 }
 
 /// Runs `outou_syntax::parse` + `DioxusBackend::generate` for one unit,
@@ -156,14 +190,6 @@ pub fn generate_unit(
                 message,
             },
         })
-}
-
-/// A `file://` URI for an absolute path, e.g. `/a/b/c.rs` becomes
-/// `file:///a/b/c.rs`. Used for `GenerateOptions::generated_uri`/
-/// `source_uri`; determinism normalization strips this absolute prefix
-/// back out before comparing two independently generated trees.
-pub fn file_uri(path: &Path) -> Uri {
-    Uri::new(format!("file://{}", path.display()))
 }
 
 /// Writes `contents` to `path` by first writing a sibling temporary file
@@ -205,6 +231,7 @@ mod tests {
             generated_file,
             map_file,
             module_paths: BTreeMap::new(),
+            inline_base_dirs: Vec::new(),
         }
     }
 
@@ -258,5 +285,24 @@ mod tests {
             );
         }
         assert!(matches!(err, EmitError::SyntaxErrors { .. }));
+    }
+
+    /// LOW-12 (issue #8): `outou_backend_dioxus::DioxusBackend::generate`
+    /// never actually constructs `Error::Unsupported` today, but the
+    /// mapping in `generate_unit` must still keep its own `Display` free
+    /// of backend vocabulary (`AGENTS.md`) the moment some backend does.
+    /// Hand-constructed, since there is no real call site to trigger it.
+    #[test]
+    fn unsupported_error_display_never_names_the_backend() {
+        let err = EmitError::Unsupported {
+            path: PathBuf::from("src/main.rsx"),
+            backend: "dioxus",
+            message: "some construct this backend cannot lower".to_string(),
+        };
+        let rendered = err.to_string();
+        assert!(
+            !rendered.contains("dioxus"),
+            "rendered error must not mention the backend name: {rendered}"
+        );
     }
 }

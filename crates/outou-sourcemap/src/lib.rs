@@ -29,7 +29,7 @@ pub use json::{
 };
 pub use line_index::{LineIndex, Position, PositionRange};
 pub use registry::Registry;
-pub use span::{SourceId, SourceSpan, Span, Uri};
+pub use span::{file_uri, SourceId, SourceSpan, Span, Uri};
 
 use std::collections::HashSet;
 

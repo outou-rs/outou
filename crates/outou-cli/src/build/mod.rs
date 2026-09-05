@@ -19,35 +19,30 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 pub use emit::EmitError;
-pub use outou_codegen::Mode;
 pub use plan::{CrateRoot, Plan, PlanError, PlannedUnit};
 
 /// Options for one [`build`] run.
+///
+/// `outou build` always runs in [`outou_codegen::Mode::Strict`] — the only
+/// mode `cargo build` may ever see (decision 3, issue #8 fix list step 1).
+/// Recovery mode remains available directly through
+/// [`emit::generate_unit`] for callers that need it (`outou-lsp`, and
+/// `cargo xtask determinism`'s independent second code path); it was never
+/// something `outou build` itself should have exposed as a flag, since a
+/// Recovery-mode placeholder written into `src/.generated/` would silently
+/// reach `cargo build`.
 #[derive(Debug, Clone)]
 pub struct BuildOptions {
     /// Directory containing the crate's `Cargo.toml` and `src/`.
     pub manifest_dir: PathBuf,
-    /// Strict (the only mode `cargo build` may ever see) or Recovery
-    /// (kept for parity with `outou-codegen::Mode`; `outou build` itself
-    /// always runs in Strict by default and Phase 0's CLI does not
-    /// expose a use for Recovery beyond the determinism check's second
-    /// code path, which calls [`emit::generate_unit`] directly).
-    pub mode: Mode,
 }
 
 impl BuildOptions {
-    /// Options for a strict-mode build of the crate at `manifest_dir`.
+    /// Options for a build of the crate at `manifest_dir`.
     pub fn new(manifest_dir: impl Into<PathBuf>) -> Self {
         Self {
             manifest_dir: manifest_dir.into(),
-            mode: Mode::Strict,
         }
-    }
-
-    /// Returns options with `mode` set.
-    pub fn with_mode(mut self, mode: Mode) -> Self {
-        self.mode = mode;
-        self
     }
 }
 
@@ -98,7 +93,7 @@ pub fn build(opts: &BuildOptions) -> Result<Report, BuildError> {
     };
 
     let planned = plan::plan(&manifest_dir, &root)?;
-    let output = emit::emit(&planned, opts.mode)?;
+    let output = emit::emit(&planned)?;
 
     let produced: HashSet<PathBuf> = output
         .generated_files

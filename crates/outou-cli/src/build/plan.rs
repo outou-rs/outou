@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use outou_modules::{ModuleError, ModuleGraph, ModuleNode, SourceKind};
+use outou_modules::{unraw, ModuleError, ModuleGraph, ModuleNode, SourceKind};
 
 /// One of the four crate-root candidates Cargo itself recognizes, at
 /// `manifest_dir`.
@@ -79,6 +79,24 @@ pub enum PlanError {
         /// Underlying error.
         #[source]
         source: std::io::Error,
+    },
+    /// Two module declarations inside one generation unit produced the
+    /// same `module_paths` key (the declaration's own `span.start`).
+    /// `outou_modules::resolve` guarantees every declaration span is
+    /// unique within its own source file, so this should never actually
+    /// trigger; it exists as a defensive check against a future resolver
+    /// or planner bug producing a silently wrong `#[path]` rewrite (issue
+    /// #8 fix list step 2) rather than one `mod` declaration silently
+    /// clobbering another's path in the map.
+    #[error(
+        "internal error: two module declarations in `{}` share declaration position {span_start}",
+        unit_source.display()
+    )]
+    DuplicateModuleDeclaration {
+        /// The unit whose own text contains both declarations.
+        unit_source: PathBuf,
+        /// The span start both declarations share.
+        span_start: u32,
     },
 }
 
@@ -153,9 +171,20 @@ pub struct PlannedUnit {
     pub generated_file: PathBuf,
     /// Absolute path to the generated `.rs.map.json` sidecar.
     pub map_file: PathBuf,
-    /// Module name (raw spelling) → `#[path]` string, for this unit's
-    /// direct, non-inline children.
-    pub module_paths: BTreeMap<String, String>,
+    /// Declaration span start (`ModuleNode::span.start`, within this
+    /// unit's own source file) → `#[path]` string, for every non-inline
+    /// child reachable from this unit without crossing into another
+    /// generation unit (issue #8 fix list step 2).
+    pub module_paths: BTreeMap<u32, String>,
+    /// Every distinct directory an inline module's own `#[path]`-resolution
+    /// base descends into while planning this unit (issue #8 fix list
+    /// step 3, N1). `emit` must `create_dir_all` each of these before
+    /// writing: rustc resolves a nested `#[path]`'s `..` components
+    /// relative to this directory, and that resolution fails if the
+    /// directory does not physically exist — even when no generated file
+    /// is ever written directly into it (e.g. an inline module whose only
+    /// child is a plain `.rs` file reached through a `../` escape).
+    pub inline_base_dirs: Vec<PathBuf>,
 }
 
 /// A fully planned build: every generation unit, plus the crate/`src`/
@@ -187,7 +216,7 @@ pub fn plan(manifest_dir: &Path, root: &Path) -> Result<Plan, PlanError> {
     let units = graph
         .generated_units()
         .map(|node| planned_unit(node, manifest_dir, &src_dir))
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
 
     Ok(Plan {
         crate_dir: manifest_dir.to_path_buf(),
@@ -222,7 +251,11 @@ fn check_no_rust_declares_rsx_child(graph: &ModuleGraph) -> Result<(), PlanError
     Ok(())
 }
 
-fn planned_unit(node: &ModuleNode, crate_dir: &Path, src_dir: &Path) -> PlannedUnit {
+fn planned_unit(
+    node: &ModuleNode,
+    crate_dir: &Path,
+    src_dir: &Path,
+) -> Result<PlannedUnit, PlanError> {
     let generated_file = node.generated_path(src_dir);
     let mut map_file = generated_file.clone();
     map_file.set_extension("rs.map.json");
@@ -230,62 +263,129 @@ fn planned_unit(node: &ModuleNode, crate_dir: &Path, src_dir: &Path) -> PlannedU
         .parent()
         .expect("generated_path always has a parent")
         .to_path_buf();
+    let source_file = crate_dir.join(&node.file);
 
     let mut module_paths = BTreeMap::new();
+    let mut inline_base_dirs = Vec::new();
     collect_module_paths(
         node,
         &generated_dir_of_unit,
         crate_dir,
         src_dir,
+        &source_file,
         &mut module_paths,
-    );
+        &mut inline_base_dirs,
+    )?;
 
-    PlannedUnit {
+    Ok(PlannedUnit {
         module_path: node.path.clone(),
-        source_file: crate_dir.join(&node.file),
+        source_file,
         generated_file,
         map_file,
         module_paths,
-    }
+        inline_base_dirs,
+    })
 }
 
-/// Gathers the flat `module_paths` map for one generation unit.
+/// Gathers the flat `module_paths` map (and every inline base directory
+/// that must exist before `emit` writes anything, [`PlannedUnit::inline_base_dirs`])
+/// for one generation unit.
 ///
-/// `GenerateOptions::module_paths` is keyed only by module *name*, with no
-/// notion of nesting, because one physical generated file can contain
-/// several levels of *inline* modules (`mod m { mod n; }`) whose content
-/// all lives in that same file. So this walks past every inline child
-/// (recursively — an inline module can itself contain further inline
-/// modules) to find the file-based, non-inline descendants that actually
-/// need a `#[path]` rewrite in this unit's text, without crossing into a
-/// child that is itself a separate generation unit (a non-inline child's
-/// own children are that child's concern, computed when *it* is planned).
+/// `GenerateOptions::module_paths` is keyed by declaration `span.start`
+/// (issue #8 fix list step 2), with no notion of nesting, because one
+/// physical generated file can contain several levels of *inline* modules
+/// (`mod m { mod n; }`) whose content all lives in that same file. So this
+/// walks past every inline child (recursively — an inline module can
+/// itself contain further inline modules) to find the file-based,
+/// non-inline descendants that actually need a `#[path]` rewrite in this
+/// unit's text, without crossing into a child that is itself a separate
+/// generation unit (a non-inline child's own children are that child's
+/// concern, computed when *it* is planned).
+///
+/// `base_dir` tracks the directory rustc resolves both an inline child's
+/// own `#[path]` and a nested descendant's `#[path]` against (issue #8 fix
+/// list step 3, decision 1 — this is exactly `outou_modules::scope::DirScope`'s
+/// model, specialized to the fact that `relative` is always `None` inside
+/// a generated file, since every generated file is either the crate root
+/// or `#[path]`-loaded — i.e. mod-rs-like, confirmed against real rustc):
+/// starting at `unit_generated_dir`, entering an inline module `m` grows
+/// `base_dir` by `m`'s own `#[path]` value if it has one, else by
+/// `unraw(m)`.
+///
+/// A span start is unique within one source file, so two entries can only
+/// collide from a resolver or planner bug; [`PlanError::DuplicateModuleDeclaration`]
+/// is returned rather than silently letting the second insert clobber the
+/// first (which is exactly how the pre-fix name-keyed map silently
+/// mis-bound two sibling `mod helper;` declarations, HIGH-2).
 fn collect_module_paths(
     node: &ModuleNode,
-    unit_generated_dir: &Path,
+    base_dir: &Path,
     crate_dir: &Path,
     src_dir: &Path,
-    out: &mut BTreeMap<String, String>,
-) {
+    unit_source: &Path,
+    out: &mut BTreeMap<u32, String>,
+    inline_base_dirs: &mut Vec<PathBuf>,
+) -> Result<(), PlanError> {
     for child in &node.children {
         if child.is_inline {
-            collect_module_paths(child, unit_generated_dir, crate_dir, src_dir, out);
+            let own_name = child.path.last().map(String::as_str).unwrap_or_default();
+            let child_base_dir = match own_path_attribute_value(&child.attributes) {
+                Some(explicit) => base_dir.join(explicit),
+                None => base_dir.join(unraw(own_name)),
+            };
+            if !inline_base_dirs.contains(&child_base_dir) {
+                inline_base_dirs.push(child_base_dir.clone());
+            }
+            collect_module_paths(
+                child,
+                &child_base_dir,
+                crate_dir,
+                src_dir,
+                unit_source,
+                out,
+                inline_base_dirs,
+            )?;
             continue;
         }
-        let name = child.path.last().cloned().unwrap_or_default();
         let target = match child.kind {
             SourceKind::Rsx => child.generated_path(src_dir),
             SourceKind::Rust => crate_dir.join(&child.file),
         };
-        let path_string = relative_path_string(unit_generated_dir, &target);
-        let own_path_attribute = child
-            .attributes
-            .iter()
-            .find(|text| outou_syntax::parser::attribute_meta_path(text) == Some("path"))
-            .map(String::as_str);
-        let key = outou_codegen::module_paths_key(&name, own_path_attribute);
-        out.insert(key, path_string);
+        let path_string = relative_path_string(base_dir, &target);
+        let span_start = child
+            .span
+            .expect("only the crate root has no span, and the crate root is never a child")
+            .start;
+        if out.insert(span_start, path_string).is_some() {
+            return Err(PlanError::DuplicateModuleDeclaration {
+                unit_source: unit_source.to_path_buf(),
+                span_start,
+            });
+        }
     }
+    Ok(())
+}
+
+/// Best-effort extraction of an inline module's own `#[path = "…"]`
+/// string value from its collected attribute texts, mirroring
+/// `outou_syntax::parser::item::extract_path_attribute` (private to that
+/// crate) for the one case this crate needs — the same pattern
+/// `outou-backend-dioxus`'s `module::is_path_attribute` already follows
+/// for detecting (not extracting) a `#[path]` attribute without adding a
+/// cross-crate dependency for it.
+fn own_path_attribute_value(attributes: &[String]) -> Option<&str> {
+    for attribute in attributes {
+        if outou_syntax::parser::attribute_meta_path(attribute) != Some("path") {
+            continue;
+        }
+        let after_path = attribute.find("path")? + "path".len();
+        let rest = &attribute[after_path..];
+        let quote_start = rest.find('"')? + 1;
+        let after_quote = &rest[quote_start..];
+        let quote_end = after_quote.find('"')?;
+        return Some(&after_quote[..quote_end]);
+    }
+    None
 }
 
 /// Lexical relative path from directory `from_dir` to file `to`, joined
@@ -317,161 +417,4 @@ fn relative_path_string(from_dir: &Path, to: &Path) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn fixtures_dir() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/fixtures/modules")
-    }
-
-    #[test]
-    fn find_crate_root_locates_the_rsx_root() {
-        let dir = fixtures_dir().join("mixed");
-        let root = find_crate_root(&dir).expect("mixed has an rsx root");
-        assert_eq!(root, CrateRoot::Rsx(dir.join("src/main.rsx")));
-    }
-
-    #[test]
-    fn find_crate_root_reports_no_root_when_only_plain_rust_exists() {
-        let dir = std::env::temp_dir().join(format!(
-            "outou-cli-plan-test-plain-only-{}-{}",
-            std::process::id(),
-            line!()
-        ));
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("src/main.rs"), "fn main() {}").unwrap();
-
-        let root = find_crate_root(&dir).expect("no error for a plain crate");
-
-        std::fs::remove_dir_all(&dir).ok();
-        assert_eq!(root, CrateRoot::NoRsxRoot);
-    }
-
-    #[test]
-    fn find_crate_root_rejects_mixed_roots() {
-        let dir = std::env::temp_dir().join(format!(
-            "outou-cli-plan-test-mixed-roots-{}-{}",
-            std::process::id(),
-            line!()
-        ));
-        std::fs::create_dir_all(dir.join("src")).unwrap();
-        std::fs::write(dir.join("src/main.rs"), "fn main() {}").unwrap();
-        std::fs::write(dir.join("src/main.rsx"), "fn main() {}").unwrap();
-
-        let err = find_crate_root(&dir).expect_err("mixed roots must be rejected");
-
-        std::fs::remove_dir_all(&dir).ok();
-        assert!(matches!(err, PlanError::MixedRoots { .. }), "{err:?}");
-    }
-
-    #[test]
-    fn plan_mixed_fixture_computes_module_paths_for_rsx_and_rust_children() {
-        let dir = fixtures_dir().join("mixed");
-        let root = dir.join("src/main.rsx");
-        let planned = plan(&dir, &root).expect("mixed resolves");
-
-        assert_eq!(planned.units.len(), 3);
-
-        let root_unit = &planned.units[0];
-        assert!(root_unit.module_path.is_empty());
-        assert_eq!(
-            root_unit.generated_file,
-            dir.join("src/.generated/crate-root.rs")
-        );
-        assert_eq!(
-            root_unit.module_paths.get("components").map(String::as_str),
-            Some("components.rs")
-        );
-
-        let components_unit = planned
-            .units
-            .iter()
-            .find(|u| u.module_path == vec!["components".to_string()])
-            .expect("components unit");
-        assert_eq!(
-            components_unit.module_paths.get("user").map(String::as_str),
-            Some("components/user.rs")
-        );
-        assert_eq!(
-            components_unit
-                .module_paths
-                .get("button")
-                .map(String::as_str),
-            Some("../components/button.rs")
-        );
-    }
-
-    #[test]
-    fn plan_rejects_a_plain_rust_file_declaring_an_rsx_child() {
-        let dir = fixtures_dir().join("rs-to-rsx");
-        let root = dir.join("src/main.rsx");
-        let err = plan(&dir, &root).expect_err("plain.rs declares plain/deep.rsx");
-        match err {
-            PlanError::RustDeclaresRsxChild { name, declared_in } => {
-                assert_eq!(name, "deep");
-                assert_eq!(declared_in, PathBuf::from("src/plain.rs"));
-            }
-            other => panic!("expected RustDeclaresRsxChild, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn plan_rejects_an_rsx_child_declared_via_path_from_a_rust_file() {
-        let dir = fixtures_dir().join("path-attr");
-        let root = dir.join("src/main.rsx");
-        let err = plan(&dir, &root).expect_err("somewhere/other.rs declares nested_from_rust.rsx");
-        assert!(
-            matches!(err, PlanError::RustDeclaresRsxChild { .. }),
-            "{err:?}"
-        );
-    }
-
-    #[test]
-    fn plan_cfg_duplicate_fixture_disambiguates_generated_names() {
-        let dir = fixtures_dir().join("cfg-duplicate");
-        let root = dir.join("src/main.rsx");
-        let planned = plan(&dir, &root).expect("cfg-duplicate resolves");
-
-        // Both `mod imp;` declarations share a name, but each carries its
-        // own explicit `#[path]`, so `module_paths_key` disambiguates them
-        // into two distinct entries rather than one clobbering the other.
-        let root_unit = &planned.units[0];
-        assert_eq!(planned.units.len(), 3);
-        let unix_key = outou_codegen::module_paths_key("imp", Some("#[path = \"unix.rsx\"]"));
-        let windows_key = outou_codegen::module_paths_key("imp", Some("#[path = \"windows.rsx\"]"));
-        assert_eq!(
-            root_unit.module_paths.get(&unix_key).map(String::as_str),
-            Some("imp.rs")
-        );
-        assert_eq!(
-            root_unit.module_paths.get(&windows_key).map(String::as_str),
-            Some("imp-1.rs")
-        );
-
-        let generated_names: Vec<PathBuf> = planned
-            .units
-            .iter()
-            .map(|u| u.generated_file.clone())
-            .collect();
-        assert!(generated_names.contains(&dir.join("src/.generated/imp.rs")));
-        assert!(generated_names.contains(&dir.join("src/.generated/imp-1.rs")));
-    }
-
-    #[test]
-    fn plan_inline_fixture_has_no_module_path_entry_for_inline_children() {
-        let dir = fixtures_dir().join("inline");
-        let root = dir.join("src/main.rsx");
-        let planned = plan(&dir, &root).expect("inline resolves");
-
-        // `mod shell { mod panel; }`: `shell` is inline (no file of its
-        // own), so the root's module_paths has no "shell" entry, and
-        // `shell`'s own generated unit (its parent's file, `crate-root.rs`)
-        // carries the `panel` entry instead.
-        let root_unit = &planned.units[0];
-        assert!(!root_unit.module_paths.contains_key("shell"));
-        assert_eq!(
-            root_unit.module_paths.get("panel").map(String::as_str),
-            Some("shell/panel.rs")
-        );
-    }
-}
+mod tests;

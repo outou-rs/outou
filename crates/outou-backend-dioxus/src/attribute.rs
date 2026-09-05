@@ -8,7 +8,8 @@
 
 use outou_codegen::{Mode, Writer};
 use outou_sourcemap::MappingKind;
-use outou_syntax::ast::{Island, JsxAttribute, JsxAttributeValue};
+use outou_syntax::ast::{Expr, Island, JsxAttribute, JsxAttributeValue, RustSource};
+use outou_syntax::lexer::rust_token::{next_token, RtKind};
 
 use crate::element::lower_island;
 use crate::escape::{
@@ -32,7 +33,19 @@ pub fn lower_attribute(writer: &mut Writer, source: &str, attribute: &JsxAttribu
         Some(JsxAttributeValue::Expression(island)) => {
             if attribute.name.name == "key" {
                 lower_key_value(writer, source, island);
+            } else if let Some(rust) = bare_rust_expr(island) {
+                // Decision 4(b), issue #8 fix list step 7: a single plain
+                // Rust expression needs no synthesized braces of its own —
+                // dropping them is what removes the file-wide
+                // `#![allow(unused_braces)]` from a real-world file that
+                // never uses a nested-JSX island prop.
+                writer.verbatim(source, rust.span, MappingKind::Expression, None);
             } else {
+                // Every other shape (nested JSX, a multi-part island, an
+                // error node) keeps its braces — `writer.mark()` is what
+                // tells `DioxusBackend::generate` this file needs the
+                // allow (docs/backend-leakage.md row 21).
+                writer.mark();
                 lower_island(writer, source, island, mode);
             }
         }
@@ -87,4 +100,49 @@ fn lower_key(writer: &mut Writer, attribute: &JsxAttribute) {
             None,
         );
     }
+}
+
+/// Whether `island`'s value may be lowered as a bare Rust expression, with
+/// none of the island's own synthesized `{`/`}` (issue #8 fix list step 7,
+/// decision 4(b)): exactly one part, a plain [`Expr::Rust`] (never a
+/// nested JSX element — a nested-`rsx!` island prop, `icon={<span/>}`,
+/// needs its braces: `error: expected identifier` without them, and
+/// `docs/backend-leakage.md` row 21 stays accurate for exactly this
+/// shape), whose own source has no top-level `;` — i.e. it really is one
+/// Rust *expression*, not a sequence of statements, which is the only
+/// shape braces are provably redundant around. Verified brace-less and
+/// lint-clean for an identifier, a closure, a struct literal and an
+/// `if`-expression (`tabindex={x}`, `onclick={move |_| {…}}`,
+/// `s={S { a: 1 }}`, `tabindex={if c { 1i64 } else { 2 }}`).
+fn bare_rust_expr(island: &Island) -> Option<&RustSource> {
+    match island.parts.as_slice() {
+        [Expr::Rust(rust)] if !has_top_level_semicolon(&rust.text) => Some(rust),
+        _ => None,
+    }
+}
+
+/// Whether `text` (a Rust expression's own source) contains a `;` not
+/// nested inside `(`, `[` or `{` — the shape of a Rust *statement*
+/// sequence, which cannot be spliced into an expression position without
+/// braces. Tokenizes with [`outou_syntax::lexer::rust_token`] (rather than
+/// a naive byte scan) so a `;` inside a string, char or comment is never
+/// mistaken for a statement separator.
+fn has_top_level_semicolon(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut pos = 0usize;
+    let mut depth = 0i32;
+    loop {
+        let tok = next_token(bytes, pos);
+        if tok.start == tok.end {
+            break;
+        }
+        match tok.kind {
+            RtKind::OpenDelim => depth += 1,
+            RtKind::CloseDelim => depth -= 1,
+            RtKind::Punct if depth == 0 && tok.text(text) == ";" => return true,
+            _ => {}
+        }
+        pos = tok.end;
+    }
+    false
 }

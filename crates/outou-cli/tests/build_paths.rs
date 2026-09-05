@@ -1,71 +1,31 @@
-//! Integration tests for `outou build`'s pipeline (issue #8): every
-//! required build-pipeline fixture (`tests/fixtures/modules/{mixed, cfg,
-//! cfg-duplicate, raw-ident, root-name, inline}`) and
+//! Integration tests for `outou build`'s generated paths and file layout
+//! (issue #8): every required build-pipeline fixture
+//! (`tests/fixtures/modules/{mixed, cfg, cfg-duplicate, raw-ident,
+//! root-name, inline, inline-dup, inline-dup-rs}`) and
 //! `examples/phase0-app`, generated through the public `outou_cli::build`
-//! API, plus the CLI binary's exit code and vocabulary on a syntax error.
+//! API, plus stale-file cleanup and atomic-rebuild behavior.
 //!
 //! `tests/fixtures/modules/{path-attr,path-dirs,rs-to-rsx}` were built for
 //! the resolver (`outou-modules`) and are exercised there and by
 //! `crate::build::plan`'s own unit tests (the `RustDeclaresRsxChild`
-//! error); they are not part of this build-pipeline suite.
+//! error); they are not part of this build-pipeline suite. CLI-binary
+//! behavior lives in `build_cli.rs`, real-compiler probes in
+//! `build_compile.rs` (split out of one `tests/build.rs`, issue #8 fix
+//! list step 10).
+
+mod support;
 
 use std::collections::HashSet;
 use std::fs;
-use std::path::{Path, PathBuf};
-use std::process::Command;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::PathBuf;
 
 use outou_cli::build::{build, BuildOptions};
 
-fn repo_root() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("repo root exists")
-}
+use support::{copy_to_temp, fixtures_dir, repo_root};
 
-fn fixtures_dir() -> PathBuf {
-    repo_root().join("tests/fixtures/modules")
-}
-
-/// Copies `src` into a fresh temp directory and returns it. Every test
-/// gets its own directory (a unique suffix from the current time plus the
-/// process id) so parallel test threads never collide.
-fn copy_to_temp(src: &Path, label: &str) -> PathBuf {
-    let dest = std::env::temp_dir().join(format!(
-        "outou-cli-build-it-{label}-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    copy_dir(src, &dest);
-    // `build()` canonicalizes its manifest directory internally (its
-    // generated paths — and their `file://` URIs — must be absolute); on
-    // some platforms `std::env::temp_dir()` itself is a symlink (macOS:
-    // `/var` -> `/private/var`), so canonicalize here too, or every path
-    // this test compares against `report.generated_files` would silently
-    // mismatch on the un-resolved prefix.
-    dest.canonicalize()
-        .unwrap_or_else(|e| panic!("canonicalizing {}: {e}", dest.display()))
-}
-
-fn copy_dir(src: &Path, dest: &Path) {
-    fs::create_dir_all(dest).unwrap_or_else(|e| panic!("creating {}: {e}", dest.display()));
-    for entry in fs::read_dir(src).unwrap_or_else(|e| panic!("reading {}: {e}", src.display())) {
-        let entry = entry.unwrap();
-        let target = dest.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_dir(&entry.path(), &target);
-        } else {
-            fs::copy(entry.path(), &target)
-                .unwrap_or_else(|e| panic!("copying {}: {e}", entry.path().display()));
-        }
-    }
-}
-
-fn rel_generated_files(dir: &Path, files: &[PathBuf]) -> HashSet<String> {
+/// `files`, as paths relative to `dir`'s own `src/.generated`, forward
+/// slash separated regardless of platform.
+fn rel_generated_files(dir: &std::path::Path, files: &[PathBuf]) -> HashSet<String> {
     let generated_dir = dir.join("src/.generated");
     files
         .iter()
@@ -78,11 +38,18 @@ fn rel_generated_files(dir: &Path, files: &[PathBuf]) -> HashSet<String> {
         .collect()
 }
 
+/// One required build-pipeline fixture: its name under
+/// `tests/fixtures/modules/` and the generated `.rs` files (relative to
+/// `src/.generated/`) `outou build` must produce for it.
 struct FixtureCase {
+    /// The fixture's directory name.
     name: &'static str,
+    /// Every `.rs` file `outou build` must produce, relative to
+    /// `src/.generated/`.
     expected_generated: &'static [&'static str],
 }
 
+/// Every required build-pipeline fixture (issue #8, Gate 2).
 const FIXTURE_CASES: &[FixtureCase] = &[
     FixtureCase {
         name: "mixed",
@@ -109,6 +76,22 @@ const FIXTURE_CASES: &[FixtureCase] = &[
         expected_generated: &["crate-root.rs", "shell/panel.rs"],
     },
 ];
+
+/// Asserts `text` (a generated `.rs` file's contents) has balanced
+/// `{`/`}` — a cheap syntax sanity check that does not require `syn`.
+/// `case`/`rel` name the fixture and file, for the failure message.
+fn assert_balanced_braces(text: &str, case: &str, rel: &str) {
+    let mut depth = 0i32;
+    for byte in text.bytes() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => depth -= 1,
+            _ => {}
+        }
+        assert!(depth >= 0, "fixture {case}: {rel} has unbalanced `}}`");
+    }
+    assert_eq!(depth, 0, "fixture {case}: {rel} has unbalanced braces");
+}
 
 #[test]
 fn builds_every_required_fixture_with_the_expected_generated_files() {
@@ -149,19 +132,6 @@ fn builds_every_required_fixture_with_the_expected_generated_files() {
 
         fs::remove_dir_all(&dir).ok();
     }
-}
-
-fn assert_balanced_braces(text: &str, case: &str, rel: &str) {
-    let mut depth = 0i32;
-    for byte in text.bytes() {
-        match byte {
-            b'{' => depth += 1,
-            b'}' => depth -= 1,
-            _ => {}
-        }
-        assert!(depth >= 0, "fixture {case}: {rel} has unbalanced `}}`");
-    }
-    assert_eq!(depth, 0, "fixture {case}: {rel} has unbalanced braces");
 }
 
 #[test]
@@ -264,8 +234,13 @@ fn inline_fixture_leaves_the_inline_module_header_untouched_but_rewrites_its_fil
 
     let crate_root = fs::read_to_string(dir.join("src/.generated/crate-root.rs")).unwrap();
     assert!(crate_root.contains("mod shell {"), "{crate_root}");
+    // `"panel.rs"`, not `"shell/panel.rs"` (issue #8 fix list step 3,
+    // HIGH-1): rustc resolves this `#[path]` relative to a base directory
+    // that already includes the inline module's own segment
+    // (`.generated/shell/`); writing the segment twice made rustc look
+    // for the doubled `.generated/shell/shell/panel.rs`.
     assert!(
-        crate_root.contains("#[path = \"shell/panel.rs\"]\nmod panel;"),
+        crate_root.contains("#[path = \"panel.rs\"]\nmod panel;"),
         "{crate_root}"
     );
     assert!(dir.join("src/.generated/shell/panel.rs").exists());
@@ -354,176 +329,94 @@ fn a_second_build_overwrites_atomically_and_stays_deterministic() {
     fs::remove_dir_all(&dir).ok();
 }
 
-/// `outou build` on a `.rsx` file with a syntax error must exit 1 and
-/// print only Outou vocabulary — never backend vocabulary (`rsx!`,
-/// `PropsBuilder`, `dioxus_rsx`, `GeneratedNode`, `dioxus`).
+/// HIGH-2 (issue #8, fix list step 2): two inline modules that each
+/// declare a same-named child (`mod a { pub mod helper; }`, `mod b { pub
+/// mod helper; }`) must produce two distinct `#[path]` values in
+/// `crate-root.rs`, not one silently clobbering the other.
 #[test]
-fn cli_binary_exits_1_and_prints_only_outou_vocabulary_on_a_syntax_error() {
-    let dir = std::env::temp_dir().join(format!(
-        "outou-cli-build-it-syntax-error-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    fs::create_dir_all(dir.join("src")).unwrap();
-    fs::write(dir.join("src/main.rsx"), "fn f() { <div cl").unwrap();
+fn inline_dup_fixture_gives_each_same_named_inline_sibling_its_own_path() {
+    let dir = copy_to_temp(&fixtures_dir().join("inline-dup"), "inline-dup");
+    build(&BuildOptions::new(&dir)).expect("inline-dup builds");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_outou"))
-        .arg("build")
-        .arg("--manifest-dir")
-        .arg(&dir)
-        .output()
-        .expect("running the `outou` binary");
+    // Both `#[path]` values legitimately read `"helper.rs"` — each is
+    // resolved against its own inline module's own directory
+    // (`.generated/a/`, `.generated/b/`), not against one shared
+    // directory (step 3's DirScope-aware fix) — but the two physical
+    // files they point to must be the two distinct generated files.
+    let crate_root = fs::read_to_string(dir.join("src/.generated/crate-root.rs")).unwrap();
+    let path_values: Vec<&str> = crate_root
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            line.strip_prefix("#[path = \"")
+                .and_then(|rest| rest.strip_suffix("\"]"))
+        })
+        .collect();
+    assert_eq!(path_values, vec!["helper.rs", "helper.rs"], "{crate_root}");
+    assert!(dir.join("src/.generated/a/helper.rs").exists());
+    assert!(dir.join("src/.generated/b/helper.rs").exists());
+    assert_ne!(
+        fs::read_to_string(dir.join("src/.generated/a/helper.rs")).unwrap(),
+        fs::read_to_string(dir.join("src/.generated/b/helper.rs")).unwrap(),
+    );
 
     fs::remove_dir_all(&dir).ok();
-
-    assert_eq!(output.status.code(), Some(1));
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    for forbidden in [
-        "rsx!",
-        "PropsBuilder",
-        "dioxus_rsx",
-        "GeneratedNode",
-        "dioxus",
-    ] {
-        assert!(
-            !stdout.contains(forbidden) && !stderr.contains(forbidden),
-            "output must not mention {forbidden:?}\nstdout: {stdout}\nstderr: {stderr}"
-        );
-    }
 }
 
-/// Slower, real-compiler confirmation that the generated `mixed` fixture
-/// is accepted by `rustc` itself, not merely well-formed text. Ignored by
-/// default (cold `dioxus` build); run explicitly:
-///
-/// ```sh
-/// cargo test -p outou-cli --test build -- --ignored --nocapture
-/// ```
+/// Same shape, but `b::helper` is plain Rust (`.rs`): the pre-fix bug (N2)
+/// silently rebound `a::helper`'s own `#[path]` at `b`'s file — a
+/// wrong-module binding, not merely a missing entry.
 #[test]
-#[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
-fn generated_mixed_fixture_passes_cargo_check() {
-    let dir = copy_to_temp(&fixtures_dir().join("mixed"), "cargo-check-mixed");
-    build(&BuildOptions::new(&dir)).expect("mixed builds");
+fn inline_dup_rs_fixture_gives_the_rsx_and_rust_sibling_distinct_paths() {
+    let dir = copy_to_temp(&fixtures_dir().join("inline-dup-rs"), "inline-dup-rs");
+    build(&BuildOptions::new(&dir)).expect("inline-dup-rs builds");
 
-    let outou_path = repo_root().join("crates/outou");
-    let manifest = format!(
-        "[package]\n\
-         name = \"outou-cli-it-mixed\"\n\
-         version = \"0.0.0\"\n\
-         edition = \"2021\"\n\
-         publish = false\n\
-         \n\
-         [workspace]\n\
-         \n\
-         [lib]\n\
-         path = \"src/.generated/crate-root.rs\"\n\
-         \n\
-         [dependencies]\n\
-         outou = {{ path = {outou_path:?} }}\n"
-    );
-    fs::write(dir.join("Cargo.toml"), manifest).unwrap();
-
-    let status = Command::new(env!("CARGO"))
-        .arg("check")
-        .current_dir(&dir)
-        .env("CARGO_TARGET_DIR", repo_root().join("target"))
-        .status()
-        .expect("running `cargo check` on the generated mixed fixture");
+    let crate_root = fs::read_to_string(dir.join("src/.generated/crate-root.rs")).unwrap();
+    let path_values: Vec<&str> = crate_root
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            line.strip_prefix("#[path = \"")
+                .and_then(|rest| rest.strip_suffix("\"]"))
+        })
+        .collect();
+    assert_eq!(path_values.len(), 2, "{crate_root}");
+    assert_ne!(path_values[0], path_values[1], "{crate_root}");
 
     fs::remove_dir_all(&dir).ok();
-    assert!(status.success(), "cargo check failed for `mixed`");
 }
 
-/// Same as above, for the full example app. Ignored for the same reason.
+/// MEDIUM-5 (issue #8): `emit` used to write each unit's file as soon as
+/// it was generated, in plan order. If a later unit in the same rebuild
+/// then failed, every earlier unit had already been overwritten with its
+/// *new* text — a build failure left `src/.generated/` holding a mix of
+/// old and new generation, which `cargo build` would silently compile.
+/// `emit` must instead generate every unit first and write nothing at all
+/// until every unit has succeeded.
 #[test]
-#[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
-fn generated_example_app_passes_cargo_check_via_outou_build() {
-    let dir = copy_to_temp(&repo_root().join("examples/phase0-app"), "cargo-check-app");
-    build(&BuildOptions::new(&dir)).expect("phase0-app builds");
+fn a_failed_rebuild_leaves_every_previously_generated_file_untouched() {
+    let dir = copy_to_temp(&fixtures_dir().join("mixed"), "partial-rebuild");
+    build(&BuildOptions::new(&dir)).expect("first build succeeds");
+    let root_before = fs::read_to_string(dir.join("src/.generated/crate-root.rs")).unwrap();
+    let components_before = fs::read_to_string(dir.join("src/.generated/components.rs")).unwrap();
 
-    // The copied `Cargo.toml`'s `outou = { path = "../../crates/outou" }`
-    // is relative to the *original* location; rewrite it to an absolute
-    // path so it still resolves from the temp copy.
-    let outou_path = repo_root().join("crates/outou");
-    let manifest = fs::read_to_string(dir.join("Cargo.toml")).unwrap();
-    let manifest = manifest.replace(
-        "path = \"../../crates/outou\"",
-        &format!("path = {outou_path:?}"),
+    // Edit the root (planned *before* the child that will fail, so a
+    // naive sequential writer would already have overwritten it) and
+    // break a child in the same rebuild.
+    let main_path = dir.join("src/main.rsx");
+    let main_source = fs::read_to_string(&main_path).unwrap();
+    fs::write(&main_path, format!("// edited\n{main_source}")).unwrap();
+    fs::write(dir.join("src/components/user.rsx"), "fn f() { <div cl").unwrap();
+
+    build(&BuildOptions::new(&dir)).expect_err("a broken child fails the rebuild");
+
+    let root_after = fs::read_to_string(dir.join("src/.generated/crate-root.rs")).unwrap();
+    let components_after = fs::read_to_string(dir.join("src/.generated/components.rs")).unwrap();
+    assert_eq!(
+        root_before, root_after,
+        "a failed rebuild must not touch any previously generated file"
     );
-    fs::write(dir.join("Cargo.toml"), manifest).unwrap();
-
-    let status = Command::new(env!("CARGO"))
-        .arg("check")
-        .current_dir(&dir)
-        .env("CARGO_TARGET_DIR", repo_root().join("target"))
-        .status()
-        .expect("running `cargo check` on the generated example app");
+    assert_eq!(components_before, components_after);
 
     fs::remove_dir_all(&dir).ok();
-    assert!(status.success(), "cargo check failed for the example app");
-}
-
-/// Issue #8's clippy requirement, the other half: generated code's own
-/// `#![allow(unused_braces)]` (`crates/outou-backend-dioxus`'s
-/// `GENERATED_LINT_ALLOWS`) must not silence a lint on the *user's own*
-/// expression sitting in the same generated file. Injects a deliberately
-/// unused local (`let probe_unused_variable = 1 + 1;`) into a copy of the
-/// example app's `App` component, builds it, and runs `cargo clippy
-/// --all-targets -- -D warnings` on the result: it must fail, and the
-/// failure must name the injected variable — proof the lint fired at the
-/// user's own code, not that the whole build merely broke some other way.
-/// Ignored for the same reason as the `cargo check` probes above (cold
-/// `dioxus` build).
-#[test]
-#[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
-fn user_expressions_keep_their_lints_under_generated_code_allows() {
-    let dir = copy_to_temp(&repo_root().join("examples/phase0-app"), "clippy-probe");
-
-    let main_rsx_path = dir.join("src/main.rsx");
-    let main_rsx = fs::read_to_string(&main_rsx_path).unwrap();
-    let probed = main_rsx.replacen(
-        "fn App() -> Element {\n    let user = load_user();",
-        "fn App() -> Element {\n    let probe_unused_variable = 1 + 1;\n    let user = load_user();",
-        1,
-    );
-    assert_ne!(probed, main_rsx, "the App() anchor text must still exist");
-    fs::write(&main_rsx_path, probed).unwrap();
-
-    build(&BuildOptions::new(&dir)).expect("probed app still builds");
-
-    let outou_path = repo_root().join("crates/outou");
-    let manifest = fs::read_to_string(dir.join("Cargo.toml")).unwrap();
-    let manifest = manifest.replace(
-        "path = \"../../crates/outou\"",
-        &format!("path = {outou_path:?}"),
-    );
-    fs::write(dir.join("Cargo.toml"), manifest).unwrap();
-
-    let output = Command::new(env!("CARGO"))
-        .arg("clippy")
-        .arg("--all-targets")
-        .arg("--")
-        .arg("-D")
-        .arg("warnings")
-        .current_dir(&dir)
-        .env("CARGO_TARGET_DIR", repo_root().join("target"))
-        .output()
-        .expect("running `cargo clippy` on the probed example app");
-
-    fs::remove_dir_all(&dir).ok();
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        !output.status.success(),
-        "expected clippy to fail on the injected unused variable:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("probe_unused_variable"),
-        "clippy's failure must name the injected variable, proving the lint fired on user code, \
-         not merely that the build broke some other way:\n{stderr}"
-    );
 }

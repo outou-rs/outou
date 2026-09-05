@@ -62,6 +62,23 @@ fn golden_dir(case: &Case) -> PathBuf {
         .join(&case.name)
 }
 
+/// The `span.start` of the top-level `mod {name};` declaration in
+/// `parsed`, for keying `GenerateOptions::module_paths` (issue #8 fix
+/// list step 2: keyed by declaration span, not by name).
+fn module_span_start(parsed: &outou_syntax::Parsed, name: &str) -> u32 {
+    parsed
+        .file
+        .items
+        .iter()
+        .find_map(|item| match item {
+            outou_syntax::ast::Item::Module(module) if module.name.name == name => {
+                Some(module.span.start)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no top-level `mod {name};` found"))
+}
+
 fn generate(case: &Case) -> (String, Generated) {
     let source = fs::read_to_string(&case.source_path)
         .unwrap_or_else(|e| panic!("reading {}: {e}", case.source_path.display()));
@@ -71,7 +88,8 @@ fn generate(case: &Case) -> (String, Generated) {
         Uri::new(format!("file:///src/{}", case.name)),
     );
     for (module, path) in &case.module_paths {
-        opts = opts.with_module_path(module.clone(), path.clone());
+        let span_start = module_span_start(&parsed, module);
+        opts = opts.with_module_path_at(span_start, path.clone());
     }
     let generated = DioxusBackend
         .generate(&parsed, &source, Mode::Strict, &opts)

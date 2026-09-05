@@ -7,9 +7,9 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 
-use outou_cli::build::{self, BuildOptions, Mode as BuildMode};
+use outou_cli::build::{self, BuildOptions};
 use outou_cli::check;
 
 /// Rust with JSX.
@@ -28,10 +28,6 @@ enum Command {
         /// current directory.
         #[arg(long)]
         manifest_dir: Option<PathBuf>,
-        /// Strict mode fails on any syntax error (the mode `cargo build`
-        /// needs); recovery mode never does.
-        #[arg(long, value_enum, default_value_t = ModeArg::Strict)]
-        mode: ModeArg,
     },
     /// Parse every `.rsx` file and report Outou syntax diagnostics.
     Check,
@@ -42,25 +38,10 @@ enum Command {
     Package,
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum ModeArg {
-    Strict,
-    Recovery,
-}
-
-impl From<ModeArg> for BuildMode {
-    fn from(value: ModeArg) -> Self {
-        match value {
-            ModeArg::Strict => BuildMode::Strict,
-            ModeArg::Recovery => BuildMode::Recovery,
-        }
-    }
-}
-
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
-        Command::Build { manifest_dir, mode } => run_build(manifest_dir, mode.into()),
+        Command::Build { manifest_dir } => run_build(manifest_dir),
         Command::Check => check::run(),
         Command::Package => todo!("outou package: Phase 0, Week 6"),
     }
@@ -68,9 +49,16 @@ fn main() -> ExitCode {
 
 /// Runs `outou build`, printing a short summary on success and Outou's
 /// own rendered diagnostics (never backend vocabulary) on failure.
-fn run_build(manifest_dir: Option<PathBuf>, mode: BuildMode) -> ExitCode {
+///
+/// Always Strict: `outou build` is the one step before `cargo build`
+/// needs, and `cargo build` can never tolerate a syntax error. Recovery
+/// mode remains available to callers that need it directly
+/// ([`outou_cli::build::emit::generate_unit`], for `outou-lsp` and for
+/// `cargo xtask determinism`'s independent second path) — it was never
+/// something `outou build` itself should have exposed as a flag.
+fn run_build(manifest_dir: Option<PathBuf>) -> ExitCode {
     let manifest_dir = manifest_dir.unwrap_or_else(|| PathBuf::from("."));
-    let opts = BuildOptions { manifest_dir, mode };
+    let opts = BuildOptions::new(manifest_dir);
 
     match build::build(&opts) {
         Ok(report) if !report.built => {

@@ -96,3 +96,11 @@ jobs:
         working-directory: examples/phase0-app
       - run: cargo clippy --all-targets -- -D warnings
         working-directory: examples/phase0-app
+      # The `#[ignore]`d compile probes (issue #8, Gate 2): each one
+      # actually runs `outou build` + `cargo check`/`clippy` on a real
+      # fixture (`mixed`, `inline`, the example app) rather than only
+      # checking the generated text looks plausible — this is the check
+      # whose absence let HIGH-1 (a wrong `#[path]` value for an inline
+      # module's file child) ship with every other check green.
+      - run: cargo test -p outou-cli --test build_compile -- --ignored
+      - run: cargo test -p outou-backend-dioxus -- --ignored

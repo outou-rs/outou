@@ -30,16 +30,29 @@ fn generated_example_app_passes_cargo_check() {
     let components_source =
         fs::read_to_string(root.join("examples/phase0-app/src/components.rsx")).unwrap();
 
+    let main_parsed = outou_syntax::parse(&main_source);
+    let components_span_start = main_parsed
+        .file
+        .items
+        .iter()
+        .find_map(|item| match item {
+            outou_syntax::ast::Item::Module(module) if module.name.name == "components" => {
+                Some(module.span.start)
+            }
+            _ => None,
+        })
+        .expect("main.rsx declares `mod components;`");
+
     let main_generated = DioxusBackend
         .generate(
-            &outou_syntax::parse(&main_source),
+            &main_parsed,
             &main_source,
             Mode::Strict,
             &GenerateOptions::new(
                 Uri::new("file:///gen/main.rs"),
                 Uri::new("file:///src/main.rsx"),
             )
-            .with_module_path("components", "components.rs"),
+            .with_module_path_at(components_span_start, "components.rs"),
         )
         .expect("main.rsx generates");
     let components_generated = DioxusBackend

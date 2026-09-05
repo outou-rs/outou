@@ -96,11 +96,14 @@ impl DirScope {
 /// Strips a leading `r#` raw-identifier prefix, e.g. `r#type` -> `type`
 /// (issue #7 decision 5). Applied at exactly three places: candidate file
 /// names, the inline/child directory segment (both here, via
-/// `unraw_name`), and generated segments ([`crate::generated`]).
+/// `unraw_name`), and generated segments ([`crate::generated`]). Public so
+/// that `outou-cli`'s planner (issue #8 fix list step 3) can apply the
+/// exact same rule when computing an inline module's own generated-file
+/// base directory, rather than re-deriving it.
 /// [`crate::ModuleNode::path`] itself keeps the raw spelling — codegen
 /// must re-emit `mod r#type;` unchanged — only filesystem and
 /// generated-file segments derived from a name are ever unraw'd.
-pub(crate) fn unraw(name: &str) -> &str {
+pub fn unraw(name: &str) -> &str {
     name.strip_prefix("r#").unwrap_or(name)
 }
 
