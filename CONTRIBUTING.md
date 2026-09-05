@@ -16,7 +16,7 @@ cargo fmt --all -- --check
 
 ## Repository layout
 
-- `crates/` — the workspace: `outou` (public facade), `outou-syntax`, `outou-sourcemap`, `outou-codegen`, `outou-backend-dioxus`, `outou-modules`, `outou-build`, `outou-lsp`, `outou-cli`
+- `crates/` — the workspace: `outou` (public facade), `outou-syntax`, `outou-sourcemap`, `outou-codegen`, `outou-backend-dioxus`, `outou-modules`, `outou-lsp`, `outou-cli`
 - `spikes/` — standalone experiments; not workspace members
 - `tests/` — shared fixtures and UI tests
 - `examples/` — example applications

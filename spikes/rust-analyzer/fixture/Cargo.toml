@@ -10,12 +10,3 @@ publish = false
 
 [dependencies]
 dioxus = { version = "0.7.10", default-features = false, features = ["macro", "html", "signals", "hooks"] }
-
-[features]
-# Strategy A, variant (b): generated Rust lives at a fixed path,
-# `src/.generated/App.rs`, referenced with `#[path]`. Default.
-default = ["gen-src"]
-gen-src = []
-# Strategy A, variant (a): build.rs copies the virtual Rust into OUT_DIR and
-# main.rs `include!`s it.
-gen-outdir = []

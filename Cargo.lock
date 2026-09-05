@@ -616,17 +616,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "outou-build"
-version = "0.0.1"
-dependencies = [
- "outou-backend-dioxus",
- "outou-codegen",
- "outou-modules",
- "outou-syntax",
- "thiserror",
-]
-
-[[package]]
 name = "outou-cli"
 version = "0.0.1"
 dependencies = [

@@ -58,8 +58,6 @@ jobs:
           workspaces: spikes/rust-analyzer/fixture
       - run: cargo check
         working-directory: spikes/rust-analyzer/fixture
-      - run: cargo check --no-default-features --features gen-outdir
-        working-directory: spikes/rust-analyzer/fixture
 
   deny:
     name: cargo-deny

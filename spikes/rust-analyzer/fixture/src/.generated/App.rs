@@ -1,6 +1,6 @@
-// Hand-written "generated" Rust for `../App.rsx` (variant (b): fixed path).
-// Keep in sync with `../../../virtual/App.rs`; only the `use` line differs
-// because this file is a module rather than an `include!`.
+// Hand-written "generated" Rust for `../App.rsx` (ADR 0009: fixed path
+// `src/.generated/` + `#[path]`). This is the only generated-source layout;
+// see docs/adr/0009-generated-source-location.md.
 
 use super::*;
 

@@ -12,5 +12,5 @@ One file per decision. Each record has the sections Context, Decision, Consequen
 | [0006](0006-ambiguous-module-is-an-error.md) | An ambiguous module is an error | Accepted |
 | [0007](0007-source-map-many-to-many.md) | Source maps are many-to-many | Accepted |
 | [0008](0008-pregenerated-publish-artifacts.md) | Published crates ship pre-generated Rust | Accepted |
-| [0009](0009-generated-source-location.md) | Where generated Rust lives | **Proposed** |
+| [0009](0009-generated-source-location.md) | Where generated Rust lives | Accepted |
 | [0010](0010-facade-crate-as-backend-boundary.md) | The `outou` facade crate is the backend boundary | Accepted |

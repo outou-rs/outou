@@ -6,12 +6,10 @@ The first thing Outou has to prove is not that JSX can be parsed, but that a `.r
 
 ```text
 fixture/                 Cargo project rust-analyzer loads
-  Cargo.toml             depends on the backend directly; two cargo features select the layout
-  build.rs               variant (a) only: copies virtual/App.rs into OUT_DIR/outou/App.rs
-  src/main.rs            load_user(), UserCard, and the module switch between (a) and (b)
+  Cargo.toml             depends on the backend directly
+  src/main.rs            load_user(), UserCard, and the `#[path]` module declaration
   src/App.rsx            the "source" the user would edit
-  src/.generated/App.rs  hand-written generated Rust for variant (b) (committed on purpose)
-virtual/App.rs           hand-written generated Rust, the single source for both variants
+  src/.generated/App.rs  hand-written generated Rust (committed on purpose)
 source-map.json          hand-written many-to-many map between App.rsx and the generated Rust
 client/ra-client.mjs     headless JSON-RPC client that drives rust-analyzer
 client/source-map.mjs    pure `mapRange()` used to map a generated-file range
@@ -19,48 +17,23 @@ client/source-map.mjs    pure `mapRange()` used to map a generated-file range
 client/source-map.test.mjs  `node --test` coverage for source-map.mjs
 ```
 
-There is no parser. `virtual/App.rs` is what the compiler *would* emit for `src/App.rsx`, written by hand.
+There is no parser. `src/.generated/App.rs` is what the compiler *would* emit for `src/App.rsx`, written by hand.
 
 ## Setup
 
 ```bash
 rustup component add rust-analyzer      # or point --ra at any rust-analyzer binary
 cd spikes/rust-analyzer/fixture
-cargo check                             # variant (b), the default
-cargo check --no-default-features --features gen-outdir   # variant (a)
+cargo check
 ```
 
-## Strategy A, two layouts
+## Strategy A
 
-Strategy A means: let Cargo build the crate graph, and have the language server supply *editor overlay* content for the generated file. Two layouts for that generated file are tried.
-
-### (b) fixed path `src/.generated/App.rs` (default feature `gen-src`)
-
-The generated file is an ordinary source file referenced with `#[path = ".generated/App.rs"]`. rust-analyzer sees it like any other module.
+Strategy A means: let Cargo build the crate graph, and have the language server supply *editor overlay* content for the generated file. The generated file lives at the fixed path `src/.generated/App.rs`, referenced with `#[path = ".generated/App.rs"]`; rust-analyzer sees it like any other module (ADR 0009).
 
 ```bash
 node ../client/ra-client.mjs --root . --file src/.generated/App.rs --line 8 --char 10
 ```
-
-### (a) `OUT_DIR` + `include!` (feature `gen-outdir`)
-
-`build.rs` writes the file under Cargo's hashed `OUT_DIR`. rust-analyzer must run build scripts to learn the path. Find it with:
-
-```bash
-cargo check --no-default-features --features gen-outdir --message-format=json \
-  | jq -r 'select(.reason == "build-script-executed") | .out_dir'
-```
-
-then pass `<out_dir>/outou/App.rs` as `--file`. The build script also prints the path as a `cargo:warning` for convenience.
-
-To exercise layout (a) with `ra-client.mjs` directly, select the feature set on the command line instead of editing `Cargo.toml`:
-
-```bash
-node ../client/ra-client.mjs --root . --file <out_dir>/outou/App.rs \
-  --no-default-features --cargo-features gen-outdir --line 8 --char 9
-```
-
-`--cargo-features <a,b,c>` and `--no-default-features` map straight onto rust-analyzer's `initializationOptions.cargo.features` / `cargo.noDefaultFeatures`, the same knobs the editor extension exposes.
 
 ## The overlay experiment
 
@@ -72,11 +45,11 @@ cp src/.generated/App.rs /tmp/overlay.rs
 node ../client/ra-client.mjs --root . --file src/.generated/App.rs --overlay /tmp/overlay.rs --line 8 --char 10
 ```
 
-Hover must report the type from the *overlay* (`String`), not from disk (`User`), and it must do so without `build.rs` running again.
+Hover must report the type from the *overlay* (`String`), not from disk (`User`).
 
 ### A second overlay via `didChange` (`--overlay2`)
 
-`--overlay` above only covers the buffer sent with the initial `textDocument/didOpen`. To prove that a *later* edit also reaches rust-analyzer without any re-run of `build.rs`, `--overlay2 <file>` sends a second buffer through `textDocument/didChange` (a full-document replacement, version 2) after the first hover/completion/definition round, then repeats hover/completion/definition at the same position (or `--line2`/`--char2`) as `hover2`/`completion2`/`definition2`:
+`--overlay` above only covers the buffer sent with the initial `textDocument/didOpen`. To prove that a *later* edit also reaches rust-analyzer, `--overlay2 <file>` sends a second buffer through `textDocument/didChange` (a full-document replacement, version 2) after the first hover/completion/definition round, then repeats hover/completion/definition at the same position (or `--line2`/`--char2`) as `hover2`/`completion2`/`definition2`:
 
 ```bash
 node ../client/ra-client.mjs --root . --file src/.generated/App.rs --line 8 --char 9 \
@@ -121,17 +94,17 @@ All seven must hold:
 
 1. rust-analyzer loads the fixture as an ordinary Cargo project.
 2. The generated source is part of the crate graph.
-3. Editor-side changes reach rust-analyzer **without re-running `build.rs`**. This is the most important item.
+3. Editor-side changes reach rust-analyzer without depending on a build script. This is the most important item.
 4. Completion reflects the latest buffer.
 5. Hover reflects the latest buffer.
 6. Definition reflects the latest buffer.
 7. `cargo check` / flycheck diagnostics can be mapped back to `App.rsx` through the source map.
 
-Record the outcome in `docs/ra-spike-results.md`. If (b) satisfies all seven, the `OUT_DIR` layout is dropped: development and published crates then share one layout, and `outou package` only has to generate and include files.
+Record the outcome in `docs/ra-spike-results.md`.
 
 ## Results
 
-The spike has been run: layout (b) satisfies all seven criteria, layout (a) fails completion (criterion 4) inside the generated macro call and under incomplete input. Full writeup in [`docs/ra-spike-results.md`](../../docs/ra-spike-results.md); raw JSON output for every probe, with the exact command that produced it, is in [`results/`](results/).
+The spike has been run against two layouts for the generated file: the fixed path `src/.generated/` + `#[path]` (adopted) and `OUT_DIR` + `include!` (dropped, per [ADR 0009](../../docs/adr/0009-generated-source-location.md)). Layout (b) satisfied all seven criteria; layout (a) failed completion (criterion 4) inside the generated macro call and under incomplete input. Full writeup in [`docs/ra-spike-results.md`](../../docs/ra-spike-results.md); raw JSON output for every probe, with the exact command that produced it, is in [`results/`](results/). The dropped layout's fixture code no longer exists here — see `results/README.md` for a note on what it looked like.
 
 ## If Strategy A fails
 

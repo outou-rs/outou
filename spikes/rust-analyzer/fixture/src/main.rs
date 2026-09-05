@@ -26,18 +26,10 @@ pub fn UserCard(user: User) -> Element {
     }
 }
 
-// Variant (b): generated Rust at a fixed path, an ordinary source file for
-// rust-analyzer.
-#[cfg(feature = "gen-src")]
+// Generated Rust at a fixed path, an ordinary source file for rust-analyzer
+// (ADR 0009).
 #[path = ".generated/App.rs"]
 mod app;
-
-// Variant (a): generated Rust in OUT_DIR, included by path.
-#[cfg(feature = "gen-outdir")]
-mod app {
-    use super::*;
-    include!(concat!(env!("OUT_DIR"), "/outou/App.rs"));
-}
 
 fn main() {
     let _ = app::App;

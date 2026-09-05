@@ -56,18 +56,13 @@ Work proceeds in this order. Each step ends at a gate; failing a gate stops Phas
 
 Everything in `spikes/rust-analyzer/` is hand-written: `App.rsx`, the generated Rust it would produce, a few source-map entries and a Cargo project. A small headless JSON-RPC client drives rust-analyzer directly; no editor extension is involved until late in Phase 0.
 
-Strategy A is tried first, in two layouts:
-
-- (a) `build.rs` generates into `OUT_DIR` and the crate `include!`s the result. The hashed `OUT_DIR` path is read from `cargo check --message-format=json` (`build-script-executed`).
-- (b) the compiler writes `src/.generated/` and the crate references it with `#[path]`. To rust-analyzer it is an ordinary source file.
-
-If (b) is sufficient, `OUT_DIR` is dropped: development and published crates then share one layout, and `outou package` only has to generate and include files.
+Strategy A was tried in two layouts: (a) a `build.rs` generating into `OUT_DIR`, included with `include!`, and (b) the compiler writing `src/.generated/`, referenced with `#[path]`. Both were exercised; (b) was adopted and `OUT_DIR` generation dropped. See [ra-spike-results.md](ra-spike-results.md) and [ADR 0009](adr/0009-generated-source-location.md) for the evidence and decision.
 
 Strategy A passes when all of the following hold:
 
 1. rust-analyzer loads the Cargo project normally.
 2. The generated source is part of the crate graph.
-3. Editor changes reach rust-analyzer **without re-running `build.rs`**. This is the decisive item.
+3. Editor changes reach rust-analyzer **without depending on a build script**. This is the decisive item.
 4. Completion reflects the latest buffer.
 5. Hover reflects the latest buffer.
 6. Definition reflects the latest buffer.

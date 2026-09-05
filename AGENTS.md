@@ -23,8 +23,7 @@ The rust-analyzer spike is a separate Cargo project; run it from its own directo
 
 ```bash
 cd spikes/rust-analyzer/fixture
-cargo check                                              # layout (b): src/.generated/
-cargo check --no-default-features --features gen-outdir  # layout (a): OUT_DIR
+cargo check                             # src/.generated/ + #[path] (ADR 0009)
 node ../client/ra-client.mjs --help
 ```
 
@@ -40,7 +39,6 @@ All four workspace checks must pass before a change is considered done. Do not w
 | `crates/outou-codegen` | `Backend` trait, `Strict` / `Recovery` modes. |
 | `crates/outou-backend-dioxus` | Temporary backend. Emits text; does **not** depend on Dioxus. |
 | `crates/outou-modules` | Module resolver for mixed `.rs` / `.rsx` crates. |
-| `crates/outou-build` | `build.rs` helper; only real if the `OUT_DIR` layout wins (ADR 0009). |
 | `crates/outou-lsp`, `crates/outou-cli` | Binaries `outou-lsp` and `outou`. |
 | `xtask/` | Repository automation. |
 | `spikes/rust-analyzer/` | Week 1 experiment. Not a workspace member. No framework code. |
@@ -81,7 +79,7 @@ All four workspace checks must pass before a change is considered done. Do not w
 ### Decisions and documents
 
 - Architectural changes get an ADR in `docs/adr/` (Context / Decision / Consequences / Alternatives considered, one page).
-- ADR 0009 (where generated Rust lives) stays `Proposed` until the rust-analyzer spike is recorded in `docs/ra-spike-results.md`.
+- ADR 0009 (where generated Rust lives) is Accepted: layout (b), `src/.generated/` + `#[path]`, per the rust-analyzer spike in `docs/ra-spike-results.md`.
 - Unresolved points are written as `TODO(phase0)` in the document where they belong, not silently decided.
 - Do not add competitor comparisons, popularity claims or project-continuation judgments to public documents.
 
@@ -101,4 +99,4 @@ All four workspace checks must pass before a change is considered done. Do not w
 
 ## Verification before claiming completion
 
-Run the four workspace checks and, if the spike was touched, both spike `cargo check` variants. Report failures verbatim; do not describe a change as working without having run them.
+Run the four workspace checks and, if the spike fixture was touched, `cargo check` in `spikes/rust-analyzer/fixture`; if the spike client was touched, `node --test spikes/rust-analyzer/client/*.test.mjs`. Report failures verbatim; do not describe a change as working without having run them.

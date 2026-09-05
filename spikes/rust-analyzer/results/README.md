@@ -1,5 +1,7 @@
 # Raw results, Week 1 rust-analyzer spike
 
+Layout (a) (`OUT_DIR` + `include!`) was rejected and its fixture code (`build.rs`, the `gen-outdir` feature, `virtual/App.rs`) was removed after this spike, per [ADR 0009](../../../docs/adr/0009-generated-source-location.md). References below to those files, to `$OUT_DIR`, or to `virtual/App.rs` describe the fixture as it existed at commit `9cde9a9`, before that removal; they are not reproducible against the current fixture.
+
 Every file here is the unmodified JSON printed by `ra-client.mjs` (stdout only;
 its `console.error`/`WARN notify` lines were redirected away, not edited) for
 one probe. Findings drawn from these files are written up in

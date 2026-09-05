@@ -6,7 +6,7 @@
 // and definition at a position. Diagnostics are collected until rust-analyzer
 // reports that its initial load and flycheck are done. Optionally sends a
 // second overlay (`--overlay2`) via `textDocument/didChange` to exercise the
-// "editor buffer, not build.rs" claim, and maps diagnostics back to `App.rsx`
+// "editor buffer, not on-disk content" claim, and maps diagnostics back to `App.rsx`
 // through a hand-written source map (`--source-map`).
 //
 // Usage: see usage() below, or run with --help.
@@ -45,9 +45,8 @@ function usage() {
                      [--overlay2 <buffer file>] [--line2 N] [--char2 M]
                      [--source-map <source-map.json>]
 
-  --file               path of the generated Rust file rust-analyzer should
-                       see (src/.generated/App.rs for variant (b); the
-                       OUT_DIR path for (a))
+  --file               path, relative to --root, of the generated Rust file
+                       rust-analyzer should see (e.g. src/.generated/App.rs)
   --overlay            file whose contents are sent as the open buffer
                        instead of what is on disk ("editor overlay" #1).
   --line/--char        0-based cursor position for hover/completion/definition

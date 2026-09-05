@@ -14,7 +14,8 @@ labels: [phase0, must-keep]
 
 Using the spike results:
 
-- [ ] fix the rust-analyzer strategy and the generated-source layout
-- [ ] update `docs/adr/0009-generated-source-location.md` to **Accepted** with the chosen layout, or
-- [ ] if Strategy A failed: spike **Strategy B** (shadow Cargo project under `.outou/lsp/`, reusing `cargo metadata`) and record it in `docs/ra-spike-results.md`
-- [ ] remove the losing layout from the spike fixture and from `docs/phase0.md`
+- [x] fix the rust-analyzer strategy and the generated-source layout — Strategy A, layout (b) `src/.generated/` + `#[path]`
+- [x] update `docs/adr/0009-generated-source-location.md` to **Accepted** with the chosen layout
+- [x] remove the losing layout from the spike fixture and from `docs/phase0.md`
+
+Strategy B (shadow Cargo project under `.outou/lsp/`, reusing `cargo metadata`) was the fallback if Strategy A failed. Strategy A passed, so it was not spiked.
