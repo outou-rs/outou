@@ -1,0 +1,1 @@
+error: circular Outou module `back` declared in `src/b.rsx`: src/main.rsx -> src/b.rsx -> src/main.rsx

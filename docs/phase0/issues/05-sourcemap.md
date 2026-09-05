@@ -13,8 +13,8 @@ labels: [phase0, must-keep]
 | **Droppable** | No |
 | **Crate** | `outou-sourcemap` |
 
-- [ ] `SourceMap` with N:M entries (1 source → N generated, 1 generated → N source, zero sources for synthesized code)
-- [ ] `Registry`: generated URI → `SourceMap` → original URIs, workspace-wide
-- [ ] reverse-mapping rule: `.rsx` if one produced the location, otherwise the Rust location untouched
-- [ ] serialization compatible with `spikes/rust-analyzer/source-map.json`
-- [ ] tests: opening + closing tag → one identifier; one expression → several generated spans; dependency locations pass through
+- [x] `SourceMap` with N:M entries (1 source → N generated, 1 generated → N source, zero sources for synthesized code)
+- [x] `Registry`: generated URI → `SourceMap` → original URIs, workspace-wide
+- [x] reverse-mapping rule: `.rsx` if one produced the location, otherwise the Rust location untouched
+- [x] serialization compatible with `spikes/rust-analyzer/source-map.json`
+- [x] tests: opening + closing tag → one identifier; one expression → several generated spans; dependency locations pass through

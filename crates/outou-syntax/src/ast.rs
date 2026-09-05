@@ -87,6 +87,12 @@ pub struct Module {
     pub span: Span,
     /// Attributes such as `#[cfg(…)]` and `#[path = "…"]`, verbatim.
     pub attributes: Vec<RustSource>,
+    /// Visibility/qualifier prefix between the attributes and the `mod`
+    /// keyword (`pub`, `pub(crate)`, …), verbatim, if any. Captured as the
+    /// trimmed source slice between the end of the attributes and the
+    /// start of the `mod` keyword; `None` when that slice is empty (a
+    /// bare `mod name;`).
+    pub qualifiers: Option<RustSource>,
     /// Module name.
     pub name: Ident,
     /// Explicit `#[path]` target, if any.

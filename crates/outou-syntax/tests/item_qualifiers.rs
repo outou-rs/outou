@@ -51,6 +51,44 @@ fn pub_fn_with_component_attribute_is_recognized() {
 }
 
 #[test]
+fn module_qualifiers_capture_the_visibility_prefix() {
+    // issue #7 fix list item 8: `ast::Module::qualifiers` records the
+    // trimmed source slice between the attributes and the `mod` keyword,
+    // so `outou-modules` can report a module's visibility without
+    // re-slicing the parent file's span (which can start on whitespace and
+    // indexes the wrong file for a file-based module).
+    let source = "pub mod x;";
+    let parsed = outou_syntax::parse(source);
+    let module = find_module(&parsed.file, "x")
+        .unwrap_or_else(|| panic!("no `x` module item found: {:#?}", parsed.file));
+    let qualifiers = module
+        .qualifiers
+        .as_ref()
+        .unwrap_or_else(|| panic!("expected qualifiers for `pub mod x;`: {:#?}", module));
+    assert_eq!(qualifiers.text, "pub");
+
+    let source = "pub(crate) mod x;";
+    let parsed = outou_syntax::parse(source);
+    let module = find_module(&parsed.file, "x")
+        .unwrap_or_else(|| panic!("no `x` module item found: {:#?}", parsed.file));
+    let qualifiers = module
+        .qualifiers
+        .as_ref()
+        .unwrap_or_else(|| panic!("expected qualifiers for `pub(crate) mod x;`: {:#?}", module));
+    assert_eq!(qualifiers.text, "pub(crate)");
+
+    let source = "mod x;";
+    let parsed = outou_syntax::parse(source);
+    let module = find_module(&parsed.file, "x")
+        .unwrap_or_else(|| panic!("no `x` module item found: {:#?}", parsed.file));
+    assert_eq!(
+        module.qualifiers, None,
+        "bare `mod x;` must have no qualifiers: {:#?}",
+        module
+    );
+}
+
+#[test]
 fn pub_paren_crate_mod_with_path_attribute_is_recognized() {
     let source = "#[path = \"x.rs\"]\npub(crate) mod m;";
     let parsed = outou_syntax::parse(source);

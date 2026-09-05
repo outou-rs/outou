@@ -1,1 +1,1 @@
-error: ambiguous Outou module `widgets`: ["src/widgets.rsx", "src/widgets.rs"] all exist; keep exactly one
+error: ambiguous Outou module `widgets` declared in `src/main.rsx`: ["src/widgets.rsx", "src/widgets.rs"] all exist; keep exactly one

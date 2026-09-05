@@ -6,79 +6,46 @@
 //! - Candidates for `mod foo;` are, in this order of *listing* (not of
 //!   priority): `foo.rsx`, `foo.rs`, `foo/mod.rsx`, `foo/mod.rs`.
 //! - More than one existing candidate is an error. There is no implicit
-//!   priority; the user must remove the ambiguity.
+//!   priority; the user must remove the ambiguity ([`ModuleError::Ambiguous`],
+//!   ADR 0006).
 //! - `#[path = "…"]` is honored. A `.rsx` target goes through the Outou
-//!   front end, a `.rs` target is plain Rust.
+//!   front end, a `.rs` target is plain Rust. Directory ownership for
+//!   both implicit candidates and `#[path]` follows the rustc-validated
+//!   model in [`scope`].
 //! - `#[cfg(…)]` is not evaluated. Every module is generated and the
 //!   attribute is preserved on the generated declaration; rustc decides.
+//!   `#[cfg_attr(condition, path = "…")]` is the one unsupported
+//!   exception ([`ModuleError::ConditionalPath`]): Phase 0 cannot decide
+//!   which of a conditional path's targets to resolve without evaluating
+//!   `cfg`.
+//!
+//! The resolver reuses [`outou_syntax::parse`] to find `mod` items in
+//! both `.rs` and `.rsx` files — "there is one compiler" (`AGENTS.md`);
+//! it does not run a second scanner over plain Rust.
+
+mod error;
+mod generated;
+mod graph;
+mod probe;
+mod resolve;
+mod scope;
+#[cfg(test)]
+mod testutil;
 
 use std::path::{Path, PathBuf};
+
+pub use error::ModuleError;
+pub use graph::{ModuleGraph, ModuleGraphIter, ModuleNode, SourceKind, GENERATED_ROOT_STEM};
+pub use resolve::{resolve, MAX_MODULE_DEPTH};
 
 /// Candidate file patterns for `mod {name};`, where `{name}` is substituted.
 pub const CANDIDATES: [&str; 4] = ["{name}.rsx", "{name}.rs", "{name}/mod.rsx", "{name}/mod.rs"];
 
-/// Kind of source file a module lives in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SourceKind {
-    /// Goes through the Outou front end and codegen.
-    Rsx,
-    /// Plain Rust, copied or referenced as is.
-    Rust,
-}
-
-/// One module in the graph.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModuleNode {
-    /// Path from the crate root, e.g. `["components", "user"]`.
-    pub path: Vec<String>,
-    /// File that defines the module.
-    pub file: PathBuf,
-    /// Whether the file is `.rsx` or `.rs`.
-    pub kind: SourceKind,
-    /// `#[cfg(…)]` attributes to preserve on the generated declaration.
-    pub cfg: Vec<String>,
-    /// Child modules.
-    pub children: Vec<ModuleNode>,
-}
-
-/// The resolved module graph of one crate.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ModuleGraph {
-    /// The crate root (`main.rs`, `main.rsx`, `lib.rs` or `lib.rsx`).
-    pub root: ModuleNode,
-}
-
-/// Resolution errors, phrased for the user.
-#[derive(Debug, thiserror::Error)]
-pub enum ModuleError {
-    /// Several candidate files exist for one `mod` declaration.
-    #[error("ambiguous Outou module `{name}`: {candidates:?} all exist; keep exactly one")]
-    Ambiguous {
-        /// Module name.
-        name: String,
-        /// Every existing candidate.
-        candidates: Vec<PathBuf>,
-    },
-    /// No candidate file exists.
-    #[error("file not found for module `{name}`; looked for {candidates:?}")]
-    NotFound {
-        /// Module name.
-        name: String,
-        /// Every candidate that was tried.
-        candidates: Vec<PathBuf>,
-    },
-    /// I/O failure while reading a source file.
-    #[error("cannot read `{path}`: {source}")]
-    Io {
-        /// Offending file.
-        path: PathBuf,
-        /// Underlying error.
-        #[source]
-        source: std::io::Error,
-    },
-}
-
 /// Returns the candidate paths for `mod {name};` declared in `dir`.
+///
+/// `name` should already be unraw'd (issue #7 decision 5): callers
+/// resolving an actual `mod r#type;` pass `"type"`, not `"r#type"`, since
+/// no file on disk is ever spelled with a `r#` prefix.
 pub fn candidates(dir: &Path, name: &str) -> Vec<PathBuf> {
     CANDIDATES
         .iter()
@@ -86,11 +53,12 @@ pub fn candidates(dir: &Path, name: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Resolves the module graph starting at `root` (a `main.rs`, `main.rsx`,
-/// `lib.rs` or `lib.rsx`).
-pub fn resolve(root: &Path) -> Result<ModuleGraph, ModuleError> {
-    let _ = root;
-    todo!("outou-modules: resolver is implemented in Phase 0, Week 4 (Gate 2)")
+/// Rewrites `path` relative to `base` when it is prefixed by it, so that
+/// resolved paths and error messages read `src/foo.rsx` instead of an
+/// absolute or working-directory-relative path. Falls back to `path`
+/// unchanged when it is not under `base`.
+pub(crate) fn relative_to(path: &Path, base: &Path) -> PathBuf {
+    path.strip_prefix(base).unwrap_or(path).to_path_buf()
 }
 
 #[cfg(test)]

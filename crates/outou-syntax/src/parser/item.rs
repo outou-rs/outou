@@ -140,7 +140,8 @@ impl<'s> Parser<'s> {
                 if head.kind == RtKind::Ident && head.text(self.source) == "mod" {
                     self.flush_rust_run(&mut parts, chunk_start, pos);
                     self.finish_rust_run(&mut items, &mut parts, run_start, pos);
-                    let (module, end) = self.parse_module(attrs, pos, head);
+                    let qualifiers = self.extract_qualifiers(after_attrs, head.start);
+                    let (module, end) = self.parse_module(attrs, qualifiers, pos, head);
                     items.push(ast::Item::Module(module));
                     pos = end;
                     chunk_start = end;
@@ -338,6 +339,26 @@ impl<'s> Parser<'s> {
         pos
     }
 
+    /// Captures the trimmed source slice between the end of an item's
+    /// attributes (`after_attrs`) and the start of its `fn`/`mod` keyword
+    /// (`head_start`) as an [`ast::RustSource`], or `None` when that slice
+    /// is empty or all whitespace. For a `mod` item this is its
+    /// visibility/qualifier prefix (`pub`, `pub(crate)`, …).
+    fn extract_qualifiers(&self, after_attrs: usize, head_start: usize) -> Option<ast::RustSource> {
+        let text = &self.source[after_attrs..head_start];
+        let leading_ws = text.len() - text.trim_start().len();
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        let start = after_attrs + leading_ws;
+        let end = start + trimmed.len();
+        Some(ast::RustSource {
+            span: Span::new(start as u32, end as u32),
+            text: trimmed.to_string(),
+        })
+    }
+
     /// Parses a `fn` item: `head` is the already-located `fn` token.
     fn parse_function(
         &mut self,
@@ -389,7 +410,7 @@ impl<'s> Parser<'s> {
 
         let is_component = attrs
             .iter()
-            .any(|a| attribute_path(&a.text) == Some("component"));
+            .any(|a| attribute_meta_path(&a.text) == Some("component"));
 
         match signature_end {
             SignatureEnd::Body(brace_pos) => {
@@ -464,10 +485,12 @@ impl<'s> Parser<'s> {
     }
 
     /// Parses a `mod name;` or `mod name { ... }` item: `head` is the
-    /// already-located `mod` token.
+    /// already-located `mod` token. `qualifiers` is the item's already
+    /// extracted visibility/qualifier prefix, if any.
     fn parse_module(
         &mut self,
         attrs: Vec<ast::RustSource>,
+        qualifiers: Option<ast::RustSource>,
         item_start: usize,
         head: rust_token::RtTok,
     ) -> (ast::Module, usize) {
@@ -478,27 +501,23 @@ impl<'s> Parser<'s> {
             self.ident_at(head.end, head.end)
         };
         let path = extract_path_attribute(&attrs);
+        let head_parts = ModuleHeadParts {
+            attributes: attrs,
+            qualifiers,
+            name,
+            path,
+        };
         let next = rust_token::next_significant(self.bytes, name_tok.end.max(head.end));
 
         if next.kind == RtKind::OpenDelim && self.bytes[next.start] == b'{' {
             if self.mod_depth >= diag::MAX_NESTING {
-                return self.recover_too_deeply_nested_module(
-                    item_start, head, attrs, name, path, next.start,
-                );
+                return self
+                    .recover_too_deeply_nested_module(item_start, head, head_parts, next.start);
             }
             self.mod_depth += 1;
             let (items, end) = self.parse_items(next.end, Bound::ClosingBrace);
             self.mod_depth -= 1;
-            return (
-                ast::Module {
-                    span: Span::new(item_start as u32, end as u32),
-                    attributes: attrs,
-                    name,
-                    path,
-                    items: Some(items),
-                },
-                end,
-            );
+            return (head_parts.into_module(item_start, end, Some(items)), end);
         }
 
         // `mod name;`, or a malformed module head: recover by ending the
@@ -508,16 +527,7 @@ impl<'s> Parser<'s> {
         } else {
             name_tok.end.max(head.end)
         };
-        (
-            ast::Module {
-                span: Span::new(item_start as u32, end as u32),
-                attributes: attrs,
-                name,
-                path,
-                items: None,
-            },
-            end,
-        )
+        (head_parts.into_module(item_start, end, None), end)
     }
 
     /// Grammar §9's nesting-cap recovery for inline modules (decision D4,
@@ -532,9 +542,7 @@ impl<'s> Parser<'s> {
         &mut self,
         item_start: usize,
         head: rust_token::RtTok,
-        attrs: Vec<ast::RustSource>,
-        name: ast::Ident,
-        path: Option<String>,
+        head_parts: ModuleHeadParts,
         open_brace_pos: usize,
     ) -> (ast::Module, usize) {
         self.push_diag(
@@ -542,16 +550,34 @@ impl<'s> Parser<'s> {
             diag::modules_nested_too_deeply(),
         );
         let end = rust_token::skip_balanced_group(self.bytes, open_brace_pos);
-        (
-            ast::Module {
-                span: Span::new(item_start as u32, end as u32),
-                attributes: attrs,
-                name,
-                path,
-                items: None,
-            },
-            end,
-        )
+        (head_parts.into_module(item_start, end, None), end)
+    }
+}
+
+/// The parts of a `mod` item's head (attributes, qualifiers, name, explicit
+/// `#[path]`) collected before it is known whether the module is inline or
+/// a bare `mod name;`. Bundled into one value so that
+/// [`Parser::recover_too_deeply_nested_module`] does not need one argument
+/// per field.
+struct ModuleHeadParts {
+    attributes: Vec<ast::RustSource>,
+    qualifiers: Option<ast::RustSource>,
+    name: ast::Ident,
+    path: Option<String>,
+}
+
+impl ModuleHeadParts {
+    /// Combines this head with a span and items into the finished
+    /// [`ast::Module`].
+    fn into_module(self, start: usize, end: usize, items: Option<Vec<ast::Item>>) -> ast::Module {
+        ast::Module {
+            span: Span::new(start as u32, end as u32),
+            attributes: self.attributes,
+            qualifiers: self.qualifiers,
+            name: self.name,
+            path: self.path,
+            items,
+        }
     }
 }
 
@@ -559,7 +585,7 @@ impl<'s> Parser<'s> {
 /// item's collected attributes.
 fn extract_path_attribute(attrs: &[ast::RustSource]) -> Option<String> {
     for attr in attrs {
-        if attribute_path(&attr.text) != Some("path") {
+        if attribute_meta_path(&attr.text) != Some("path") {
             continue;
         }
         if let Some(path_kw) = attr.text.find("path") {
@@ -580,7 +606,7 @@ fn extract_path_attribute(attrs: &[ast::RustSource]) -> Option<String> {
 /// segment. Used to tell a real `#[component]`/`#[path = "…"]` apart from
 /// `#[not_component]`/`#[not_path = "…"]` by exact match instead of a
 /// substring search over the whole attribute text (L2).
-fn attribute_path(text: &str) -> Option<&str> {
+pub fn attribute_meta_path(text: &str) -> Option<&str> {
     let bytes = text.as_bytes();
     let after_hash_bracket = if text.starts_with("#![") {
         3

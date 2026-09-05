@@ -1,0 +1,1 @@
+error: conditional module path is not supported: `#[cfg_attr(unix, path = "unix.rsx")]` on Outou module `platform` declared in `src/main.rsx`; write one `#[cfg]`-gated `mod` declaration per target with a direct `#[path = "…"]`

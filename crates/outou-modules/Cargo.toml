@@ -8,6 +8,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+outou-syntax = { workspace = true }
 thiserror = { workspace = true }
 
 [lints]

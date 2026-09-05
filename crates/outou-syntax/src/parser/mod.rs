@@ -27,6 +27,8 @@ use outou_sourcemap::Span;
 
 use crate::{ast, Diagnostic, Parsed, Severity};
 
+pub use item::attribute_meta_path;
+
 /// Parses one `.rsx` source text into a [`Parsed`] result. See the module
 /// doc; this never panics.
 pub fn parse(source: &str) -> Parsed {

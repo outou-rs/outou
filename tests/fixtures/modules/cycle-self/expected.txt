@@ -1,0 +1,1 @@
+error: circular Outou module `again` declared in `src/main.rsx`: src/main.rsx -> src/main.rsx
