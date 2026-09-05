@@ -1,0 +1,5 @@
+edition = "2021"
+# Generated Rust is never formatted by hand. On stable rustfmt this option only
+# emits a warning ("unstable features are only available in nightly"); it does
+# not fail `cargo fmt --check`.
+ignore = ["**/.generated/**"]

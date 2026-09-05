@@ -1,0 +1,18 @@
+[package]
+name = "outou-build"
+description = "build.rs helper that generates Rust from .rsx into OUT_DIR"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+outou-syntax = { workspace = true }
+outou-codegen = { workspace = true }
+outou-backend-dioxus = { workspace = true }
+outou-modules = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

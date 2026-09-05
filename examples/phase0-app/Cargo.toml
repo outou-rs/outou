@@ -1,0 +1,11 @@
+[package]
+name = "phase0-app"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Standalone until `.rsx` files can be built (Gate 2).
+[workspace]
+
+[dependencies]
+outou = { path = "../../crates/outou" }

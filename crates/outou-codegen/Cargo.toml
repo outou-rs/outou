@@ -1,0 +1,16 @@
+[package]
+name = "outou-codegen"
+description = "Backend trait and strict/recovery generation modes for Outou"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+outou-syntax = { workspace = true }
+outou-sourcemap = { workspace = true }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,22 @@
+{
+  "name": "vscode-outou",
+  "displayName": "Outou",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Language support for Outou (.rsx). Placeholder; the extension is built after the language server exists.",
+  "publisher": "outou-rs",
+  "license": "MIT OR Apache-2.0",
+  "repository": { "type": "git", "url": "https://github.com/outou-rs/outou", "directory": "packages/vscode-outou" },
+  "engines": { "vscode": "^1.90.0" },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "outou-rsx",
+        "aliases": ["Outou", "outou"],
+        "extensions": [".rsx"],
+        "configuration": "./language-configuration.json"
+      }
+    ]
+  }
+}

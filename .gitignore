@@ -1,0 +1,19 @@
+# Cargo
+/target/
+**/target/
+
+# Outou LSP shadow workspace (Strategy B only)
+.outou/
+
+# Node
+node_modules/
+
+# Corpus cache populated by `cargo xtask corpus fetch`
+/.corpus/
+
+# Generated Rust for *applications*. Libraries that publish pre-generated
+# Rust commit their `.generated/` directories; see CONTRIBUTING.md.
+**/.generated/
+!spikes/rust-analyzer/fixture/src/.generated/
+
+.DS_Store

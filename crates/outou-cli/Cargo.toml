@@ -1,0 +1,22 @@
+[package]
+name = "outou-cli"
+description = "The `outou` command line: build, check and package .rsx crates"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "outou"
+path = "src/main.rs"
+
+[dependencies]
+outou-syntax = { workspace = true }
+outou-codegen = { workspace = true }
+outou-backend-dioxus = { workspace = true }
+outou-modules = { workspace = true }
+clap = { workspace = true }
+
+[lints]
+workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "outou"
+description = "Outou — Rust with JSX. Public facade crate."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+
+[dependencies]
+dioxus = { workspace = true }
+
+[lints]
+workspace = true

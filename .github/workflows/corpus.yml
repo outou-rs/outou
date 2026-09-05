@@ -1,0 +1,26 @@
+name: Corpus
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # nightly
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  corpus:
+    name: parser corpus test
+    runs-on: ubuntu-latest
+    # Becomes a real signal once the parser exists (Gate 1) and `cargo xtask corpus` is implemented.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/cache@v4
+        with:
+          path: .corpus
+          key: corpus-${{ hashFiles('corpus.lock') }}
+      - run: cargo xtask corpus fetch
+      - run: cargo xtask corpus test

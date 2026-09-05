@@ -1,0 +1,8 @@
+{
+  "name": "ra-spike-client",
+  "private": true,
+  "type": "module",
+  "description": "Headless JSON-RPC client that drives rust-analyzer for the Week 1 spike",
+  "bin": { "ra-client": "./ra-client.mjs" },
+  "engines": { "node": ">=20" }
+}

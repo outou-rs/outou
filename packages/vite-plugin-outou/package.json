@@ -1,0 +1,11 @@
+{
+  "name": "@outou/vite",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Vite plugin for Outou applications. Placeholder; not implemented in Phase 0.",
+  "license": "MIT OR Apache-2.0",
+  "repository": { "type": "git", "url": "https://github.com/outou-rs/outou", "directory": "packages/vite-plugin-outou" },
+  "_note": "The npm scope `@outou` is TBD; the package name may change before the first release.",
+  "type": "module",
+  "engines": { "node": ">=20" }
+}

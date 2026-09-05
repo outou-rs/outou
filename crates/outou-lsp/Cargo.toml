@@ -1,0 +1,21 @@
+[package]
+name = "outou-lsp"
+description = "Language server for .rsx files that proxies rust-analyzer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "outou-lsp"
+path = "src/main.rs"
+
+[dependencies]
+outou-syntax = { workspace = true }
+outou-sourcemap = { workspace = true }
+outou-codegen = { workspace = true }
+outou-backend-dioxus = { workspace = true }
+
+[lints]
+workspace = true

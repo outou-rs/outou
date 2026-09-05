@@ -1,0 +1,9 @@
+# Corpora used by the nightly parser robustness job. Nothing here is vendored
+# into the repository; `cargo xtask corpus fetch` clones each entry at the
+# pinned commit into `.corpus/`.
+
+[[corpus]]
+name = "rust-ui-tests"
+repo = "https://github.com/rust-lang/rust.git"
+path = "tests/ui"
+commit = "0ed41eb4142dda2df61eb1145a312c1a9d62eb56"
