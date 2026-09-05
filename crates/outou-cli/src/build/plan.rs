@@ -10,6 +10,7 @@
 //! a file; see `crate::build::emit` for that.
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use outou_modules::{unraw, ModuleError, ModuleGraph, ModuleNode, SourceKind};
@@ -207,7 +208,21 @@ pub struct Plan {
 /// `manifest_dir` must be `root`'s crate root directory (the directory
 /// containing `root`'s own `src/`).
 pub fn plan(manifest_dir: &Path, root: &Path) -> Result<Plan, PlanError> {
-    let graph = outou_modules::resolve(root)?;
+    plan_with_overlay(manifest_dir, root, &HashMap::new())
+}
+
+/// Like [`plan`], but any file whose canonicalized identity matches a key
+/// of `overlay` is planned using that text instead of its contents on
+/// disk — a language server's own unsaved buffers
+/// (`crates/outou-lsp/src/plan.rs`'s `resolve_with_overlay`), so planning
+/// reflects what the editor currently shows, not what was last saved
+/// (issue #9 Gate 3 review, M2/HIGH-2).
+pub fn plan_with_overlay(
+    manifest_dir: &Path,
+    root: &Path,
+    overlay: &HashMap<PathBuf, String>,
+) -> Result<Plan, PlanError> {
+    let graph = outou_modules::resolve_with_overlay(root, overlay)?;
     check_no_rust_declares_rsx_child(&graph)?;
 
     let src_dir = manifest_dir.join("src");

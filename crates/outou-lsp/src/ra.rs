@@ -22,10 +22,19 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::Mutex;
 use std::thread;
+use std::time::Duration;
 
 use crossbeam_channel::Receiver;
 use lsp_server::{Message, Notification, Request, RequestId};
 use serde_json::Value;
+
+/// How long [`RaClient::wait_for_response`] waits for rust-analyzer's
+/// `initialize`/`shutdown` responses before giving up (issue #9 Gate 3
+/// review, S5/MEDIUM-11): neither wait had any deadline at all, so a
+/// rust-analyzer that hung during startup or shutdown — rather than
+/// cleanly exiting, which the existing "channel closed" path already
+/// handled — wedged this server forever with no diagnostic.
+pub const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// A running rust-analyzer child process and the channel its messages
 /// arrive on.
@@ -139,17 +148,27 @@ impl RaClient {
     /// every other message with `on_other` along the way (used during
     /// startup, before the main event loop is running, to drive
     /// rust-analyzer's own `initialize` handshake while still answering
-    /// its `window/workDoneProgress/create` and similar requests).
+    /// its `window/workDoneProgress/create` and similar requests), or
+    /// until [`HANDSHAKE_TIMEOUT`] elapses.
     ///
     /// Returns `None` if rust-analyzer's stdout closed before the
-    /// response arrived (the child exited or crashed during startup).
+    /// response arrived (the child exited or crashed during startup), or
+    /// if the deadline was reached first (issue #9 Gate 3 review,
+    /// S5/MEDIUM-11: neither `initialize` nor `shutdown` had any deadline
+    /// before this, so a rust-analyzer that hung — rather than exiting —
+    /// wedged this server forever).
     pub fn wait_for_response(
         &self,
         id: &RequestId,
         mut on_other: impl FnMut(Message),
     ) -> Option<lsp_server::Response> {
+        let deadline = std::time::Instant::now() + HANDSHAKE_TIMEOUT;
         loop {
-            match self.receiver.recv() {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return None;
+            }
+            match self.receiver.recv_timeout(remaining) {
                 Ok(Message::Response(response)) if response.id == *id => return Some(response),
                 Ok(other) => on_other(other),
                 Err(_) => return None,
@@ -159,7 +178,9 @@ impl RaClient {
 
     /// Best-effort graceful shutdown: `shutdown` request, `exit`
     /// notification, then kill if the process has not exited on its own
-    /// shortly after.
+    /// shortly after. Bounded by [`HANDSHAKE_TIMEOUT`] via
+    /// [`Self::wait_for_response`] — a rust-analyzer that never answers
+    /// `shutdown` no longer prevents this server from exiting.
     pub fn shutdown(&mut self) {
         let id = self.request("shutdown", Value::Null);
         let _ = self.wait_for_response(&id, |_| {});

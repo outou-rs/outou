@@ -100,6 +100,19 @@ pub fn rsx_position_to_generated(
         })
         .min_by_key(|(source_span, _)| source_span.end - source_span.start)?;
 
+    // S1 (issue #9 Gate 3 review): a transformed mapping — source and
+    // generated spans of different lengths, e.g. `key={tag.clone()}`
+    // lowering to `key: "{tag.clone()}"` (quotes added) — cannot be
+    // translated proportionally without risking a confidently *wrong*
+    // answer rather than an honest empty one. Confirmed live: hovering
+    // `tag` inside that attribute value returned `extern crate std` at a
+    // scaled-but-meaningless generated offset. Only an exact
+    // (same-length, almost always `Writer::verbatim`) mapping is
+    // translated; everything else maps to nothing rather than to a
+    // plausible-looking wrong position.
+    if span_len(source_span) != span_len(generated_span) {
+        return None;
+    }
     let generated_offset = scale_offset(offset, source_span, generated_span);
     let generated_position = unit.line_index.offset_to_position(generated_offset);
 
@@ -116,6 +129,10 @@ pub fn rsx_position_to_generated(
 /// and always clamped to `to`. Symmetric: used both source-to-generated
 /// ([`rsx_position_to_generated`]) and generated-to-source
 /// ([`narrow_single_source`]).
+fn span_len(span: Span) -> u32 {
+    span.end - span.start
+}
+
 fn scale_offset(offset: u32, from: Span, to: Span) -> u32 {
     let delta = offset.saturating_sub(from.start);
     let from_len = from.end - from.start;
@@ -179,11 +196,17 @@ pub fn generated_location_to_source(
     };
     let query = unit.line_index.range_to_span(to_outou_range(range));
 
-    if let Some((source_uri, source_range)) = narrow_single_source(workspace, map, query) {
-        return MappedLocation::Source {
-            uri: source_uri,
-            range: source_range,
-        };
+    match narrow_single_source(workspace, map, query) {
+        NarrowOutcome::Exact { uri, range } => return MappedLocation::Source { uri, range },
+        // S1 (issue #9 Gate 3 review): the one mapping this query falls
+        // inside has an unambiguous single source, but the two spans
+        // differ in length — a transformed mapping, not a verbatim copy —
+        // so a proportional guess is confidently wrong more often than it
+        // is right (`key={tag.clone()}` -> `key: "{tag.clone()}"`, HIGH-7).
+        // Reported as unmapped outright, never falling through to the
+        // coarser `reverse()` full-span answer below.
+        NarrowOutcome::LengthMismatch => return MappedLocation::Unmapped,
+        NarrowOutcome::NotApplicable => {}
     }
 
     let Some(mut resolved) = workspace.registry.reverse(&generated, query) else {
@@ -192,6 +215,16 @@ pub fn generated_location_to_source(
     if resolved.is_empty() {
         return MappedLocation::Unmapped;
     }
+    // TODO(phase0) (issue #9 Gate 3 review, MEDIUM-15's SKIP item): a
+    // mapping with several sources (e.g. an element name coming from both
+    // its opening and closing tag, ADR 0007's own example) always uses
+    // only the *first* one here; a diagnostic whose generated span
+    // legitimately belongs to more than one `.rsx` file — or more than
+    // one position in the same file — is only ever shown at the first.
+    // ADR 0007 permits this ("if a `.rsx` file produced the location, map
+    // back to it" does not mandate showing every candidate), and no
+    // observed case in Gate 3's target program needs more; a proper fix
+    // is a per-source-file diagnostic union, deferred past Phase 0.
     let (source_uri, source_span) = resolved.remove(0);
     let Some(source_doc) = workspace.rsx.get(source_uri.as_str()) else {
         return MappedLocation::Unmapped;
@@ -203,23 +236,48 @@ pub fn generated_location_to_source(
     }
 }
 
-/// Narrows a generated query span to the exact (or proportional)
-/// sub-range of the one `.rsx` source it came from, when the containing
-/// mapping has exactly one source span — the unambiguous case. Returns
-/// `None` for zero or several sources, a query not contained in any
-/// mapping, or a source file this server does not have text for, letting
-/// the caller fall back to the registry's coarser full-span mapping.
+/// Result of [`narrow_single_source`].
+enum NarrowOutcome {
+    /// Narrowed to an exact sub-range.
+    Exact {
+        /// The `.rsx` file's URI.
+        uri: lsp_types::Uri,
+        /// The narrowed range within it.
+        range: lsp_types::Range,
+    },
+    /// The containing mapping has exactly one source, but its span and
+    /// the generated span differ in length (S1): the caller must report
+    /// this as unmapped, not fall back to a coarser answer.
+    LengthMismatch,
+    /// Zero or several sources, no containing mapping, or a source file
+    /// this server does not have text for: the caller should fall back
+    /// to the registry's coarser full-span mapping.
+    NotApplicable,
+}
+
+/// Narrows a generated query span to the exact sub-range of the one
+/// `.rsx` source it came from, when the containing mapping has exactly
+/// one source span — the unambiguous case. See [`NarrowOutcome`].
 fn narrow_single_source(
     workspace: &Workspace,
     map: &outou_sourcemap::SourceMap,
     query: Span,
-) -> Option<(lsp_types::Uri, lsp_types::Range)> {
-    let mapping = map.mappings.iter().find(|m| m.generated.contains(query))?;
-    let [source] = mapping.sources.as_slice() else {
-        return None;
+) -> NarrowOutcome {
+    let Some(mapping) = map.mappings.iter().find(|m| m.generated.contains(query)) else {
+        return NarrowOutcome::NotApplicable;
     };
-    let source_uri = map.source_uri(source.source)?;
-    let doc = workspace.rsx.get(source_uri.as_str())?;
+    let [source] = mapping.sources.as_slice() else {
+        return NarrowOutcome::NotApplicable;
+    };
+    if span_len(mapping.generated) != span_len(source.span) {
+        return NarrowOutcome::LengthMismatch;
+    }
+    let Some(source_uri) = map.source_uri(source.source) else {
+        return NarrowOutcome::NotApplicable;
+    };
+    let Some(doc) = workspace.rsx.get(source_uri.as_str()) else {
+        return NarrowOutcome::NotApplicable;
+    };
 
     let start = scale_offset(query.start, mapping.generated, source.span);
     let end = if query.start == query.end {
@@ -228,7 +286,63 @@ fn narrow_single_source(
         scale_offset(query.end, mapping.generated, source.span).max(start)
     };
     let range = doc.line_index.span_to_range(Span::new(start, end));
-    Some((uri::to_lsp(source_uri), to_lsp_range(range)))
+    NarrowOutcome::Exact {
+        uri: uri::to_lsp(source_uri),
+        range: to_lsp_range(range),
+    }
+}
+
+/// Best-effort fallback position for a generated-Rust diagnostic whose
+/// exact range has no source mapping at all (synthesized code, most often
+/// inside an `rsx!` macro expansion the backend generated): the nearest
+/// mapped source span in the unit's own `.rsx` file, or that file's very
+/// first position if the map has no mapping with a source at all.
+///
+/// Used only for a rust-analyzer/flycheck diagnostic with `severity ==
+/// ERROR` (issue #9 Gate 3 review, M5): a hard compile error must never
+/// be silently dropped just because it points at a span with no direct
+/// source, even though the position shown is therefore approximate.
+pub fn nearest_source_position(
+    workspace: &Workspace,
+    generated_uri: &lsp_types::Uri,
+    query: lsp_types::Range,
+) -> lsp_types::Range {
+    let fallback = lsp_types::Range::new(
+        lsp_types::Position::new(0, 0),
+        lsp_types::Position::new(0, 0),
+    );
+    let generated = uri::to_outou(generated_uri);
+    let Some(map) = workspace.registry.map_for_generated(&generated) else {
+        return fallback;
+    };
+    let Some(unit) = workspace.generated.get(generated.as_str()) else {
+        return fallback;
+    };
+    let Some(doc) = workspace.rsx.get(unit.rsx_uri.as_str()) else {
+        return fallback;
+    };
+    let query_span = unit.line_index.range_to_span(to_outou_range(query));
+
+    let Some(nearest) = map
+        .mappings
+        .iter()
+        .filter(|mapping| !mapping.sources.is_empty())
+        .min_by_key(|mapping| generated_distance(mapping.generated, query_span))
+    else {
+        return fallback;
+    };
+    let source_span = nearest.sources[0].span;
+    to_lsp_range(doc.line_index.span_to_range(source_span))
+}
+
+/// Byte distance between two spans: `0` when they overlap or touch,
+/// otherwise the gap between the closer pair of endpoints.
+fn generated_distance(a: Span, b: Span) -> u32 {
+    if a.end <= b.start {
+        b.start.saturating_sub(a.end)
+    } else {
+        a.start.saturating_sub(b.end)
+    }
 }
 
 #[cfg(test)]
@@ -332,6 +446,105 @@ mod tests {
             }
             _ => panic!("expected a mapped source location"),
         }
+    }
+
+    #[test]
+    fn nearest_source_position_falls_back_to_the_closest_mapping() {
+        let (workspace, rsx_uri, generated_uri) = sample_workspace();
+        // The one mapping is generated bytes 30..34; a query well past it
+        // (60..64, inside the synthesized `rsx!` wrapper) has no mapping
+        // of its own but should still resolve to the nearest one rather
+        // than an arbitrary (0, 0).
+        let query = lsp_types::Range::new(
+            lsp_types::Position::new(0, 60),
+            lsp_types::Position::new(0, 64),
+        );
+        let range = nearest_source_position(&workspace, &generated_uri, query);
+        assert_eq!(range.start, lsp_types::Position::new(0, 4));
+        assert_eq!(range.end, lsp_types::Position::new(0, 8));
+        let _ = rsx_uri;
+    }
+
+    /// S1 (issue #9 Gate 3 review, HIGH-7): a transformed mapping — source
+    /// 4 bytes (`tag.`, deliberately not the same length as the generated
+    /// side) mapping to a *longer* generated span (quotes added, as
+    /// `key={tag.clone()}` -> `key: "{tag.clone()}"` does in practice) —
+    /// must map to nothing, not a proportionally-scaled wrong position.
+    #[test]
+    fn a_length_mismatched_mapping_maps_forward_to_nothing() {
+        let (workspace, rsx_uri, _generated_uri) = sample_workspace();
+        let mut workspace = workspace;
+        // Overwrite the sample mapping with one whose generated span is
+        // longer than its source span.
+        let rsx_path = std::path::Path::new("/app/src/main.rsx");
+        let generated_path = std::path::Path::new("/app/src/.generated/crate-root.rs");
+        let rsx_uri_owned = file_uri(rsx_path);
+        let generated_uri_owned = file_uri(generated_path);
+        let map = SourceMap::new(generated_uri_owned.clone(), vec![rsx_uri_owned.clone()])
+            .with_mapping(Mapping::new(
+                Span::new(30, 36),                                   // 6 bytes generated
+                vec![SourceSpan::new(SourceId(0), Span::new(4, 8))], // 4 bytes source
+                MappingKind::Expression,
+            ));
+        workspace.registry = outou_sourcemap::Registry::new().with_map(map);
+
+        let mapped =
+            rsx_position_to_generated(&workspace, &rsx_uri, lsp_types::Position::new(0, 5));
+        assert!(
+            mapped.is_none(),
+            "a length-mismatched mapping must not translate"
+        );
+    }
+
+    /// Same fix, reverse direction: hovering inside the generated span of
+    /// a length-mismatched mapping must report `Unmapped`, not a
+    /// proportionally-scaled (confidently wrong) source range.
+    #[test]
+    fn a_length_mismatched_mapping_maps_backward_to_unmapped() {
+        let rsx_path = std::path::Path::new("/app/src/main.rsx");
+        let generated_path = std::path::Path::new("/app/src/.generated/crate-root.rs");
+        let rsx_uri = file_uri(rsx_path);
+        let generated_uri = file_uri(generated_path);
+        let map = SourceMap::new(generated_uri.clone(), vec![rsx_uri.clone()]).with_mapping(
+            Mapping::new(
+                Span::new(30, 36),
+                vec![SourceSpan::new(SourceId(0), Span::new(4, 8))],
+                MappingKind::Expression,
+            ),
+        );
+        let registry = outou_sourcemap::Registry::new().with_map(map);
+        let mut workspace = Workspace {
+            manifest_dir: std::path::PathBuf::from("/app"),
+            plan: None,
+            registry,
+            rsx: std::collections::HashMap::new(),
+            generated: std::collections::HashMap::new(),
+            rsx_to_generated: std::collections::HashMap::new(),
+        };
+        workspace.rsx.insert(
+            rsx_uri.as_str().to_string(),
+            crate::documents::RsxDocument::new("let tag = String::new();\n".to_string(), 0),
+        );
+        let generated_text = format!("{}\"{{tag}}\"{}", "x".repeat(30), "y".repeat(10));
+        workspace.generated.insert(
+            generated_uri.as_str().to_string(),
+            crate::documents::test_generated_unit(&generated_uri, &rsx_uri, &generated_text),
+        );
+        workspace.rsx_to_generated.insert(
+            rsx_uri.as_str().to_string(),
+            generated_uri.as_str().to_string(),
+        );
+        let generated_uri_lsp = uri::to_lsp(&generated_uri);
+
+        let mapped = generated_location_to_source(
+            &workspace,
+            &generated_uri_lsp,
+            lsp_types::Range::new(
+                lsp_types::Position::new(0, 31),
+                lsp_types::Position::new(0, 32),
+            ),
+        );
+        assert!(matches!(mapped, MappedLocation::Unmapped));
     }
 
     #[test]

@@ -110,18 +110,41 @@ generated file. The target program is `examples/phase0-app`, not this
 directory's `fixture/`. Produced by `crates/outou-lsp/tests/gate3.rs`; write-up
 in [`docs/gate3-results.md`](../../../docs/gate3-results.md).
 
-| File | Command (from the repository root) |
-|---|---|
-| `gate3-hover-user.json.gz` | `node spikes/rust-analyzer/client/outou-lsp-client.mjs --root examples/phase0-app --outou-lsp target/debug/outou-lsp --probe hover-user` |
-| `gate3-definition-load-user.json.gz` | Same, `--probe definition-load-user` |
-| `gate3-definition-user-card.json.gz` | Same, `--probe definition-user-card` |
-| `gate3-completion-member.json.gz` | Same, `--probe completion-member` |
-| `gate3-completion-component.json.gz` | Same, `--probe completion-component` |
-| `gate3-completion-prop.json.gz` | Same, `--probe completion-prop` |
-| `gate3-diagnostic-type-error.json.gz` | Same, `--probe diagnostic-type-error` (writes `examples/phase0-app/src/.generated/crate-root.rs` — `crates/outou-lsp/tests/gate3.rs` restores it afterward; running the client standalone leaves the fixture with the injected type error on disk) |
-| `gate3-diagnostic-syntax-error.json.gz` | Same, `--probe diagnostic-syntax-error` |
+**Revised after a review of the original 8-probe run** (issue #9 fix list):
+`gate3-completion-component.json.gz` and `gate3-completion-prop.json.gz` are
+removed — the probes they were named for were replaced (`completion-tag-
+component`/`completion-tag-element`/`completion-prop-name` answer locally and
+never reach rust-analyzer at all; `completion-prop` was renamed
+`completion-prop-value`, same shape). Every command below now runs against a
+**fresh temporary copy** of `examples/phase0-app`
+(`crates/outou-lsp/tests/gate3.rs::fresh_copy`), not the checked-in fixture
+directly — the command shown is illustrative of what the test does per probe,
+not directly runnable standalone the way the original 8-command table was,
+since a manual invocation would need to reproduce the temp copy, the absolute
+`outou` path-dependency rewrite, and (for `save-with-syntax-error`/
+`startup-broken-source`) the pre-probe fixture mutation itself.
 
-All eight were produced by one run of `cargo test -p outou-lsp --test gate3 --
---ignored --nocapture`, which passes `--outou-lsp`/`--ra` itself (the binary
-under test and the resolved rust-analyzer binary) rather than requiring them
-on `PATH` for a manual invocation.
+| File | Probe |
+|---|---|
+| `gate3-hover-user.json.gz` | `hover-user` |
+| `gate3-hover-nonascii.json.gz` | `hover-nonascii` (M7: a non-ASCII prefix must not shift the mapped position) |
+| `gate3-hover-element-tag.json.gz` | `hover-element-tag` (M4: must never leak `dioxus_html::…`) |
+| `gate3-definition-load-user.json.gz` | `definition-load-user` |
+| `gate3-definition-user-card.json.gz` | `definition-user-card` |
+| `gate3-completion-member.json.gz` | `completion-member` |
+| `gate3-completion-tag-component.json.gz` | `completion-tag-component` (M3, answered locally) |
+| `gate3-completion-tag-element.json.gz` | `completion-tag-element` (M3, answered locally) |
+| `gate3-completion-prop-name.json.gz` | `completion-prop-name` (M3, answered locally) |
+| `gate3-completion-attr-value.json.gz` | `completion-attr-value` (M3/M4: must never return a corrupting edit) |
+| `gate3-completion-prop-value.json.gz` | `completion-prop-value` |
+| `gate3-diagnostic-type-error.json.gz` | `diagnostic-type-error` |
+| `gate3-diagnostic-syntax-error.json.gz` | `diagnostic-syntax-error` |
+| `gate3-diagnostic-missing-prop.json.gz` | `diagnostic-missing-prop` (M5: an unmapped `ERROR` must never be dropped/downgraded) |
+| `gate3-stale-diagnostics-cleared.json.gz` | `stale-diagnostics-cleared` (M6) |
+| `gate3-save-with-syntax-error.json.gz` | `save-with-syntax-error` (M1: a broken save must write nothing) |
+| `gate3-startup-broken-source.json.gz` | `startup-broken-source` (M1: startup against a broken crate root must create nothing) |
+
+All 17 were produced by one run of `cargo test -p outou-lsp --test gate3 --
+--ignored --nocapture` (finished in 52.87s with a warm, shared
+`CARGO_TARGET_DIR` outside the repository tree — see `docs/gate3-results.md`
+for why that cache exists and where it lives).

@@ -4,11 +4,26 @@ Language server for `.rsx` files (language id `outou-rsx`). Proxies
 rust-analyzer and maps positions/locations through `outou-sourcemap`'s
 `Registry` in both directions, using the exact same parser and codegen
 `outou build` uses ("there is one compiler", `AGENTS.md`) — only the mode
-differs (`Mode::Recovery`, so the rest of a half-typed file stays
-analyzable).
+differs (`Mode::Recovery` for the editor overlay; on-disk generated files
+are always written in `Mode::Strict`, the same mode `outou build` uses,
+never a Recovery placeholder).
 
-Phase 0: Week 5 (Gate 3) — **PASS**. Full write-up, evidence and known
-limitations: [`docs/gate3-results.md`](../../docs/gate3-results.md).
+Phase 0: Week 5 (Gate 3). Full write-up, evidence and known limitations:
+[`docs/gate3-results.md`](../../docs/gate3-results.md).
+
+## Two processes, not one
+
+This server does not run rust-analyzer's own analysis itself: it spawns a
+**second, separate rust-analyzer process** per workspace and proxies to
+it. An editor that also runs its own rust-analyzer for ordinary `.rs`
+files (which most do) therefore ends up with two rust-analyzer processes
+against the same crate — this server's own, and the editor's. That is the
+documented Phase 0 arrangement (issue #9's architecture note; the Week 1
+spike ran the same way), not an accident: `outou-lsp` needs full control
+over what text rust-analyzer sees for a generated file (the editor
+overlay), and driving the editor's own rust-analyzer for that would need
+a different protocol entirely (custom notifications an ordinary
+rust-analyzer does not understand).
 
 ## Running it
 
@@ -25,56 +40,135 @@ this server:
    exists, it runs in a **degraded mode** that only publishes Outou syntax
    diagnostics (no rust-analyzer is spawned).
 2. Otherwise, plans the whole crate (`outou_cli::build::plan`) and
-   generates every `.rsx` unit in `Mode::Recovery`.
-3. Writes any *missing* generated file to disk once (so Cargo's own
-   `[[bin]]`/`[lib]` target exists even before `outou build` has run; an
-   existing, possibly stale file is left alone).
+   generates every `.rsx` unit in `Mode::Recovery` for the in-memory
+   editor overlay.
+3. If any unit's generated file is missing on disk, writes **every**
+   unit once through the same transactional Strict path `outou build`
+   itself uses (`outou_cli::build::emit::emit`) — never Recovery-mode
+   placeholder text, and never written at all if Strict generation fails
+   (a real syntax error before `outou build` has ever run). An
+   already-complete set of generated files (however stale) is left
+   alone.
 4. Spawns rust-analyzer (`OUTOU_RUST_ANALYZER` env var, else the first
    `rust-analyzer` on `PATH`; the process fails fast with an
    Outou-vocabulary message if neither resolves, before ever starting the
    LSP handshake) with the same root, forwarding the editor's own
    capabilities (minus `linkSupport`, so `textDocument/definition`
-   responses are always plain `Location`s) and `initializationOptions`,
-   plus `checkOnSave: true` and `cargo.buildScripts.enable: true`.
-   `didOpen`s every generated unit's current text as rust-analyzer's
-   overlay (Strategy A, ADR 0005).
+   responses are always plain `Location`s; `general.positionEncodings`
+   is forced to `["utf-16"]` regardless of what the editor sent, and this
+   server refuses to use rust-analyzer at all if it does not agree) and
+   `initializationOptions`, plus `checkOnSave: true` and
+   `cargo.buildScripts.enable: true`. `didOpen`s every generated unit's
+   current text as rust-analyzer's overlay (Strategy A, ADR 0005).
 
-After that, `textDocument/{didOpen,didChange}` for a `.rsx` file
-regenerates only that unit (re-planning the whole crate only when the
-edited file's own set of `mod` declarations changes) and forwards a
-`didChange` to rust-analyzer for its generated file;
-`textDocument/{hover,completion,definition}` map the position to the
-generated file, forward the request, and map the response back;
-`textDocument/publishDiagnostics` from rust-analyzer is mapped back and
-merged with Outou's own syntax diagnostics; `textDocument/didSave` writes
-the current generated text to disk and forwards the save, so
-rust-analyzer's `checkOnSave` flycheck — the only mechanism that reports
-semantic (type-mismatch) errors, per the Week 1 spike — has something
-fresh to check. Everything else is forwarded to rust-analyzer
-transparently.
+After that:
+
+- `textDocument/{didOpen,didChange}` for a `.rsx` file regenerates only
+  that unit (in `Mode::Recovery`, for the overlay) and forwards a
+  `didChange` to rust-analyzer for its generated file, unless the edited
+  file's own set of `mod` declarations changed, in which case the whole
+  crate is re-planned — using every currently open buffer's own text, not
+  what is on disk, so an unsaved `mod` declaration is seen immediately —
+  and every generated unit is resynced (`didOpen` for a newly-planned
+  one, `didChange` — with a version that keeps counting up, never resets
+  — for one that already existed, `didClose` for one that no longer
+  exists).
+- `textDocument/completion` first classifies the `.rsx` cursor against
+  Outou's own parse tree (`src/complete.rs`): a JSX tag name or attribute
+  name is answered **locally**, from the plan's `#[component]` functions
+  and a static HTML element list — never forwarded to rust-analyzer,
+  which only ever sees the *expanded* Rust and cannot tell a tag-name
+  position from an ordinary identifier. Every other position (`user.`, a
+  prop *value*) is forwarded and mapped as below.
+- `textDocument/{hover,definition}` map the position to the generated
+  file, forward the request, and map the response back, sanitizing it on
+  the way (see "What gets sanitized" below).
+- `textDocument/publishDiagnostics` from rust-analyzer is mapped back,
+  merged with Outou's own syntax diagnostics, and translated out of
+  backend vocabulary; an unmapped diagnostic (synthesized code, no direct
+  `.rsx` span) is still published, at the nearest mapped position, if its
+  severity is `ERROR` — never silently dropped or downgraded.
+- `textDocument/didSave` re-plans the crate from the now-on-disk sources
+  and writes every unit through the same transactional Strict path as
+  startup, then forwards the save to rust-analyzer for the saved file's
+  generated unit, so its `checkOnSave` flycheck — the only mechanism that
+  reports semantic (type-mismatch) errors, per the Week 1 spike — runs
+  against a build that actually compiles. If Strict generation fails
+  anywhere in the plan, nothing is written and the save is not forwarded;
+  Outou's own syntax diagnostic (published by the ordinary `didChange`
+  path) already explains why.
+- `$/cancelRequest` is rewritten through this server's own pending-request
+  map before being forwarded, so it cancels the right rust-analyzer
+  request even though the editor's and this server's request-id spaces
+  are independent counters that can otherwise collide.
+
+### What is and is not forwarded to rust-analyzer
+
+Not "everything else is forwarded transparently" — several
+rust-analyzer -> client requests are answered by this server itself, and
+the ones that are forwarded get a freshly allocated id (tracked
+internally) rather than rust-analyzer's own:
+
+| Method | What happens |
+|---|---|
+| `workspace/configuration` | Answered locally: an array of `null`s, one per requested item — never a bare `null`, which is not a valid result shape for this request. |
+| `client/registerCapability` | Forwarded to the editor (under a fresh id) only if the editor's own `initialize` capabilities advertised `dynamicRegistration: true` somewhere; otherwise answered locally with `null`. |
+| `window/workDoneProgress/create` | Forwarded to the editor (under a fresh id) only if the editor advertised `window.workDoneProgress`; otherwise answered locally with `null`. |
+| `$/progress` (a notification, not a request) | **Not forwarded** — dropped. TODO(phase0): a real editor gets no readiness signal for rust-analyzer's indexing today; see the Known limitations section. |
+| Every other rust-analyzer -> client request | Answered locally with `null`. |
+| Every client -> server request/notification not named above | Forwarded to rust-analyzer verbatim (after any position mapping this document already described). |
+
+### What gets sanitized
+
+Every payload built from rust-analyzer's answer against *generated* Rust
+is sanitized before it reaches the editor, not just position-mapped
+(`AGENTS.md`: backend vocabulary in user-facing output is a Phase 0
+failure):
+
+- A diagnostic's `data` field is always cleared, never used to stash the
+  original (possibly backend-vocabulary) message.
+- `relatedInformation` locations are recursively mapped back to `.rsx`
+  coordinates (an entry with no source is dropped, not shown pointing at
+  `src/.generated/…`), and their messages translated.
+- A completion item is dropped outright if its `label`/`detail`/
+  `documentation`/`filterText` names a backend marker (an extended list:
+  `dioxus_*`, `PropsBuilder`, `VNode`, `RenderError`, `__template`,
+  `_completions`, a `^__`-prefixed or `…Props`-suffixed name, …), if it is
+  a typed-builder internal (`build`/`into`/`try_into`) exposed by a
+  `PropsBuilder` chain, or if its primary edit's mapped range does not
+  contain the request's cursor position (a wrongly-mapped edit would
+  otherwise corrupt the buffer if accepted). `documentation` is stripped
+  from every surviving item.
+- Hover contents have `::outou::__private::…`/`dioxus_*::…` path
+  prefixes stripped, and any line that still names a backend marker after
+  that is dropped; a hover with nothing left is suppressed entirely
+  rather than shown starting mid-sentence.
 
 ## Layout
 
 | File | Contents |
 |---|---|
 | `src/main.rs` | Arg parsing (`--version`), resolves the rust-analyzer binary, fails fast if it cannot be found. |
-| `src/server.rs` | The main loop: `initialize`, crate planning, rust-analyzer setup, the client/rust-analyzer select loop. |
-| `src/dispatch.rs` | Per-message handling once the handshake is done: request/response mapping, notification handling, single-unit regeneration and re-planning. |
-| `src/ra.rs` | Spawns rust-analyzer and speaks JSON-RPC to it (reuses `lsp_server::Message`'s own framing for that side too). |
-| `src/documents.rs` | In-memory state: `.rsx` documents, generated units, the registry. |
-| `src/plan.rs` | Thin wrapper over `outou_cli::build::plan` (degraded-mode detection, module-declaration-change detection). |
-| `src/mapping.rs` | Position/range translation between `.rsx` and generated Rust. |
-| `src/response.rs` | Rewrites hover/definition/completion response payloads through `mapping.rs`. |
-| `src/diagnostics.rs` | Merges Outou syntax diagnostics with mapped rust-analyzer/flycheck diagnostics. |
-| `src/translate.rs` | Backend-vocabulary translation table for diagnostic messages (`docs/backend-leakage.md` row 24). |
+| `src/server.rs` | The main loop: `initialize`, crate planning, rust-analyzer setup (capability forcing/validation), the client/rust-analyzer select loop. |
+| `src/dispatch.rs` | Per-message handling once the handshake is done: request/response mapping, cancel/epoch bookkeeping, notification handling, single-unit regeneration and re-planning. |
+| `src/complete.rs` | Outou-native tag-name/attribute-name completion, answered without ever asking rust-analyzer. |
+| `src/ra.rs` | Spawns rust-analyzer and speaks JSON-RPC to it (reuses `lsp_server::Message`'s own framing for that side too); bounded waits for its `initialize`/`shutdown` responses. |
+| `src/documents.rs` | In-memory state: `.rsx` documents, generated units, the registry, the editor-buffer planning overlay. |
+| `src/plan.rs` | Thin wrapper over `outou_cli::build::plan` (degraded-mode detection, module-declaration-change detection, the planning overlay). |
+| `src/mapping.rs` | Position/range translation between `.rsx` and generated Rust; refuses to translate a transformed (non-exact-length) mapping rather than guess. |
+| `src/response.rs` | Rewrites and sanitizes hover/definition/completion response payloads through `mapping.rs`. |
+| `src/diagnostics.rs` | Merges Outou syntax diagnostics with mapped rust-analyzer/flycheck diagnostics; never drops or downgrades an unmapped `ERROR`. |
+| `src/translate.rs` | Backend-vocabulary translation table and marker list, shared by diagnostics, completion and hover (`docs/backend-leakage.md` rows 24-26). |
 | `src/uri.rs` | Conversions between `outou_sourcemap::Uri` and `lsp_types::Uri`. |
-| `tests/gate3.rs` | End-to-end Gate 3 test, driving `spikes/rust-analyzer/client/outou-lsp-client.mjs`. Ignored by default (~2 minutes); run explicitly: `cargo test -p outou-lsp --test gate3 -- --ignored --nocapture`. |
+| `tests/gate3.rs` | End-to-end Gate 3 test, driving `spikes/rust-analyzer/client/outou-lsp-client.mjs` against a fresh temporary copy of `examples/phase0-app` per probe (never the repository tree). Ignored by default; run explicitly: `cargo test -p outou-lsp --test gate3 -- --ignored --nocapture`. |
 
 ## Known limitations
 
-See [`docs/gate3-results.md`](../../docs/gate3-results.md)'s own section:
-no `$/progress` forwarding to the editor, semantic diagnostics need a save
-(a rust-analyzer limitation, not this server's), and an unclosed
-`<Component attr` does not reach rust-analyzer as a props-builder
-completion context (a well-formed tag with a partially-typed attribute
-*value* does).
+See [`docs/gate3-results.md`](../../docs/gate3-results.md)'s own section
+for the full list with evidence. In short: no `$/progress` forwarding to
+the editor (no readiness signal beyond the answers themselves), semantic
+diagnostics need a save (a rust-analyzer limitation, not this server's),
+a transformed (non-verbatim) source mapping returns `null` rather than a
+guess, and a handful of SKIP items recorded as `TODO(phase0)` at their
+own call sites (Windows/UNC file URIs, a multi-source diagnostic always
+using the first source, `completionItem/resolve` not being advertised).

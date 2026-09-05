@@ -31,9 +31,24 @@ pub fn path_to_lsp(path: &Path) -> lsp_types::Uri {
     to_lsp(&file_uri(path))
 }
 
+/// Recovers an absolute filesystem path from an [`OutouUri`]'s string
+/// form. Used to key [`crate::documents::Workspace`]'s planning overlay
+/// (`crate::plan::resolve_with_overlay`) by real filesystem paths, the
+/// same identity `outou_modules` compares against.
+pub fn outou_uri_str_to_path(uri: &str) -> Option<PathBuf> {
+    let lsp_uri: lsp_types::Uri = uri.parse().ok()?;
+    to_path(&lsp_uri)
+}
+
 /// Recovers an absolute filesystem path from a `file://` URI, reversing
 /// [`outou_sourcemap::file_uri`]'s percent-encoding. Returns `None` for a
 /// non-`file` scheme (nothing this server would ever ask about).
+///
+/// TODO(phase0) (issue #9 Gate 3 review, LOW-16): `strip_prefix("file://")`
+/// turns a Windows drive-letter URI (`file:///C:/...`) into `/C:/...`,
+/// which is not a valid Windows path. Not reachable on the platforms
+/// Phase 0 runs on (macOS/Linux); fixing it properly needs a URL crate
+/// dependency this server does not otherwise have a reason to take.
 pub fn to_path(uri: &lsp_types::Uri) -> Option<PathBuf> {
     let text = uri.as_str();
     let rest = text.strip_prefix("file://")?;

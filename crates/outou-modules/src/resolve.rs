@@ -31,6 +31,7 @@
 //! file, and the parser (`outou-syntax`) already caps inline nesting
 //! within one file at parse time.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -68,6 +69,16 @@ struct ResolveCtx<'a> {
     crate_dir: &'a Path,
     active: Vec<ActiveFile>,
     depth: usize,
+    /// In-memory text that overrides whatever is on disk for a given
+    /// (canonicalized) path — an editor's unsaved buffer, keyed by
+    /// [`canonicalize_or_lexical`] so it lines up regardless of how the
+    /// path was spelled on the way in. Empty for the ordinary [`resolve`]
+    /// entry point; populated by [`resolve_with_overlay`] so a language
+    /// server can plan a crate the way its buffers currently read, not
+    /// the way they last were saved (issue #9 Gate 3 review, M2/HIGH-2:
+    /// planning always re-read every file from disk, so a `mod` typed
+    /// into an unsaved buffer never entered the graph at all).
+    overlay: &'a HashMap<PathBuf, String>,
 }
 
 /// Resolves the module graph starting at `root` (a `main.rs`, `main.rsx`,
@@ -78,10 +89,30 @@ struct ResolveCtx<'a> {
 /// containing `root`'s own directory (conventionally `src/`) — not to the
 /// process's current directory.
 pub fn resolve(root: &Path) -> Result<ModuleGraph, ModuleError> {
+    resolve_with_overlay(root, &HashMap::new())
+}
+
+/// Like [`resolve`], but any file whose [`canonicalize_or_lexical`]
+/// identity matches a key of `overlay` is read from there instead of
+/// disk. Every source file this resolution reads — the crate root and
+/// every `mod`-reachable descendant, `.rsx` or `.rs` — consults it, so an
+/// unsaved edit anywhere in the graph is honored, not only at the crate
+/// root.
+pub fn resolve_with_overlay(
+    root: &Path,
+    overlay: &HashMap<PathBuf, String>,
+) -> Result<ModuleGraph, ModuleError> {
     let src_dir = root.parent().unwrap_or_else(|| Path::new(""));
     let crate_dir = src_dir.parent().unwrap_or_else(|| Path::new(""));
 
-    let source = read_to_string(root, "<crate root>", root, crate_dir, Span::new(0, 0))?;
+    let source = read_source(
+        root,
+        overlay,
+        "<crate root>",
+        root,
+        crate_dir,
+        Span::new(0, 0),
+    )?;
     let parsed = outou_syntax::parse(&source);
     let kind = source_kind_from_extension(root);
 
@@ -92,6 +123,7 @@ pub fn resolve(root: &Path) -> Result<ModuleGraph, ModuleError> {
             lexical: root.to_path_buf(),
         }],
         depth: 1,
+        overlay,
     };
     let scope = DirScope::root(src_dir);
     let children = resolve_items(&parsed.file.items, root, &scope, &[], &[], &mut ctx)?;
@@ -242,7 +274,14 @@ fn resolve_items(
         }
 
         let kind = source_kind_from_extension(&target);
-        let contents = read_to_string(&target, &name, current_file, ctx.crate_dir, span)?;
+        let contents = read_source(
+            &target,
+            ctx.overlay,
+            &name,
+            current_file,
+            ctx.crate_dir,
+            span,
+        )?;
         let parsed = outou_syntax::parse(&contents);
         let child_scope = DirScope::child_of_file(&target, &unraw_name, is_mod_rs_style);
 
@@ -279,6 +318,25 @@ fn resolve_items(
     }
 
     Ok(nodes)
+}
+
+/// Reads `path`'s contents, preferring `overlay`'s entry for it (matched
+/// by [`canonicalize_or_lexical`] identity, falling back to a raw lexical
+/// match for a path `canonicalize` cannot resolve) over the filesystem.
+/// See [`resolve_with_overlay`].
+fn read_source(
+    path: &Path,
+    overlay: &HashMap<PathBuf, String>,
+    module_name: &str,
+    declared_in: &Path,
+    crate_dir: &Path,
+    span: Span,
+) -> Result<String, ModuleError> {
+    let canonical = canonicalize_or_lexical(path);
+    if let Some(text) = overlay.get(&canonical).or_else(|| overlay.get(path)) {
+        return Ok(text.clone());
+    }
+    read_to_string(path, module_name, declared_in, crate_dir, span)
 }
 
 /// Reads `path`'s contents, translating an I/O failure into a
@@ -331,6 +389,35 @@ mod tests {
         assert_eq!(
             relative_to(Path::new("/x/y.rs"), Path::new("/a/b")),
             PathBuf::from("/x/y.rs")
+        );
+    }
+
+    /// M2 (issue #9 Gate 3 review, HIGH-2): a `mod` declaration typed into
+    /// an unsaved buffer must enter the graph even though the file on
+    /// disk does not have it yet.
+    #[test]
+    fn resolve_with_overlay_sees_a_mod_declaration_only_present_in_the_overlay() {
+        let tmp = TempDir::new("resolve-overlay");
+        let src = tmp.path().join("src");
+        fs::create_dir_all(&src).expect("creating src dir");
+        fs::write(src.join("main.rs"), "fn main() {}\n").expect("writing crate root");
+        fs::write(src.join("newmod.rs"), "pub fn f() {}\n").expect("writing the new module file");
+
+        let root = src.join("main.rs");
+        let overlay_text = "mod newmod;\nfn main() {}\n";
+        let mut overlay = std::collections::HashMap::new();
+        overlay.insert(root.clone(), overlay_text.to_string());
+
+        // Without the overlay, the disk text (no `mod newmod;`) is what
+        // gets resolved.
+        let without_overlay = resolve(&root).expect("resolves");
+        assert!(without_overlay.root.children.is_empty());
+
+        let with_overlay = resolve_with_overlay(&root, &overlay).expect("resolves with overlay");
+        assert_eq!(with_overlay.root.children.len(), 1);
+        assert_eq!(
+            with_overlay.root.children[0].path,
+            vec!["newmod".to_string()]
         );
     }
 

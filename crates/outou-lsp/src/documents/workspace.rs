@@ -1,99 +1,21 @@
-//! In-memory state: every `.rsx` document this server knows about and the
-//! generated Rust unit overlaid onto rust-analyzer for it.
-//!
-//! There is one [`Workspace`] per `initialize`d root. It owns the plan
-//! (`crate::plan`), the [`Registry`] every position/location mapping goes
-//! through, and generates every unit in [`Mode::Recovery`] — never
-//! [`Mode::Strict`]: the language server must keep working while the file
-//! is half-typed, which is exactly what recovery mode is for.
+//! [`Workspace`]: the plan (`crate::plan`), the [`Registry`] every
+//! position/location mapping goes through, and every unit
+//! ([`super::GeneratedUnit`]/[`super::RsxDocument`]), generated in
+//! [`Mode::Recovery`] — never [`Mode::Strict`]: the language server must
+//! keep working while the file is half-typed, which is exactly what
+//! recovery mode is for.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
 use outou_cli::build::emit::generate_unit;
 use outou_codegen::Mode;
-use outou_sourcemap::{LineIndex, Registry, Uri as OutouUri};
-use outou_syntax::Diagnostic as SyntaxDiagnostic;
+use outou_sourcemap::{LineIndex, Registry};
 
+use super::units::{GeneratedUnit, RsxDocument};
 use crate::plan::{self, Plan, PlannedUnit, Resolved};
-
-/// One `.rsx` source file, whether or not the editor currently has it
-/// open. Every planned unit's source is loaded from disk at startup so
-/// cross-file definition into a file the editor has not opened yet still
-/// has a [`LineIndex`] to map through.
-pub struct RsxDocument {
-    /// Byte offset <-> LSP position conversion, and the current text
-    /// itself ([`LineIndex::text`]) — kept as a single copy rather than
-    /// duplicated alongside it.
-    pub line_index: LineIndex,
-    /// LSP document version; `0` for a file only read from disk.
-    pub version: i32,
-    /// The last `outou_syntax::parse` diagnostics for this text.
-    pub diagnostics: Vec<SyntaxDiagnostic>,
-}
-
-impl RsxDocument {
-    pub(crate) fn new(text: String, version: i32) -> Self {
-        let line_index = LineIndex::new(&text);
-        let diagnostics = outou_syntax::parse(&text).diagnostics;
-        Self {
-            line_index,
-            version,
-            diagnostics,
-        }
-    }
-}
-
-/// One generated Rust file currently overlaid onto rust-analyzer.
-pub struct GeneratedUnit {
-    /// The plan's own record for this unit (paths, `module_paths`).
-    pub planned: PlannedUnit,
-    /// URI of the generated file, as sent to rust-analyzer.
-    pub generated_uri: OutouUri,
-    /// URI of the `.rsx` source this unit was generated from.
-    pub rsx_uri: OutouUri,
-    /// Current generated text.
-    pub text: String,
-    /// Byte offset <-> LSP position conversion for [`GeneratedUnit::text`].
-    pub line_index: LineIndex,
-    /// The `textDocument/didOpen`/`didChange` version last sent to
-    /// rust-analyzer for this file.
-    pub ra_version: i32,
-    /// Raw (generated-position) diagnostics rust-analyzer last published
-    /// for this file, kept so a `.rsx` edit can republish merged
-    /// diagnostics without waiting on a fresh rust-analyzer round trip.
-    pub last_ra_diagnostics: Vec<lsp_types::Diagnostic>,
-    /// Module names declared directly in this unit's own `.rsx` text, at
-    /// the time it was last (re)planned — see
-    /// [`crate::plan::declared_module_names`].
-    declared_modules: BTreeSet<String>,
-}
-
-#[cfg(test)]
-pub(crate) fn test_generated_unit(
-    generated_uri: &OutouUri,
-    rsx_uri: &OutouUri,
-    text: &str,
-) -> GeneratedUnit {
-    GeneratedUnit {
-        planned: PlannedUnit {
-            module_path: Vec::new(),
-            source_file: PathBuf::new(),
-            generated_file: PathBuf::new(),
-            map_file: PathBuf::new(),
-            module_paths: Default::default(),
-            inline_base_dirs: Vec::new(),
-        },
-        generated_uri: generated_uri.clone(),
-        rsx_uri: rsx_uri.clone(),
-        text: text.to_string(),
-        line_index: LineIndex::new(text),
-        ra_version: 0,
-        last_ra_diagnostics: Vec::new(),
-        declared_modules: BTreeSet::new(),
-    }
-}
+use crate::uri;
 
 /// Everything this server knows about one crate root.
 pub struct Workspace {
@@ -183,7 +105,7 @@ impl Workspace {
 
         let rsx_uri = outou_sourcemap::file_uri(&unit.source_file);
         let generated_uri = outou_sourcemap::file_uri(&unit.generated_file);
-        let declared_modules = plan::declared_module_names(&outou_syntax::parse(&source).file);
+        let declared_modules = plan::declared_modules(&outou_syntax::parse(&source).file);
 
         let line_index = LineIndex::new(&generated.rust);
         self.rsx
@@ -210,7 +132,7 @@ impl Workspace {
     }
 
     /// Whether editing `rsx_uri` with `new_text` changes the declared
-    /// module set of its own unit (see [`plan::declared_module_names`]).
+    /// module set of its own unit (see [`plan::declared_modules`]).
     /// `false` when `rsx_uri` is not a known unit at all (nothing to
     /// compare against; treated conservatively as "no shape change" so
     /// the caller falls back to single-unit regeneration).
@@ -221,25 +143,33 @@ impl Workspace {
         let Some(unit) = self.generated.get(generated_uri) else {
             return false;
         };
-        let new_modules = plan::declared_module_names(&outou_syntax::parse(new_text).file);
+        let new_modules = plan::declared_modules(&outou_syntax::parse(new_text).file);
         new_modules != unit.declared_modules
     }
 
-    /// Re-resolves the crate root and regenerates every unit from disk
-    /// text, except that `rsx_uri`'s own unit uses `override_text` instead
-    /// (the editor's in-memory buffer, which may not be saved yet).
+    /// Re-resolves the crate root and regenerates every unit, preferring
+    /// each currently open document's own in-memory buffer over its
+    /// contents on disk (issue #9 Gate 3 review, M2/HIGH-2): planning
+    /// used to always re-read every file from disk, so a `mod`
+    /// declaration typed into an unsaved buffer never entered the module
+    /// graph at all, and saving then wrote a generated root with the new
+    /// `mod` line but no matching `#[path]` — non-compiling Rust. See
+    /// [`Self::build_overlay`] for exactly which buffers are used.
+    ///
+    /// TODO(phase0): if [`Self::load_unit`]/[`Self::load_unit_with_text`]
+    /// fails for one unit *after* `self.generated`/`self.rsx` have
+    /// already been cleared below, this returns `Err` with the workspace
+    /// left emptied rather than restored to its pre-`replan` state. Not
+    /// reachable by any known input in Phase 0 ([`Mode::Recovery`] does
+    /// not reject syntax errors, so this can only fire for
+    /// [`LoadError::ReadSource`]/[`LoadError::Emit`] on a still-unsupported
+    /// construct) and out of scope for issue #9's M2 fix; a fully
+    /// transactional re-plan (compute the new state, then swap it in only
+    /// on success) is the eventual fix.
     pub fn replan(&mut self, rsx_uri: &str, override_text: &str) -> Result<(), LoadError> {
-        let root_source = self
-            .generated
-            .get(
-                self.rsx_to_generated
-                    .get(rsx_uri)
-                    .map(String::as_str)
-                    .unwrap_or(""),
-            )
-            .map(|u| u.planned.source_file.clone());
+        let overlay = self.build_overlay(rsx_uri, override_text);
 
-        match plan::resolve(&self.manifest_dir)? {
+        match plan::resolve_with_overlay(&self.manifest_dir, &overlay)? {
             Resolved::Degraded { .. } => {
                 // The edit made the crate root itself disappear (or
                 // ambiguous); there is nothing left to plan. Keep the
@@ -256,10 +186,9 @@ impl Workspace {
                     .map(|(uri, doc)| (uri, doc.version))
                     .collect();
                 for unit in &plan.units {
-                    if root_source.as_deref() == Some(unit.source_file.as_path()) {
-                        self.load_unit_with_text(unit, override_text)?;
-                    } else {
-                        self.load_unit(unit)?;
+                    match overlay_text_for(&overlay, &unit.source_file) {
+                        Some(text) => self.load_unit_with_text(unit, text)?,
+                        None => self.load_unit(unit)?,
                     }
                 }
                 for (uri, doc) in self.rsx.iter_mut() {
@@ -272,11 +201,45 @@ impl Workspace {
         }
     }
 
+    /// Builds the buffer overlay a re-plan should use: every currently
+    /// *open* `.rsx` document's text (`RsxDocument::version != 0` — see
+    /// that field's own doc comment: `0` means "read from disk, never
+    /// opened"), plus `rsx_uri`'s own `override_text`, which is not yet
+    /// reflected in `self.rsx` at the point [`Self::replan`] is called
+    /// (the caller passes the edit's new text before storing it). Keys
+    /// are canonicalized where possible so they line up with
+    /// `outou_modules::resolve_with_overlay`'s own lookup identity.
+    /// TODO(phase0) (issue #9 Gate 3 review, HIGH-2's SKIP item): only
+    /// currently *open* documents (`RsxDocument::version != 0`) are
+    /// overlaid; a file edited by some other tool while this server is
+    /// running, without ever being opened in this editor session, is
+    /// still read from disk. A full workspace virtual-filesystem
+    /// abstraction (watching every `.rsx` file for external changes, not
+    /// only editor buffers) is out of scope for Phase 0's LSP feasibility
+    /// question.
+    fn build_overlay(&self, rsx_uri: &str, override_text: &str) -> HashMap<PathBuf, String> {
+        let mut overlay = HashMap::new();
+        for (doc_uri, doc) in &self.rsx {
+            if doc.version != 0 {
+                if let Some(path) = uri::outou_uri_str_to_path(doc_uri) {
+                    overlay.insert(
+                        canonical_or_lexical(&path),
+                        doc.line_index.text().to_string(),
+                    );
+                }
+            }
+        }
+        if let Some(path) = uri::outou_uri_str_to_path(rsx_uri) {
+            overlay.insert(canonical_or_lexical(&path), override_text.to_string());
+        }
+        overlay
+    }
+
     fn load_unit_with_text(&mut self, unit: &PlannedUnit, text: &str) -> Result<(), LoadError> {
         let generated = generate_unit(unit, text, Mode::Recovery)?;
         let rsx_uri = outou_sourcemap::file_uri(&unit.source_file);
         let generated_uri = outou_sourcemap::file_uri(&unit.generated_file);
-        let declared_modules = plan::declared_module_names(&outou_syntax::parse(text).file);
+        let declared_modules = plan::declared_modules(&outou_syntax::parse(text).file);
 
         self.rsx.insert(
             rsx_uri.as_str().to_string(),
@@ -325,7 +288,7 @@ impl Workspace {
         };
 
         let generated = generate_unit(&planned, new_text, Mode::Recovery)?;
-        let declared_modules = plan::declared_module_names(&outou_syntax::parse(new_text).file);
+        let declared_modules = plan::declared_modules(&outou_syntax::parse(new_text).file);
 
         self.rsx.insert(
             rsx_uri.to_string(),
@@ -335,108 +298,42 @@ impl Workspace {
             unit.text = generated.rust.clone();
             unit.line_index = LineIndex::new(&generated.rust);
             unit.declared_modules = declared_modules;
+            // The diagnostics rust-analyzer last published were for the
+            // *previous* generated text; keeping them around republished
+            // stale rustc errors for lines the current buffer no longer
+            // has (issue #9 Gate 3 review, M6/HIGH-4, confirmed live: a
+            // fixed type error kept re-publishing the same five stale
+            // diagnostics for 3+ seconds after the buffer was corrected,
+            // clearing only on an unrelated `mod` edit). A fresh
+            // `publishDiagnostics` from rust-analyzer for the new text
+            // will repopulate this; until then, none is more honest than
+            // stale.
+            unit.last_ra_diagnostics = Vec::new();
         }
         self.registry = std::mem::take(&mut self.registry).with_map(generated.source_map);
         Ok(Some(generated_uri))
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::path::Path;
-    use std::time::Instant;
-
-    /// Gate 3's fixed target program (`docs/phase0.md`, issue #9): a real,
-    /// multi-file `.rsx` crate, not a synthetic fixture, so these tests
-    /// exercise the same planner/codegen path the gate3 integration test
-    /// (`tests/gate3.rs`) drives through the real LSP protocol.
-    fn phase0_app_dir() -> std::path::PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../examples/phase0-app")
-            .canonicalize()
-            .expect("examples/phase0-app exists")
-    }
-
-    #[test]
-    fn loads_every_unit_of_the_gate3_fixture() {
-        let outcome = Workspace::load(&phase0_app_dir()).expect("plans and generates");
-        let LoadOutcome::Planned(workspace) = outcome else {
-            panic!("examples/phase0-app has a `.rsx` crate root");
-        };
-        // `main.rsx` (crate root) and `components.rsx`.
-        assert_eq!(workspace.generated.len(), 2);
-        assert_eq!(workspace.rsx.len(), 2);
-    }
-
-    /// A single-file edit regenerates only that unit — issue #9's
-    /// performance budget item ("a single-file edit never regenerates the
-    /// whole crate") and the architecture note's own requirement.
-    /// `components.rsx`'s generated text (and declared-module set) must be
-    /// byte-identical before and after editing `main.rsx`.
-    #[test]
-    fn regenerating_one_unit_does_not_touch_another() {
-        let outcome = Workspace::load(&phase0_app_dir()).expect("plans and generates");
-        let LoadOutcome::Planned(mut workspace) = outcome else {
-            panic!("examples/phase0-app has a `.rsx` crate root");
-        };
-        let main_rsx_uri = workspace
-            .rsx
-            .keys()
-            .find(|uri| uri.ends_with("main.rsx"))
-            .expect("main.rsx is a known unit")
-            .clone();
-        let components_generated_uri = workspace
-            .generated
-            .keys()
-            .find(|uri| uri.ends_with("components.rs"))
-            .expect("components.rs is a known unit")
-            .clone();
-        let components_text_before = workspace.generated[&components_generated_uri].text.clone();
-
-        let new_main_text = workspace.rsx[&main_rsx_uri].line_index.text().to_string()
-            + "\n// a trailing comment\n";
-        workspace
-            .regenerate(&main_rsx_uri, &new_main_text, 2)
-            .expect("regenerating a syntactically valid edit succeeds");
-
-        assert_eq!(
-            workspace.generated[&components_generated_uri].text, components_text_before,
-            "editing main.rsx must not change components.rs's generated text"
-        );
-    }
-
-    /// Perf smoke test for issue #9's budget ("incremental `.rsx` ->
-    /// generated Rust: perceived as instantaneous"): regenerating one
-    /// small-to-medium real unit is a single `outou_syntax::parse` +
-    /// `DioxusBackend::generate` call (`outou_cli::build::emit::generate_unit`),
-    /// the same primitive `outou build` uses per file — no LSP-specific
-    /// overhead beyond that. 50ms is a generous bound (typical runs are
-    /// well under 1ms for a file this size); this exists to catch a
-    /// catastrophic regression, not to pin an exact number.
-    #[test]
-    fn regenerating_one_unit_is_fast() {
-        let outcome = Workspace::load(&phase0_app_dir()).expect("plans and generates");
-        let LoadOutcome::Planned(mut workspace) = outcome else {
-            panic!("examples/phase0-app has a `.rsx` crate root");
-        };
-        let main_rsx_uri = workspace
-            .rsx
-            .keys()
-            .find(|uri| uri.ends_with("main.rsx"))
-            .expect("main.rsx is a known unit")
-            .clone();
-        let text = workspace.rsx[&main_rsx_uri].line_index.text().to_string();
-
-        let start = Instant::now();
-        workspace
-            .regenerate(&main_rsx_uri, &text, 2)
-            .expect("regenerating succeeds");
-        let elapsed = start.elapsed();
-
-        assert!(
-            elapsed.as_millis() < 50,
-            "regenerating one unit took {elapsed:?}, expected well under 50ms"
-        );
-    }
+/// Canonicalizes `path` for overlay-key identity, falling back to the
+/// lexical path unchanged when canonicalization fails (mirrors
+/// `outou_modules::resolve`'s own `canonicalize_or_lexical`, which this
+/// must agree with for a planning overlay entry to actually be found).
+fn canonical_or_lexical(path: &std::path::Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
+
+/// Looks up `source_file` in `overlay`, trying its canonical identity
+/// first and falling back to a raw lexical match.
+fn overlay_text_for<'a>(
+    overlay: &'a HashMap<PathBuf, String>,
+    source_file: &std::path::Path,
+) -> Option<&'a str> {
+    overlay
+        .get(&canonical_or_lexical(source_file))
+        .or_else(|| overlay.get(source_file))
+        .map(String::as_str)
+}
+
+#[cfg(test)]
+mod tests;

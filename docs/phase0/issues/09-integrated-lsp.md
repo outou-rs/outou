@@ -16,26 +16,30 @@ labels: [phase0, gate-3, must-keep]
 Connect the real parser and codegen to the Week 1 pipeline.
 
 - [x] `didOpen` / `didChange` → regenerate (recovery mode) → overlay to rust-analyzer; single-file edits never regenerate the whole crate
-- [x] completion, hover, definition forwarded with positions mapped both ways through the registry
-- [x] rust-analyzer and flycheck diagnostics mapped back to `.rsx`; Outou syntax diagnostics published alongside
-- [x] completion keeps working while typing (`<UserCard us`, `<div class=`, `user.`) — see `docs/gate3-results.md` for the exact shape each probe used and why a bare unclosed `<UserCard us` does not reach rust-analyzer as a props-builder context (recorded as a known limitation, not a Phase 0 STOP)
+- [x] completion, hover, definition forwarded with positions mapped both ways through the registry — **except** a JSX tag-name or attribute-name position, which is answered locally from Outou's own parse tree (`crates/outou-lsp/src/complete.rs`) and never forwarded at all: rust-analyzer only ever sees the *expanded* Rust, where that distinction does not exist (see `docs/gate3-results.md`, M3)
+- [x] rust-analyzer and flycheck diagnostics mapped back to `.rsx`; Outou syntax diagnostics published alongside; an `ERROR`-severity diagnostic with no direct source span is still published, at the nearest mapped position, never dropped or downgraded
+- [x] completion keeps working while typing (`<UserC`, `<UserCard us`, `<div class=`, `user.`) — see `docs/gate3-results.md` for the exact shape each probe used. A first review of this gate found the original "PASS" evidence had not actually verified several of these shapes correctly (a tag-name position reached rust-analyzer as generic Rust-identifier completion; an attribute-value position returned a wrongly-positioned edit that would corrupt the buffer); both are now fixed and re-verified, not merely re-documented — see `docs/gate3-results.md`'s corrected write-up.
 - [x] definition across several `.rsx` files
 - [x] latency measured against the budget in `docs/phase0.md`
+- [x] every payload reaching the editor verified free of backend vocabulary (`docs/gate3-results.md`'s `assert_no_leakage`, applied recursively to every probe's full result — the first review found two live leaks, hover and completion, that the original evidence collection had not been checking for at all)
 
-**Gate 3: PASS.** Through the real parser, completion / hover / definition / diagnostics all work for `let user = load_user(); <UserCard user={user} />`, including cross-file definition and completion under incomplete input. Full writeup, evidence files and known limitations: [`docs/gate3-results.md`](../../gate3-results.md).
+**Gate 3: PASS**, re-verified after a review found the original sign-off premature (see `docs/gate3-results.md`'s own note at the top). Through the real parser, completion / hover / definition / diagnostics all work for `let user = load_user(); <UserCard user={user} />`, including cross-file definition and completion under incomplete input. Full writeup, evidence files and known limitations: [`docs/gate3-results.md`](../../gate3-results.md).
 
-### Latency (from `docs/gate3-results.md`, two runs)
+### Latency (from `docs/gate3-results.md`, one honest run — see that document for why the previous "two runs" table is not reproducible from its own retained evidence)
 
-| Request | Run 1 (ms) | Run 2 (ms) |
-|---|---|---|
-| hover (`user`) | 562 | 560 |
-| definition (same file) | 529 | 540 |
-| definition (cross-file) | 526 | 502 |
-| completion (member) | 622 | 595 |
-| completion (component) | 644 | 593 |
-| completion (prop value) | 642 | 631 |
-| `didSave` → type-mismatch diagnostic | 6003 | 6005 |
-| `didChange` → Outou syntax diagnostic | 1504 | 1502 |
+| Request | ms |
+|---|---|
+| hover (`user`) | 4594 |
+| definition (same file) | 808 |
+| definition (cross-file) | 4031 |
+| completion (member) | 4118 |
+| completion (tag name, component) | 3 (answered locally; never forwarded) |
+| completion (attribute name) | 2 (answered locally; never forwarded) |
+| completion (prop value) | 4205 |
+| `didSave` → type-mismatch diagnostic | 4262 |
+| `didChange` → Outou syntax diagnostic | 102 |
+
+These are real elapsed times to a *correct* answer (this pass's test client retries until the answer is useful, not merely non-`null`), not sleep durations and not the first-answer-however-wrong figures the previous revision reported — see `docs/gate3-results.md`'s "Measured latency" section for the full comparison.
 
 ### Implementation notes
 
@@ -57,15 +61,35 @@ Connect the real parser and codegen to the Week 1 pipeline.
 - Semantic (type-mismatch) diagnostics need `textDocument/didSave`, not
   just `didChange`: rust-analyzer's native diagnostics never report them
   (Week 1 spike finding), only flycheck does, and flycheck reads the file
-  from disk. `outou-lsp` therefore writes the current generated text to
-  disk on save and forwards the save to rust-analyzer
-  (`crate::dispatch::handle_rsx_save`).
+  from disk. `outou-lsp` therefore re-plans and writes generated Rust to
+  disk on save — through the same transactional Strict path `outou build`
+  itself uses (`outou_cli::build::emit::emit`), never Recovery-mode
+  placeholder text — and forwards the save to rust-analyzer
+  (`crate::dispatch::handle_rsx_save`). Startup does the same for any
+  *missing* generated file.
 - `outou-lsp` strips `linkSupport` from the capabilities it forwards to
   rust-analyzer, so `textDocument/definition` responses are always plain
   `Location`/`Location[]`, never `LocationLink[]` — a deliberate
   simplification of the response-mapping code, not a capability the editor
   loses (an editor without `linkSupport` gets the same information from
-  plain locations).
+  plain locations). It also forces `general.positionEncodings:
+  ["utf-16"]` and refuses to use rust-analyzer at all if it answers
+  otherwise, rather than trust whatever the editor and rust-analyzer
+  happen to negotiate between themselves.
 - `outou-cli::build::plan`/`emit::generate_unit` are reused directly rather
   than duplicated ("there is one compiler"): `outou-lsp` depends on
-  `outou-cli`'s library, not just its binary.
+  `outou-cli`'s library, not just its binary. Planning now also accepts an
+  in-memory overlay (`outou_modules::resolve_with_overlay`) so a `mod`
+  typed into an unsaved buffer enters the graph immediately, not only
+  after a save.
+- A JSX tag-name or attribute-name completion position is answered from
+  Outou's own parse tree (`crates/outou-lsp/src/complete.rs`) rather than
+  ever being forwarded to rust-analyzer: rust-analyzer only ever sees the
+  *expanded* Rust, where a tag name and an ordinary struct-literal
+  identifier are indistinguishable, so no amount of response mapping can
+  make that position answer correctly. Every other payload rust-analyzer
+  does answer is sanitized before reaching the editor
+  (`crate::response`, `crate::translate`) — diagnostic `data` cleared,
+  `relatedInformation` reverse-mapped, completion items filtered by
+  marker and by whether their edit range actually contains the cursor,
+  hover contents stripped of backend path prefixes.

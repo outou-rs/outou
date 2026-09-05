@@ -9,10 +9,12 @@
 //! module graph's shape (in which case the whole crate must be re-planned)
 //! or not (in which case only that one unit needs regenerating).
 
-use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use outou_cli::build::plan::{canonical_manifest_dir, find_crate_root, plan, CrateRoot, PlanError};
+use outou_cli::build::plan::{
+    canonical_manifest_dir, find_crate_root, plan_with_overlay, CrateRoot, PlanError,
+};
 pub use outou_cli::build::plan::{Plan, PlannedUnit};
 use outou_syntax::ast;
 
@@ -38,8 +40,22 @@ pub enum Resolved {
     },
 }
 
-/// Resolves the crate at `manifest_dir`, per [`Resolved`].
+/// Resolves the crate at `manifest_dir`, per [`Resolved`], reading every
+/// file from disk.
 pub fn resolve(manifest_dir: &Path) -> Result<Resolved, PlanError> {
+    resolve_with_overlay(manifest_dir, &HashMap::new())
+}
+
+/// Like [`resolve`], but any file whose canonicalized path matches a key
+/// of `overlay` is planned using that text instead of its contents on
+/// disk (issue #9 Gate 3 review, M2/HIGH-2): `outou_cli::build::plan`
+/// itself has no notion of an editor's unsaved buffers, so this is where
+/// the language server's own state (`crate::documents::Workspace`)
+/// injects it.
+pub fn resolve_with_overlay(
+    manifest_dir: &Path,
+    overlay: &HashMap<PathBuf, String>,
+) -> Result<Resolved, PlanError> {
     let canonical = match canonical_manifest_dir(manifest_dir) {
         Ok(dir) => dir,
         Err(_) => {
@@ -56,35 +72,79 @@ pub fn resolve(manifest_dir: &Path) -> Result<Resolved, PlanError> {
         }
         CrateRoot::Rsx(root) => root,
     };
-    let planned = plan(&canonical, &root)?;
+    let planned = plan_with_overlay(&canonical, &root, overlay)?;
     Ok(Resolved::Planned {
         manifest_dir: canonical,
         plan: planned,
     })
 }
 
-/// Every module name declared anywhere in `file`, at any nesting depth,
-/// inline or file-based. Used to detect whether an edit changed the set of
-/// modules a unit declares (issue #9 architecture note: "re-plan only when
-/// a `mod` declaration set changes"). This is deliberately coarser than
-/// "only file-based declarations change the module graph's shape" — an
-/// edit to a purely inline module's name also triggers a re-plan under
-/// this rule — because it can never miss a graph-shape change, only
-/// over-trigger a full re-plan, which is always safe, just not maximally
-/// incremental.
-pub fn declared_module_names(file: &ast::File) -> BTreeSet<String> {
-    let mut names = BTreeSet::new();
-    collect_from_items(&file.items, &mut names);
-    names
+/// One `mod` declaration's shape, for detecting whether an edit changed
+/// the module graph rather than only the identifiers it happens to use
+/// (issue #9 Gate 3 review, M2: comparing only a `BTreeSet<String>` of
+/// names missed a `#[path]` target changing, or a declaration moving from
+/// file-based to inline, while the name stayed the same — either of which
+/// changes what `outou_modules::resolve` produces just as much as adding
+/// or removing a `mod` does).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModuleDescriptor {
+    /// The declared name (`mod NAME;` / `mod NAME { … }`).
+    pub name: String,
+    /// The explicit `#[path = "…"]` target, if any.
+    pub path_attr: Option<String>,
+    /// Whether this is an inline module (`mod name { … }`) rather than a
+    /// file-based one (`mod name;`).
+    pub is_inline: bool,
 }
 
-fn collect_from_items(items: &[ast::Item], names: &mut BTreeSet<String>) {
+/// Every module declared anywhere in `file`, at any nesting depth, inline
+/// or file-based, **in source order** (so two declarations that swap
+/// order, or a duplicate declaration, are also detected as a change).
+/// Used by [`crate::documents::Workspace::module_shape_changed`] to
+/// decide whether an edit requires a full re-plan.
+pub fn declared_modules(file: &ast::File) -> Vec<ModuleDescriptor> {
+    let mut out = Vec::new();
+    collect_declared_modules(&file.items, &mut out);
+    out
+}
+
+fn collect_declared_modules(items: &[ast::Item], out: &mut Vec<ModuleDescriptor>) {
     for item in items {
         if let ast::Item::Module(module) = item {
-            names.insert(module.name.name.clone());
+            out.push(ModuleDescriptor {
+                name: module.name.name.clone(),
+                path_attr: module.path.clone(),
+                is_inline: module.items.is_some(),
+            });
             if let Some(inner) = &module.items {
-                collect_from_items(inner, names);
+                collect_declared_modules(inner, out);
             }
+        }
+    }
+}
+
+/// Every `#[component]` function declared anywhere in `file`, at any
+/// nesting depth (top level or inside an inline module). Used by
+/// [`crate::complete`] to answer tag-name completion locally, without ever
+/// asking rust-analyzer: a `.rsx` position is either a tag name or it is
+/// not, and rust-analyzer only ever sees the *expanded* Rust, where that
+/// distinction has already been lost.
+pub fn component_functions(file: &ast::File) -> Vec<&ast::Function> {
+    let mut out = Vec::new();
+    collect_component_functions(&file.items, &mut out);
+    out
+}
+
+fn collect_component_functions<'a>(items: &'a [ast::Item], out: &mut Vec<&'a ast::Function>) {
+    for item in items {
+        match item {
+            ast::Item::Function(function) if function.is_component => out.push(function),
+            ast::Item::Module(module) => {
+                if let Some(inner) = &module.items {
+                    collect_component_functions(inner, out);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -94,18 +154,58 @@ mod tests {
     use super::*;
 
     #[test]
-    fn collects_file_based_and_inline_module_names() {
+    fn collects_file_based_and_inline_module_descriptors_in_source_order() {
         let parsed = outou_syntax::parse("mod a; mod b { mod c; }");
-        let names = declared_module_names(&parsed.file);
-        assert_eq!(
-            names,
-            ["a", "b", "c"].into_iter().map(String::from).collect()
+        let descriptors = declared_modules(&parsed.file);
+        let names: Vec<&str> = descriptors.iter().map(|d| d.name.as_str()).collect();
+        assert_eq!(names, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn a_file_with_no_modules_has_no_declarations() {
+        let parsed = outou_syntax::parse("fn f() {}");
+        assert!(declared_modules(&parsed.file).is_empty());
+    }
+
+    /// M2: a `#[path]` target change (same name) must compare unequal — a
+    /// `BTreeSet<String>` of names alone would have missed this.
+    #[test]
+    fn a_changed_path_attribute_is_a_different_descriptor() {
+        let before = outou_syntax::parse("#[path = \"a.rs\"] mod m;");
+        let after = outou_syntax::parse("#[path = \"b.rs\"] mod m;");
+        assert_ne!(
+            declared_modules(&before.file),
+            declared_modules(&after.file)
+        );
+    }
+
+    /// Moving a declaration from file-based to inline (same name) must
+    /// also compare unequal.
+    #[test]
+    fn switching_between_inline_and_file_based_is_a_different_descriptor() {
+        let file_based = outou_syntax::parse("mod m;");
+        let inline = outou_syntax::parse("mod m {}");
+        assert_ne!(
+            declared_modules(&file_based.file),
+            declared_modules(&inline.file)
         );
     }
 
     #[test]
-    fn a_file_with_no_modules_has_an_empty_set() {
-        let parsed = outou_syntax::parse("fn f() {}");
-        assert!(declared_module_names(&parsed.file).is_empty());
+    fn component_functions_finds_top_level_and_inline_components_only() {
+        let parsed = outou_syntax::parse(
+            "fn plain() {}\n\
+             #[component]\n\
+             fn Greeting(name: String) -> Element { <h1>{name}</h1> }\n\
+             mod nested {\n\
+                 #[component]\n\
+                 fn Inner() -> Element { <p>hi</p> }\n\
+             }",
+        );
+        let names: Vec<&str> = component_functions(&parsed.file)
+            .iter()
+            .map(|f| f.name.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["Greeting", "Inner"]);
     }
 }

@@ -10,9 +10,16 @@
 //! doc comment for why it is a separate script rather than a `ra-client.mjs`
 //! flag).
 //!
+//! Every probe runs against a **fresh temporary copy** of
+//! `examples/phase0-app`, never the repository tree itself (issue #9 Gate
+//! 3 review, M8(i)): several probes deliberately save broken content or
+//! pre-corrupt the source before startup, and the repository's own
+//! `examples/phase0-app` must never be left in that state, not even
+//! transiently, regardless of how the test run ends.
+//!
 //! Ignored by default: the full run spawns `outou-lsp` (which itself
-//! spawns rust-analyzer) eight times, each waiting out an indexing
-//! settle window, well over the ~60s the repository's other tests expect
+//! spawns rust-analyzer) once per probe, each waiting out rust-analyzer's
+//! own indexing, well over the ~60s the repository's other tests expect
 //! to finish in. Run explicitly:
 //!
 //! ```text
@@ -27,18 +34,48 @@
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// One probe per Gate 3 criterion, matching
 /// `outou-lsp-client.mjs`'s `--probe` names.
 const PROBES: &[&str] = &[
     "hover-user",
+    "hover-nonascii",
+    "hover-element-tag",
     "definition-load-user",
     "definition-user-card",
     "completion-member",
-    "completion-component",
-    "completion-prop",
+    "completion-tag-component",
+    "completion-tag-element",
+    "completion-prop-name",
+    "completion-attr-value",
+    "completion-prop-value",
     "diagnostic-type-error",
     "diagnostic-syntax-error",
+    "diagnostic-missing-prop",
+    "stale-diagnostics-cleared",
+    "save-with-syntax-error",
+    "startup-broken-source",
+];
+
+/// Substrings that must never appear anywhere in a payload sent to the
+/// editor (issue #9 Gate 3 review, M4): backend vocabulary
+/// (`AGENTS.md`'s Phase 0 failure condition), a generated-file path, or
+/// an internal marker this crate's own sanitizers are supposed to strip.
+/// Deliberately broader than `crate::translate`'s own `BACKEND_MARKERS`
+/// (which this test does not have access to, being a separate binary's
+/// integration test) — false positives here would only ever make the
+/// test stricter, never miss a real leak.
+const LEAKAGE_MARKERS: &[&str] = &[
+    "PropsBuilder",
+    "dioxus",
+    ".generated",
+    "VNode",
+    "RenderError",
+    "__private",
+    "__template",
+    "rsx!",
 ];
 
 fn repo_root() -> PathBuf {
@@ -69,24 +106,142 @@ fn rust_analyzer_binary() -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-/// Runs one probe through `outou-lsp-client.mjs` and returns its parsed
-/// JSON output.
-fn run_probe(root: &Path, outou_lsp: &Path, ra: &Path, probe: &str) -> serde_json::Value {
-    let client = root.join("spikes/rust-analyzer/client/outou-lsp-client.mjs");
+/// Recursively copies `src` into `dst` (which must already exist),
+/// skipping `target/` (a build-artifact directory that may exist locally
+/// and would otherwise be copied wholesale for nothing).
+fn copy_recursive(src: &Path, dst: &Path) {
+    for entry in std::fs::read_dir(src).unwrap_or_else(|e| panic!("reading {}: {e}", src.display()))
+    {
+        let entry = entry.expect("reading a directory entry");
+        let name = entry.file_name();
+        if name == "target" {
+            continue;
+        }
+        let file_type = entry.file_type().expect("reading file type");
+        let dst_path = dst.join(&name);
+        if file_type.is_dir() {
+            std::fs::create_dir_all(&dst_path).expect("creating a subdirectory");
+            copy_recursive(&entry.path(), &dst_path);
+        } else {
+            std::fs::copy(entry.path(), &dst_path)
+                .unwrap_or_else(|e| panic!("copying {}: {e}", entry.path().display()));
+        }
+    }
+}
+
+static COPY_COUNTER: AtomicU32 = AtomicU32::new(0);
+
+/// Creates a fresh temporary copy of `examples/phase0-app`, with its
+/// `Cargo.toml` path dependency on `outou` rewritten to an absolute path
+/// (the checked-in `../../crates/outou` only resolves from
+/// `examples/phase0-app`'s own location). Every probe gets its own copy:
+/// M1's save-with-syntax-error and startup-broken-source probes
+/// deliberately write broken content to disk, and must never be able to
+/// affect another probe or the repository tree itself.
+fn fresh_copy(root: &Path, tag: &str) -> PathBuf {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let n = COPY_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let dest = std::env::temp_dir().join(format!(
+        "outou-gate3-{tag}-{}-{nanos}-{n}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dest).expect("creating the temp copy's root");
+    // Canonicalized so the URI this test's node client builds from
+    // `--root` (a plain string-to-URL conversion, no symlink resolution)
+    // matches the URI `outou-lsp` itself builds after canonicalizing the
+    // workspace root (`crate::plan::resolve`'s own `canonical_manifest_dir`)
+    // — on macOS, `/tmp` is a symlink to `/var/folders/.../T`, so an
+    // uncanonicalized temp path would otherwise make every `.rsx`
+    // document URI the client sends look like a file this server has
+    // never heard of.
+    let dest = dest
+        .canonicalize()
+        .expect("canonicalizing the temp copy's root");
+    copy_recursive(&root.join("examples/phase0-app"), &dest);
+
+    let cargo_toml_path = dest.join("Cargo.toml");
+    let cargo_toml = std::fs::read_to_string(&cargo_toml_path).expect("reading Cargo.toml");
+    let outou_crate_dir = root
+        .join("crates/outou")
+        .canonicalize()
+        .expect("crates/outou exists");
+    let rewritten = cargo_toml.replace(
+        "path = \"../../crates/outou\"",
+        &format!("path = {:?}", outou_crate_dir),
+    );
+    assert_ne!(
+        rewritten, cargo_toml,
+        "expected to find the outou path dependency in examples/phase0-app/Cargo.toml"
+    );
+    std::fs::write(&cargo_toml_path, rewritten).expect("rewriting Cargo.toml");
+
+    dest
+}
+
+/// Seeds `crate_dir`'s `src/.generated/` with a fresh, correct Strict
+/// build — using `outou_cli::build::{plan, emit}` directly, the exact
+/// same library `outou-lsp` itself calls ("there is one compiler",
+/// `AGENTS.md`) — so every probe starts from known-good generated Rust
+/// regardless of whatever this machine's own `examples/phase0-app/`
+/// happens to have lying around locally (`.generated/` is gitignored for
+/// applications, so a fresh checkout has none at all, and a local dev
+/// checkout may have an arbitrarily stale one). `save-with-syntax-error`
+/// in particular needs a reliable, known "before" snapshot to compare
+/// against.
+fn seed_build(crate_dir: &Path) {
+    use outou_cli::build::{emit, plan};
+    let canonical =
+        plan::canonical_manifest_dir(crate_dir).expect("canonicalizing the temp crate dir");
+    let root = match plan::find_crate_root(&canonical).expect("finding the temp crate's root") {
+        plan::CrateRoot::Rsx(root) => root,
+        plan::CrateRoot::NoRsxRoot => {
+            panic!("expected examples/phase0-app to have a `.rsx` crate root")
+        }
+    };
+    let planned = plan::plan(&canonical, &root).expect("planning the temp crate");
+    emit::emit(&planned).expect("seeding the temp crate's generated Rust");
+}
+
+/// A `CARGO_TARGET_DIR` shared across every probe's own temp copy,
+/// outside the repository tree entirely (never under `examples/
+/// phase0-app` or any path `fresh_copy` produces): a fresh temp copy has
+/// no build cache of its own, so without this, every probe that triggers
+/// `cargo check` (rust-analyzer's `checkOnSave` flycheck) would
+/// recompile the whole dependency graph (`dioxus` and everything under
+/// it) from scratch — minutes, not seconds, and multiplied by every such
+/// probe. A stable (non-randomized) path so repeated local runs keep
+/// benefiting from the cache across invocations of this test, not just
+/// within one.
+fn shared_cargo_target_dir() -> PathBuf {
+    std::env::temp_dir().join("outou-gate3-shared-target")
+}
+
+/// Runs one probe through `outou-lsp-client.mjs` against `crate_dir` and
+/// returns its parsed JSON output.
+fn run_probe(
+    repo: &Path,
+    crate_dir: &Path,
+    outou_lsp: &Path,
+    ra: &Path,
+    probe: &str,
+) -> serde_json::Value {
+    let client = repo.join("spikes/rust-analyzer/client/outou-lsp-client.mjs");
     let output = Command::new("node")
         .arg(&client)
         .arg("--root")
-        .arg(root.join("examples/phase0-app"))
+        .arg(crate_dir)
         .arg("--outou-lsp")
         .arg(outou_lsp)
         .arg("--ra")
         .arg(ra)
         .arg("--probe")
         .arg(probe)
-        .arg("--settle")
-        .arg("12000")
         .arg("--timeout")
-        .arg("45000")
+        .arg("240000")
+        .env("CARGO_TARGET_DIR", shared_cargo_target_dir())
         .output()
         .unwrap_or_else(|e| panic!("running outou-lsp-client.mjs for probe {probe}: {e}"));
 
@@ -129,47 +284,42 @@ fn save_gzipped(root: &Path, probe: &str, json: &serde_json::Value) {
         .unwrap_or_else(|e| panic!("moving {} to {}: {e}", gz_tmp.display(), dest.display()));
 }
 
-/// Snapshots `examples/phase0-app/src/.generated/{crate-root.rs,components.rs}`
-/// on construction and restores (or removes, if a file did not exist
-/// before) them on drop — including on an early return or a panicking
-/// assertion, since this runs after every probe in the loop, not just at
-/// the end of a successful one.
-struct RestoreGeneratedFiles {
-    files: Vec<(PathBuf, Option<Vec<u8>>)>,
+/// Recursively asserts that no string anywhere in `value` contains a
+/// [`LEAKAGE_MARKERS`] substring (issue #9 Gate 3 review, M4/M8(iv)):
+/// applied to every probe's *entire* JSON result, not just the field the
+/// probe happens to be about, since a leak has shown up in `data`,
+/// `relatedInformation`, `detail`, and `documentation` — fields no
+/// existing assertion was looking at.
+fn assert_no_leakage(probe: &str, value: &serde_json::Value) {
+    walk_no_leakage(probe, "$", value);
 }
 
-impl RestoreGeneratedFiles {
-    fn snapshot(root: &Path) -> Self {
-        let generated_dir = root.join("examples/phase0-app/src/.generated");
-        let files = ["crate-root.rs", "components.rs"]
-            .into_iter()
-            .map(|name| {
-                let path = generated_dir.join(name);
-                let contents = std::fs::read(&path).ok();
-                (path, contents)
-            })
-            .collect();
-        Self { files }
-    }
-}
-
-impl Drop for RestoreGeneratedFiles {
-    fn drop(&mut self) {
-        for (path, contents) in &self.files {
-            match contents {
-                Some(bytes) => {
-                    let _ = std::fs::write(path, bytes);
-                }
-                None => {
-                    let _ = std::fs::remove_file(path);
-                }
+fn walk_no_leakage(probe: &str, path: &str, value: &serde_json::Value) {
+    match value {
+        serde_json::Value::String(s) => {
+            for marker in LEAKAGE_MARKERS {
+                assert!(
+                    !s.contains(marker),
+                    "probe {probe}: leakage marker {marker:?} found at {path}: {s:?}"
+                );
             }
         }
+        serde_json::Value::Array(items) => {
+            for (i, item) in items.iter().enumerate() {
+                walk_no_leakage(probe, &format!("{path}[{i}]"), item);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (k, v) in map {
+                walk_no_leakage(probe, &format!("{path}.{k}"), v);
+            }
+        }
+        _ => {}
     }
 }
 
 #[test]
-#[ignore = "spawns outou-lsp + rust-analyzer 8 times; run explicitly, see module docs"]
+#[ignore = "spawns outou-lsp + rust-analyzer once per probe; run explicitly, see module docs"]
 fn gate3_probes_pass_through_the_real_parser_and_pipeline() {
     if !node_available() {
         eprintln!("gate3: skipping — `node` is not available on PATH");
@@ -185,23 +335,28 @@ fn gate3_probes_pass_through_the_real_parser_and_pipeline() {
     let root = repo_root();
     let outou_lsp = PathBuf::from(env!("CARGO_BIN_EXE_outou-lsp"));
 
-    // The `diagnostic-type-error` probe exercises `textDocument/didSave`,
-    // which (per the architecture note) writes the current generated text
-    // to disk so rust-analyzer's flycheck can see it — that includes the
-    // probe's own injected type error, so `examples/phase0-app`'s
-    // `.generated/` files must be restored afterward rather than left
-    // holding a deliberately broken build.
-    let _restore_generated = RestoreGeneratedFiles::snapshot(&root);
-
     let mut summary = String::new();
     let mut failures: Vec<String> = Vec::new();
+    let mut temp_dirs: Vec<PathBuf> = Vec::new();
 
     for &probe in PROBES {
         eprintln!("gate3: running probe `{probe}`...");
-        let result = run_probe(&root, &outou_lsp, &ra, probe);
-        save_gzipped(&root, probe, &result);
+        let crate_dir = fresh_copy(&root, probe);
+        temp_dirs.push(crate_dir.clone());
+        seed_build(&crate_dir);
 
-        if let Err(message) = check_probe(probe, &result) {
+        if probe == "startup-broken-source" {
+            prepare_startup_broken_source(&crate_dir);
+        }
+
+        let generated_root_before = crate_dir.join("src/.generated/crate-root.rs");
+        let before_bytes = std::fs::read(&generated_root_before).ok();
+
+        let result = run_probe(&root, &crate_dir, &outou_lsp, &ra, probe);
+        save_gzipped(&root, probe, &result);
+        assert_no_leakage(probe, &result);
+
+        if let Err(message) = check_probe(probe, &result, &crate_dir, before_bytes.as_deref()) {
             failures.push(format!("{probe}: {message}"));
         }
 
@@ -215,6 +370,11 @@ fn gate3_probes_pass_through_the_real_parser_and_pipeline() {
     }
 
     println!("Gate 3 probe summary:\n{summary}");
+
+    for dir in &temp_dirs {
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     assert!(
         failures.is_empty(),
         "Gate 3 probe(s) failed:\n{}",
@@ -222,10 +382,29 @@ fn gate3_probes_pass_through_the_real_parser_and_pipeline() {
     );
 }
 
+/// M1's startup probe needs a broken `.rsx` root already on disk, with no
+/// `.generated/` at all, *before* `outou-lsp` is ever spawned.
+fn prepare_startup_broken_source(crate_dir: &Path) {
+    let main_rsx = crate_dir.join("src/main.rsx");
+    let text = std::fs::read_to_string(&main_rsx).expect("reading main.rsx");
+    let broken = text.replace("<h1>Hello {name}</h1>", "<div cl");
+    assert_ne!(broken, text, "expected to find the target element to break");
+    std::fs::write(&main_rsx, broken).expect("writing the broken main.rsx");
+    let generated_dir = crate_dir.join("src/.generated");
+    if generated_dir.exists() {
+        std::fs::remove_dir_all(&generated_dir).expect("removing .generated for the startup probe");
+    }
+}
+
 /// Checks the one thing that matters for each probe's Gate 3 criterion,
 /// returning `Err` with a short reason on failure rather than panicking
 /// immediately, so a single run reports every failing probe at once.
-fn check_probe(probe: &str, result: &serde_json::Value) -> Result<(), String> {
+fn check_probe(
+    probe: &str,
+    result: &serde_json::Value,
+    crate_dir: &Path,
+    generated_root_before: Option<&[u8]>,
+) -> Result<(), String> {
     match probe {
         "hover-user" => {
             let value = result
@@ -235,6 +414,28 @@ fn check_probe(probe: &str, result: &serde_json::Value) -> Result<(), String> {
             if !value.contains("Option") {
                 return Err(format!("hover did not mention `Option`: {value}"));
             }
+            let range = result.pointer("/hover/range").ok_or("no hover range")?;
+            require_range_on_line(range, 20)
+        }
+        "hover-nonascii" => {
+            let value = result
+                .pointer("/hover/contents/value")
+                .and_then(|v| v.as_str())
+                .ok_or("no hover contents for the non-ASCII probe")?;
+            if !value.contains("Option") && !value.contains("User") {
+                return Err(format!(
+                    "hover after a non-ASCII prefix did not resolve `user`'s own type: {value}"
+                ));
+            }
+            Ok(())
+        }
+        "hover-element-tag" => {
+            let has_hover = result.pointer("/hover").is_some_and(|h| !h.is_null());
+            // `assert_no_leakage` already rejects a `dioxus`/`rsx!`
+            // mention anywhere in the result; this only confirms there
+            // was something to sanitize in the first place; a `null`
+            // hover (nothing left after sanitizing) is also acceptable.
+            let _ = has_hover;
             Ok(())
         }
         "definition-load-user" => {
@@ -245,7 +446,10 @@ fn check_probe(probe: &str, result: &serde_json::Value) -> Result<(), String> {
             if !uri.ends_with("main.rsx") {
                 return Err(format!("definition did not land in main.rsx: {uri}"));
             }
-            Ok(())
+            let range = result
+                .pointer("/definition/0/range")
+                .ok_or("no definition range")?;
+            require_range_on_line(range, 42)
         }
         "definition-user-card" => {
             let uri = result
@@ -257,40 +461,60 @@ fn check_probe(probe: &str, result: &serde_json::Value) -> Result<(), String> {
                     "cross-file definition did not land in components.rsx: {uri}"
                 ));
             }
+            let range = result
+                .pointer("/definition/0/range")
+                .ok_or("no cross-file definition range")?;
+            require_range_on_line(range, 8)
+        }
+        "completion-member" => {
+            let item = find_completion_item(result, "unwrap").ok_or("no `unwrap` item")?;
+            require_edit_range_present(item)
+        }
+        "completion-tag-component" => {
+            let item = find_completion_item(result, "UserCard").ok_or("no `UserCard` item")?;
+            require_edit_range_matches(item, 9, 14)
+        }
+        "completion-tag-element" => {
+            let item = find_completion_item(result, "div").ok_or("no `div` item")?;
+            require_edit_range_matches(item, 9, 11)
+        }
+        "completion-prop-name" => {
+            let item = find_completion_item(result, "user").ok_or("no `user` item")?;
+            require_edit_range_present(item)
+        }
+        "completion-attr-value" => {
+            // Empty, or every primary edit starts at the cursor — either
+            // is honest; a wrongly-positioned edit is not (M4/HIGH-8).
+            let items = completion_items(result);
+            for item in &items {
+                let Some(text_edit) = item.get("textEdit") else {
+                    continue;
+                };
+                let Some(range) = text_edit.get("range") else {
+                    continue;
+                };
+                let start = range.pointer("/start").ok_or("edit with no start")?;
+                let end = range.pointer("/end").ok_or("edit with no end")?;
+                if start != end {
+                    return Err(format!(
+                        "completion-attr-value returned a non-empty edit: {text_edit}"
+                    ));
+                }
+            }
             Ok(())
         }
-        "completion-member" => has_completion_item(result, "unwrap")
-            .then_some(())
-            .ok_or_else(|| "member completion did not include `unwrap`".to_string()),
-        "completion-component" => has_completion_item(result, "UserCard")
-            .then_some(())
-            .ok_or_else(|| "component completion did not include `UserCard`".to_string()),
-        "completion-prop" => has_completion_item(result, "user")
-            .then_some(())
+        "completion-prop-value" => find_completion_item(result, "user")
+            .map(|_| ())
             .ok_or_else(|| "prop-value completion did not include `user`".to_string()),
         "diagnostic-type-error" => {
-            let has_type_error = result
-                .get("diagnostics")
-                .and_then(|d| d.as_object())
-                .into_iter()
-                .flat_map(|d| d.values())
-                .flat_map(|v| v.as_array().into_iter().flatten())
-                .any(|diag| {
-                    diag.get("message")
-                        .and_then(|m| m.as_str())
-                        .is_some_and(|m| m.contains("mismatched types"))
-                });
+            let has_type_error =
+                all_diagnostics(result).any(|diag| message_contains(diag, "mismatched types"));
             has_type_error
                 .then_some(())
                 .ok_or_else(|| "no mismatched-types diagnostic was published".to_string())
         }
         "diagnostic-syntax-error" => {
-            let has_outou_diag = result
-                .get("diagnostics")
-                .and_then(|d| d.as_object())
-                .into_iter()
-                .flat_map(|d| d.values())
-                .flat_map(|v| v.as_array().into_iter().flatten())
+            let has_outou_diag = all_diagnostics(result)
                 .any(|diag| diag.get("source").and_then(|s| s.as_str()) == Some("outou"));
             if !has_outou_diag {
                 return Err("no Outou syntax diagnostic was published".to_string());
@@ -307,19 +531,166 @@ fn check_probe(probe: &str, result: &serde_json::Value) -> Result<(), String> {
             }
             Ok(())
         }
+        "diagnostic-missing-prop" => {
+            let diag = all_diagnostics(result)
+                .find(|d| message_contains(d, "missing a required property"))
+                .ok_or("no missing-required-property diagnostic was published")?;
+            let severity = diag.get("severity").and_then(|s| s.as_i64());
+            if severity != Some(1) {
+                return Err(format!(
+                    "M5: a missing required prop must be severity ERROR (1), got {severity:?}"
+                ));
+            }
+            let range = diag
+                .get("range")
+                .ok_or("missing-prop diagnostic has no range")?;
+            require_range_on_line(range, 28)
+        }
+        "stale-diagnostics-cleared" => {
+            let introduced = result
+                .get("typeErrorIntroduced")
+                .filter(|v| !v.is_null())
+                .ok_or("the type error was never even published before the revert")?;
+            let _ = introduced;
+            let after = result
+                .get("diagnosticsAfterRevert")
+                .and_then(|v| v.as_array())
+                .ok_or("no diagnosticsAfterRevert recorded")?;
+            let still_has_stale_error = after
+                .iter()
+                .any(|d| message_contains(d, "mismatched types"));
+            if still_has_stale_error {
+                return Err(
+                    "the stale `mismatched types` diagnostic survived a revert-only edit (M6)"
+                        .to_string(),
+                );
+            }
+            Ok(())
+        }
+        "save-with-syntax-error" => {
+            let has_outou_diag = all_diagnostics(result)
+                .any(|diag| diag.get("source").and_then(|s| s.as_str()) == Some("outou"));
+            if !has_outou_diag {
+                return Err(
+                    "no Outou syntax diagnostic was published for the broken save".to_string(),
+                );
+            }
+            let before = generated_root_before
+                .ok_or("no pre-save snapshot of crate-root.rs was captured")?;
+            let after = std::fs::read(crate_dir.join("src/.generated/crate-root.rs"))
+                .map_err(|e| format!("reading crate-root.rs after the save: {e}"))?;
+            if before != after.as_slice() {
+                return Err(
+                    "M1: crate-root.rs changed on disk after saving a syntactically broken buffer"
+                        .to_string(),
+                );
+            }
+            let after_text = String::from_utf8_lossy(&after);
+            if after_text.contains("cl: true") {
+                return Err(
+                    "M1: crate-root.rs contains Recovery placeholder text (`cl: true`)".to_string(),
+                );
+            }
+            Ok(())
+        }
+        "startup-broken-source" => {
+            let has_outou_diag = all_diagnostics(result)
+                .any(|diag| diag.get("source").and_then(|s| s.as_str()) == Some("outou"));
+            if !has_outou_diag {
+                return Err("no Outou syntax diagnostic was published at startup".to_string());
+            }
+            let generated_root = crate_dir.join("src/.generated/crate-root.rs");
+            if generated_root.exists() {
+                return Err(
+                    "M1: crate-root.rs was created at startup despite a broken crate root"
+                        .to_string(),
+                );
+            }
+            Ok(())
+        }
         other => Err(format!("unknown probe: {other}")),
     }
 }
 
-fn has_completion_item(result: &serde_json::Value, label: &str) -> bool {
+fn all_diagnostics(result: &serde_json::Value) -> impl Iterator<Item = &serde_json::Value> {
+    result
+        .get("diagnostics")
+        .and_then(|d| d.as_object())
+        .into_iter()
+        .flat_map(|d| d.values())
+        .flat_map(|v| v.as_array().into_iter().flatten())
+}
+
+fn message_contains(diagnostic: &serde_json::Value, needle: &str) -> bool {
+    diagnostic
+        .get("message")
+        .and_then(|m| m.as_str())
+        .is_some_and(|m| m.contains(needle))
+}
+
+fn completion_items(result: &serde_json::Value) -> Vec<serde_json::Value> {
     let completion = result.get("completion");
     let items = completion.and_then(|c| c.as_array()).or_else(|| {
         completion
             .and_then(|c| c.get("items"))
             .and_then(|i| i.as_array())
     });
-    items
+    items.cloned().unwrap_or_default()
+}
+
+fn find_completion_item(result: &serde_json::Value, label: &str) -> Option<serde_json::Value> {
+    completion_items(result)
         .into_iter()
-        .flatten()
-        .any(|item| item.get("label").and_then(|l| l.as_str()) == Some(label))
+        .find(|item| item.get("label").and_then(|l| l.as_str()) == Some(label))
+}
+
+fn require_edit_range_present(item: serde_json::Value) -> Result<(), String> {
+    item.pointer("/textEdit/range")
+        .map(|_| ())
+        .ok_or_else(|| format!("item has no textEdit.range: {item}"))
+}
+
+/// Asserts the item's `textEdit.range` is exactly
+/// `{line}:{start_char}..{line}:{end_char}` — the partial identifier's
+/// own span, per M3's design (never a generated-file-derived guess).
+fn require_edit_range_matches(
+    item: serde_json::Value,
+    start_char: i64,
+    end_char: i64,
+) -> Result<(), String> {
+    let range = item
+        .pointer("/textEdit/range")
+        .ok_or_else(|| format!("item has no textEdit.range: {item}"))?;
+    let start = range
+        .pointer("/start/character")
+        .and_then(|v| v.as_i64())
+        .ok_or("range has no start.character")?;
+    let end = range
+        .pointer("/end/character")
+        .and_then(|v| v.as_i64())
+        .ok_or("range has no end.character")?;
+    if start != start_char || end != end_char {
+        return Err(format!(
+            "expected textEdit.range character {start_char}..{end_char}, got {start}..{end} ({range})"
+        ));
+    }
+    Ok(())
+}
+
+/// Asserts `range.start.line == range.end.line == line` (0-indexed).
+fn require_range_on_line(range: &serde_json::Value, line: i64) -> Result<(), String> {
+    let start_line = range
+        .pointer("/start/line")
+        .and_then(|v| v.as_i64())
+        .ok_or("range has no start.line")?;
+    let end_line = range
+        .pointer("/end/line")
+        .and_then(|v| v.as_i64())
+        .ok_or("range has no end.line")?;
+    if start_line != line || end_line != line {
+        return Err(format!(
+            "expected range on line {line}, got {start_line}..{end_line}"
+        ));
+    }
+    Ok(())
 }
