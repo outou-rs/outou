@@ -1,0 +1,2 @@
+error: unexpected end of file, expected `}` to close the value of attribute `name`
+ --> unterminated-attribute-value.rsx:7:16

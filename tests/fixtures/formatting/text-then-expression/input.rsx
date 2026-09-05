@@ -2,6 +2,7 @@ use outou::prelude::*;
 
 #[component]
 fn App() -> Element {
-    let user = load_user();
+    let name = "Outou";
 
-    <User name={
+    <div>Hello {name}</div>
+}

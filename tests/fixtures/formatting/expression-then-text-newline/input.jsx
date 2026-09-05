@@ -1,8 +1,10 @@
 function App() {
+    const name = "Outou";
+
     return (
         <div>
-            <A />
-            <B />
+            {name}
+            world
         </div>
     );
 }

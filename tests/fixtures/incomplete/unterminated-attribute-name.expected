@@ -1,0 +1,2 @@
+error: unexpected end of file inside tag `<div>`, expected an attribute or `>`
+ --> unterminated-attribute-name.rsx:7:5

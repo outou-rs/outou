@@ -1,8 +1,8 @@
 function App() {
     return (
         <div>
-            <A />
-            <B />
+            <p> a </p>
+            <b>x</b> y
         </div>
     );
 }

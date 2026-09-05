@@ -19,7 +19,7 @@ The only extension to Rust's grammar is the JSX expression. Specifically:
 ## Consequences
 
 - A `.rsx` file with its JSX expressions replaced by Rust expressions is a valid Rust file; everything else can be delegated to rustc and rust-analyzer.
-- The `<` ambiguity is resolved by expression position, lookahead, qualified-path recognition and bounded speculative parsing, never by a blanket rule.
+- The `<` ambiguity is resolved by expression position, a three-token decision and one bounded angle scan (reached only for `<Name<`), never by a blanket rule.
 - Users who want JSX in a macro must wait.
 
 ## Alternatives considered

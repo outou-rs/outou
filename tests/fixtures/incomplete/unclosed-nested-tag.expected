@@ -1,0 +1,4 @@
+error: unexpected `}` inside tag `<User>`, expected an attribute or `>`
+ --> unclosed-nested-tag.rsx:7:1
+error: missing closing tag `</section>`
+ --> unclosed-nested-tag.rsx:5:5

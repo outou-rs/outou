@@ -3,7 +3,7 @@ use outou::prelude::*;
 #[component]
 fn App() -> Element {
     <div>
-        <A />
-        <B />
+        <p> a </p>
+        <b>x</b> y
     </div>
 }

@@ -5,4 +5,3 @@ fn App() -> Element {
     let user = load_user();
 
     <div cl
-}
