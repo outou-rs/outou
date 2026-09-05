@@ -14,6 +14,9 @@ fixture/                 Cargo project rust-analyzer loads
 virtual/App.rs           hand-written generated Rust, the single source for both variants
 source-map.json          hand-written many-to-many map between App.rsx and the generated Rust
 client/ra-client.mjs     headless JSON-RPC client that drives rust-analyzer
+client/source-map.mjs    pure `mapRange()` used to map a generated-file range
+                         back to `App.rsx` spans through source-map.json
+client/source-map.test.mjs  `node --test` coverage for source-map.mjs
 ```
 
 There is no parser. `virtual/App.rs` is what the compiler *would* emit for `src/App.rsx`, written by hand.
@@ -50,6 +53,15 @@ cargo check --no-default-features --features gen-outdir --message-format=json \
 
 then pass `<out_dir>/outou/App.rs` as `--file`. The build script also prints the path as a `cargo:warning` for convenience.
 
+To exercise layout (a) with `ra-client.mjs` directly, select the feature set on the command line instead of editing `Cargo.toml`:
+
+```bash
+node ../client/ra-client.mjs --root . --file <out_dir>/outou/App.rs \
+  --no-default-features --cargo-features gen-outdir --line 8 --char 9
+```
+
+`--cargo-features <a,b,c>` and `--no-default-features` map straight onto rust-analyzer's `initializationOptions.cargo.features` / `cargo.noDefaultFeatures`, the same knobs the editor extension exposes.
+
 ## The overlay experiment
 
 The point of the overlay is that the editor buffer, not the file on disk, is what rust-analyzer analyzes. Test it by sending modified content:
@@ -62,6 +74,34 @@ node ../client/ra-client.mjs --root . --file src/.generated/App.rs --overlay /tm
 
 Hover must report the type from the *overlay* (`String`), not from disk (`User`), and it must do so without `build.rs` running again.
 
+### A second overlay via `didChange` (`--overlay2`)
+
+`--overlay` above only covers the buffer sent with the initial `textDocument/didOpen`. To prove that a *later* edit also reaches rust-analyzer without any re-run of `build.rs`, `--overlay2 <file>` sends a second buffer through `textDocument/didChange` (a full-document replacement, version 2) after the first hover/completion/definition round, then repeats hover/completion/definition at the same position (or `--line2`/`--char2`) as `hover2`/`completion2`/`definition2`:
+
+```bash
+node ../client/ra-client.mjs --root . --file src/.generated/App.rs --line 8 --char 9 \
+  --overlay2 /tmp/overlay2.rs --timeout 180000
+```
+
+`latencyMs.overlayChangeToHover` measures from the `didChange` notification to the `hover2` response.
+
+## Readiness
+
+Rather than only polling hover blindly, the client waits for rust-analyzer's `$/progress` notifications after `initialized`: it treats the server as ready once the `rustAnalyzer/cachePriming` token (title "Indexing") has reported `end`. Failing that, it falls back to a debounced check: once every progress token observed so far has reported `end` and stays that way for ~2s without a new token starting, the server is treated as ready too (this guards against latching on a short-lived token, such as `rustAnalyzer/Fetching`, ending at ~0.5s while indexing is still running). This is recorded as `ready` (boolean) and `latencyMs.ready` (initialize -> ready). Because rust-analyzer can start further progress tokens (build-script fetch, proc-macro loading, cache priming) shortly after indexing finishes, this readiness check is a best-effort signal, not a guarantee — the existing hover-retry loop (bounded at 30 attempts, 1s apart) remains as a fallback and is what actually gates the first hover answer.
+
+## Mapping diagnostics through the source map (`--source-map`)
+
+`--source-map <source-map.json>` maps diagnostics rust-analyzer publishes for `--file` back to `App.rsx` spans, using the many-to-many format in [`source-map.json`](source-map.json). The result gains `mappedDiagnostics: [{ message, severity, generated, sources, unmapped }]`; a diagnostic whose range does not intersect any mapping gets `sources: []` and `unmapped: true`. The mapping logic lives in the pure, unit-tested `client/source-map.mjs` (`mapRange(sourceMap, range)`); run its tests with:
+
+```bash
+node --test spikes/rust-analyzer/client/*.test.mjs
+# equivalently: (cd spikes/rust-analyzer/client && node --test)
+```
+
+(Passing the directory itself, e.g. `node --test spikes/rust-analyzer/client/`, does not trigger Node's test-file discovery on this project's toolchain version — use one of the two forms above.)
+
+Note that `checkOnSave`/flycheck diagnostics come from a real `cargo check` process reading the file on disk, so they will not reflect `--overlay`/`--overlay2` content; only rust-analyzer's native (non-flycheck) diagnostics see the in-memory buffer.
+
 ## Positions to probe
 
 Positions are 0-based; see `source-map.json` for the mapping to `App.rsx`.
@@ -73,7 +113,7 @@ Positions are 0-based; see `source-map.json` for the mapping to `App.rsx`.
 | completion after `user.` | 8 | — (use an overlay that ends the line with `user.`) | `name`, `age` |
 | completion of component | 11 | 9 | `UserCard` |
 | completion of prop | 12 | 13 | `user` |
-| diagnostic | — | — | introduce a type error in the overlay; expect it in `publishDiagnostics` for the generated URI, then map it through `source-map.json` |
+| diagnostic | — | — | introduce an error in the overlay; expect it in `publishDiagnostics` for the generated URI, then map it through `source-map.json` via `--source-map` |
 
 ## Success criteria for Strategy A
 
