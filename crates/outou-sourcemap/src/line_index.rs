@@ -100,6 +100,14 @@ impl LineIndex {
         self.line_starts.len() as u32
     }
 
+    /// The exact text this index was built from ([`LineIndex::new`]).
+    /// Lets a caller that only keeps a `LineIndex` around (rather than the
+    /// text and the index side by side) still recover the text when it
+    /// needs it, without storing it twice.
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
     /// Converts a byte offset into a [`Position`]. An offset past the end of
     /// the text is clamped to the end; an offset that does not fall on a
     /// UTF-8 character boundary is rounded down to the nearest one; an
@@ -206,6 +214,12 @@ fn floor_char_boundary(s: &str, offset: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_returns_the_exact_input() {
+        let index = LineIndex::new("let x = 1;\n");
+        assert_eq!(index.text(), "let x = 1;\n");
+    }
 
     #[test]
     fn empty_file() {

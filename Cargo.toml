@@ -34,6 +34,14 @@ clap = { version = "4.6", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
+# `outou-lsp` only: the language-server scaffold rust-analyzer itself uses
+# (sync, `lsp_server::Message::read`/`write` frames JSON-RPC over any
+# `BufRead`/`Write`, which lets `outou-lsp` reuse it for both the editor
+# connection and its own rust-analyzer child process) and its type
+# definitions.
+lsp-server = "0.10"
+lsp-types = "0.97"
+crossbeam-channel = "0.5"
 # Dev-only, everywhere it appears: parses generated Rust back to check it is
 # syntactically valid (recovery-mode tests). Never a normal dependency.
 syn = { version = "2", features = ["full", "parsing"] }

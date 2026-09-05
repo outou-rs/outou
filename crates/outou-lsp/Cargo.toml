@@ -16,6 +16,18 @@ outou-syntax = { workspace = true }
 outou-sourcemap = { workspace = true }
 outou-codegen = { workspace = true }
 outou-backend-dioxus = { workspace = true }
+# `outou build`'s planner (`outou_cli::build::plan`) and single-unit
+# generator (`outou_cli::build::emit::generate_unit`) are reused rather
+# than duplicated: "there is one compiler" (`AGENTS.md`).
+outou-cli = { workspace = true }
+lsp-server = { workspace = true }
+lsp-types = { workspace = true }
+crossbeam-channel = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
 
 [lints]
 workspace = true

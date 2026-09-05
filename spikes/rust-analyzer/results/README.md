@@ -98,3 +98,30 @@ used to approximate that latency instead of inventing a number.
 | `environment-and-cargo.txt` | Transcript of `date`, `rustc -V`, `cargo -V`, `rust-analyzer --version`, `node -v`, `sw_vers`, `uname -m`, a timed default-feature `cargo check` (warm cache), and the full, unfiltered list of `package_id`s from `cargo check --no-default-features --features gen-outdir --message-format=json \| jq -r 'select(.reason=="build-script-executed") \| .package_id'` (13 rows total: 12 dependency build scripts plus the fixture's own). Backs the `cargo check` timing and the "13 rows" claim in `docs/ra-spike-results.md`. |
 | `source-map-a-adjusted.json` | Derived copy of `../source-map.json` with every mapping's `generated.start.line`/`generated.end.line` shifted by -2 (`jq '.mappings \|= map(.generated.start.line -= 2 \| .generated.end.line -= 2)'`), to match layout (a)'s -2 line offset from the caveat above. Not an independent input — it is mechanically derived from the committed `source-map.json` and exists only so `--source-map` can be pointed at layout (a)'s actual offsets. |
 | `overlays/` | Overlay buffers built from `fixture/src/.generated/App.rs` (`*-b.rs`) and `virtual/App.rs` (`*-a.rs`): `defmove-1-{a,b}.rs` add a use-site `let _probe = user.age;` after the `let user = ...` line; `defmove-2-{a,b}.rs` additionally insert a comment line above the declaration (used as the `--overlay`/`--overlay2` pair for the `*-definition-latest-buffer-*` probes); `overlay2-a.rs` changes `load_user();` to `load_user().name;` (layout (a) counterpart of the pre-existing, not-retained layout (b) overlay used for `b-overlay-change-*`). |
+
+## Gate 3 (Week 5, issue #9): `gate3-*.json.gz`
+
+Unlike the Week 1 files above (which drive rust-analyzer directly through
+`ra-client.mjs`), these drive the real `outou-lsp` binary through
+`spikes/rust-analyzer/client/outou-lsp-client.mjs` — the real parser
+(`outou_syntax`), real codegen (`outou_backend_dioxus` via
+`outou_cli::build`) and the real language server, not a hand-written
+generated file. The target program is `examples/phase0-app`, not this
+directory's `fixture/`. Produced by `crates/outou-lsp/tests/gate3.rs`; write-up
+in [`docs/gate3-results.md`](../../../docs/gate3-results.md).
+
+| File | Command (from the repository root) |
+|---|---|
+| `gate3-hover-user.json.gz` | `node spikes/rust-analyzer/client/outou-lsp-client.mjs --root examples/phase0-app --outou-lsp target/debug/outou-lsp --probe hover-user` |
+| `gate3-definition-load-user.json.gz` | Same, `--probe definition-load-user` |
+| `gate3-definition-user-card.json.gz` | Same, `--probe definition-user-card` |
+| `gate3-completion-member.json.gz` | Same, `--probe completion-member` |
+| `gate3-completion-component.json.gz` | Same, `--probe completion-component` |
+| `gate3-completion-prop.json.gz` | Same, `--probe completion-prop` |
+| `gate3-diagnostic-type-error.json.gz` | Same, `--probe diagnostic-type-error` (writes `examples/phase0-app/src/.generated/crate-root.rs` — `crates/outou-lsp/tests/gate3.rs` restores it afterward; running the client standalone leaves the fixture with the injected type error on disk) |
+| `gate3-diagnostic-syntax-error.json.gz` | Same, `--probe diagnostic-syntax-error` |
+
+All eight were produced by one run of `cargo test -p outou-lsp --test gate3 --
+--ignored --nocapture`, which passes `--outou-lsp`/`--ra` itself (the binary
+under test and the resolved rust-analyzer binary) rather than requiring them
+on `PATH` for a manual invocation.

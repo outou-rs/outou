@@ -109,3 +109,16 @@ The spike has been run against two layouts for the generated file: the fixed pat
 ## If Strategy A fails
 
 Strategy B: the language server maintains a *shadow Cargo project* (under `.outou/lsp/`, reusing dependencies, features, edition and target from `cargo metadata`) whose sources are the generated Rust. `.outou/lsp/` exists only for Strategy B. Strategy C, synthesizing `rust-project.json`, is the last resort because it makes Outou responsible for the crate graph, sysroot, cfg and proc macros.
+
+## Week 5 (Gate 3, issue #9): `client/outou-lsp-client.mjs`
+
+The real language server (`crates/outou-lsp`) connects the real parser and
+codegen to this pipeline. It is verified the same way Gate 0 was: a headless
+JSON-RPC client, `client/outou-lsp-client.mjs`, drives it directly. This is a
+**sibling** of `ra-client.mjs` above, not an extension of it: `outou-lsp`
+speaks a different shape of the protocol (`workspaceFolders` rather than
+`rootUri`, `.rsx` documents with language id `outou-rsx`, positions in the
+`.rsx` file rather than the generated one) and its target program is fixed
+(`examples/phase0-app`, Gate 3's own example), so a set of named `--probe`
+scenarios reads more naturally than generic `--line`/`--char` flags reused
+against a different server. See that script's own doc comment, `crates/outou-lsp/tests/gate3.rs` (the Rust integration test that drives it), and [`docs/gate3-results.md`](../../docs/gate3-results.md) for the full write-up.
