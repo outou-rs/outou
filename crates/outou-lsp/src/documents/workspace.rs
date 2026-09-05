@@ -95,6 +95,13 @@ impl Workspace {
 
     /// Generates one unit fresh from disk and installs it (used at load
     /// time and whenever a full re-plan is required).
+    ///
+    /// TODO(phase0) (issue #9 Gate 3 review, L15's SKIP item): this is a
+    /// near-duplicate of [`Self::load_unit_with_text`] below (read from
+    /// disk, then the same generate-and-install steps); it could be
+    /// `self.load_unit_with_text(unit, &fs::read_to_string(&unit.source_file)?)`
+    /// instead. Left as its own function for this pass — real
+    /// duplication, not gate-relevant on its own.
     fn load_unit(&mut self, unit: &PlannedUnit) -> Result<(), LoadError> {
         let source =
             fs::read_to_string(&unit.source_file).map_err(|source| LoadError::ReadSource {

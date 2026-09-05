@@ -22,6 +22,22 @@ pub fn Field(label: String, r#type: String) -> Element {
     ::outou::__private::rsx! { div { class: "field", label { r#for: "id", {label}, }, input { id: "id", r#type: r#type.clone(), }, } }
 }
 
+/// A second card, added as a Gate 3 regression fixture (issue #9 review,
+/// H3): `MyProps` is an ordinary user struct, not anything the backend
+/// generated, but its name happens to end in `Props` — exactly the shape
+/// `crate::translate::looks_like_generated_name`'s bare heuristic used to
+/// (wrongly) treat as backend vocabulary, blanking hover on both the
+/// `config` parameter and the type itself.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MyProps {
+    pub title: String,
+}
+
+#[component]
+pub fn Card2(config: MyProps) -> Element {
+    ::outou::__private::rsx! { div { class: "card2", {config.title}, } }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

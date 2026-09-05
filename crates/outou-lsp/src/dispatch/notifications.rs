@@ -9,7 +9,8 @@ use std::collections::{HashMap, HashSet};
 
 use lsp_server::{Connection, Notification};
 use lsp_types::{
-    DidChangeTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DidSaveTextDocumentParams,
 };
 use serde_json::json;
 
@@ -65,8 +66,14 @@ pub(crate) fn dispatch_client_notification(
             }
         }
         "textDocument/didClose" => {
+            if let Ok(params) = serde_json::from_value::<DidCloseTextDocumentParams>(note.params) {
+                if params.text_document.uri.as_str().ends_with(".rsx") {
+                    handle_rsx_close(state, connection, &params.text_document.uri);
+                }
+            }
             // The generated overlay stays open on rust-analyzer for the
-            // life of the session; only a full re-plan ever closes one.
+            // life of the session regardless; only a full re-plan ever
+            // closes one.
         }
         "textDocument/didSave" => {
             if let Ok(params) = serde_json::from_value::<DidSaveTextDocumentParams>(note.params) {
@@ -93,6 +100,40 @@ fn is_outou_rsx(uri: &lsp_types::Uri, language_id: &str) -> bool {
     language_id == "outou-rsx" || uri.as_str().ends_with(".rsx")
 }
 
+/// Handles a `.rsx` `didClose`: reloads the document from disk and resets
+/// its version to `0` (issue #9 Gate 3 review, L10) — `Workspace::build_overlay`
+/// keys off `version != 0` to decide which buffers count as "open" for
+/// planning purposes, so a closed (and possibly externally reverted or
+/// edited) file must stop being treated as an open editor buffer, rather
+/// than keeping whatever text it had at the moment it was closed for the
+/// rest of the session and driving every later re-plan with it. The
+/// generated overlay this server keeps open on rust-analyzer itself is
+/// untouched — it stays open for the life of the session regardless; only
+/// a full re-plan ever closes one.
+fn handle_rsx_close(state: &mut State, connection: &Connection, uri: &lsp_types::Uri) {
+    let rsx_uri_string = uri::to_outou(uri).as_str().to_string();
+    let Some(path) = uri::outou_uri_str_to_path(&rsx_uri_string) else {
+        return;
+    };
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    match state.workspace.as_mut() {
+        Some(workspace) => {
+            workspace
+                .rsx
+                .insert(rsx_uri_string.clone(), documents::RsxDocument::new(text, 0));
+            diagnostics::publish_for_rsx(connection, workspace, &rsx_uri_string);
+        }
+        None => {
+            state
+                .degraded_docs
+                .insert(rsx_uri_string.clone(), documents::RsxDocument::new(text, 0));
+            diagnostics::publish_degraded(connection, &state.degraded_docs, &rsx_uri_string);
+        }
+    }
+}
+
 /// Handles a `.rsx` file being saved: re-plans the crate from the
 /// now-on-disk sources and writes every unit's generated Rust through the
 /// exact same transactional Strict path `outou build` uses
@@ -113,7 +154,16 @@ fn is_outou_rsx(uri: &lsp_types::Uri, language_id: &str) -> bool {
 /// preceding `didChange`, still in Recovery mode for the editor overlay)
 /// is left exactly as it was — Outou's own syntax diagnostic, published
 /// by the ordinary `didChange` path, already tells the user why nothing
-/// was written.
+/// was written *for the broken file itself*.
+///
+/// TODO(phase0) (issue #9 Gate 3 review, L14's SKIP item): the user who
+/// just saved a *different*, valid `.rsx` file gets no editor-visible
+/// signal that their save was blocked crate-wide by some other broken
+/// file — only that broken file's own Outou diagnostic hints at it, and
+/// only if the user happens to be looking at it. A `window/showMessage`
+/// naming the blocking file would close this; not required for Gate 3
+/// (the write itself is correct and transactional, which is what M1
+/// required).
 fn handle_rsx_save(state: &mut State, rsx_uri: &lsp_types::Uri) {
     let Some(workspace) = &state.workspace else {
         return;
@@ -249,9 +299,16 @@ fn replan_and_resync(
         // the editor's own buffer still changed: keep serving *this*
         // document from the new text rather than leaving stale syntax
         // diagnostics up for content the user no longer has on screen.
-        // The rest of `workspace` (other units, the registry) is left
-        // exactly as it was — `replan` never partially mutates it before
-        // this point.
+        // `Workspace::replan`'s own doc comment records that a failure
+        // here can leave the registry and generated units partially
+        // emptied rather than restored (issue #9 Gate 3 review, L11):
+        // bump the epoch, exactly as the success path below does, so any
+        // rust-analyzer request still in flight against the pre-failure
+        // state is answered `RequestCancelled` instead of being mapped
+        // against (or falling through past) that possibly-emptied state,
+        // which could otherwise leak a raw `file://…/src/.generated/…`
+        // location to the editor.
+        state.epoch += 1;
         workspace.rsx.insert(
             rsx_uri_string.clone(),
             documents::RsxDocument::new(new_text, version),
@@ -267,6 +324,17 @@ fn replan_and_resync(
     let Some(workspace) = state.workspace.as_mut() else {
         return;
     };
+    // M5 (issue #9 Gate 3 review): `Workspace::replan` restores every
+    // document's version from its *pre-edit* snapshot (needed so an
+    // untouched document's version does not appear to jump backwards),
+    // which for the triggering document itself means the version the
+    // editor just sent in this very `didChange` is lost. A stale version
+    // here makes `vscode-languageclient` (and any client following the
+    // same rule) discard the `publishDiagnostics` below outright, since
+    // it no longer matches the document's current version.
+    if let Some(doc) = workspace.rsx.get_mut(&rsx_uri_string) {
+        doc.version = version;
+    }
 
     if let Some(ra) = &state.ra {
         let now_open: HashSet<String> = workspace.generated.keys().cloned().collect();
@@ -318,5 +386,162 @@ fn replan_and_resync(
     let rsx_uris: Vec<String> = workspace.rsx.keys().cloned().collect();
     for uri in rsx_uris {
         diagnostics::publish_for_rsx(connection, workspace, &uri);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::path::Path;
+
+    use lsp_server::{Connection, Message};
+
+    use super::*;
+    use crate::documents::{LoadOutcome, Workspace};
+
+    fn temp_crate_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "outou-lsp-test-notifications-{tag}-{}-{}",
+            std::process::id(),
+            line!()
+        ))
+    }
+
+    fn load_state(manifest_dir: &Path) -> State {
+        let outcome = Workspace::load(manifest_dir).expect("plans and generates");
+        let LoadOutcome::Planned(workspace) = outcome else {
+            panic!("the temp crate has a `.rsx` crate root");
+        };
+        let mut state = State::new();
+        state.workspace = Some(*workspace);
+        state
+    }
+
+    /// M5 (issue #9 Gate 3 review): after a successful re-plan, the
+    /// triggering document's own version must be the one the editor just
+    /// sent (`didChange`'s own `version`), not the pre-edit version
+    /// `Workspace::replan` otherwise restores for every document —
+    /// otherwise a conformant client discards the `publishDiagnostics`
+    /// this function sends because its version no longer matches.
+    #[test]
+    fn replan_and_resync_publishes_with_the_triggering_edits_version() {
+        let tmp = temp_crate_dir("m5");
+        let src = tmp.join("src");
+        fs::create_dir_all(&src).expect("creating src dir");
+        fs::write(src.join("main.rsx"), "fn main() {}\n").expect("writing crate root");
+        fs::write(src.join("newmod.rsx"), "pub fn f() {}\n").expect("writing the new module file");
+
+        let mut state = load_state(&tmp);
+        let main_rsx_uri = state
+            .workspace
+            .as_ref()
+            .unwrap()
+            .rsx
+            .keys()
+            .find(|uri| uri.ends_with("main.rsx"))
+            .expect("main.rsx is a known unit")
+            .clone();
+        // Mark the document "open" at some earlier version, as `didOpen`
+        // would have.
+        state
+            .workspace
+            .as_mut()
+            .unwrap()
+            .rsx
+            .get_mut(&main_rsx_uri)
+            .unwrap()
+            .version = 3;
+
+        let (connection, client) = Connection::memory();
+        let edited_text = "mod newmod;\nfn main() {}\n".to_string();
+        replan_and_resync(
+            &mut state,
+            &connection,
+            main_rsx_uri.clone(),
+            edited_text,
+            4,
+        );
+
+        assert_eq!(
+            state.workspace.as_ref().unwrap().rsx[&main_rsx_uri].version,
+            4,
+            "the triggering document's version must be the edit's own version, not the pre-edit one"
+        );
+
+        let mut saw_matching_publish = false;
+        while let Ok(msg) = client.receiver.try_recv() {
+            if let Message::Notification(note) = msg {
+                if note.method == "textDocument/publishDiagnostics" {
+                    if let Ok(params) =
+                        serde_json::from_value::<lsp_types::PublishDiagnosticsParams>(note.params)
+                    {
+                        if params.uri.as_str().ends_with("main.rsx") {
+                            assert_eq!(params.version, Some(4));
+                            saw_matching_publish = true;
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            saw_matching_publish,
+            "expected a publishDiagnostics for main.rsx with version 4"
+        );
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// L10: closing a `.rsx` document must reload it from disk and reset
+    /// its version to `0`, so `Workspace::build_overlay` stops treating a
+    /// closed (and possibly stale) in-memory buffer as an open editor
+    /// document for future planning.
+    #[test]
+    fn handle_rsx_close_reloads_from_disk_and_resets_the_version() {
+        let tmp = temp_crate_dir("l10");
+        let src = tmp.join("src");
+        fs::create_dir_all(&src).expect("creating src dir");
+        fs::write(src.join("main.rsx"), "fn main() {}\n").expect("writing crate root");
+
+        let mut state = load_state(&tmp);
+        let main_rsx_uri = state
+            .workspace
+            .as_ref()
+            .unwrap()
+            .rsx
+            .keys()
+            .find(|uri| uri.ends_with("main.rsx"))
+            .expect("main.rsx is a known unit")
+            .clone();
+        // Simulate an open buffer whose in-memory text has diverged from
+        // disk (an edit never saved).
+        {
+            let workspace = state.workspace.as_mut().unwrap();
+            workspace.rsx.insert(
+                main_rsx_uri.clone(),
+                documents::RsxDocument::new("fn main() { /* unsaved edit */ }\n".to_string(), 5),
+            );
+        }
+
+        // Built from the workspace's own (canonicalized) key rather than
+        // re-deriving a URI from `src.join("main.rsx")` directly: on
+        // macOS `/tmp` is itself a symlink, so an uncanonicalized path
+        // would not round-trip to the same URI `Workspace::load` used as
+        // this document's key.
+        let lsp_uri = crate::uri::to_lsp(&outou_sourcemap::Uri::new(main_rsx_uri.clone()));
+        let (connection, _client) = Connection::memory();
+        handle_rsx_close(&mut state, &connection, &lsp_uri);
+
+        let doc = &state.workspace.as_ref().unwrap().rsx[&main_rsx_uri];
+        assert_eq!(
+            doc.version, 0,
+            "a closed document's version must reset to 0"
+        );
+        assert_eq!(
+            doc.line_index.text(),
+            "fn main() {}\n",
+            "a closed document must be reloaded from disk, not keep its unsaved buffer"
+        );
+
+        fs::remove_dir_all(&tmp).ok();
     }
 }

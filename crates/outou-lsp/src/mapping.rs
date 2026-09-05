@@ -351,6 +351,12 @@ mod tests {
     use outou_sourcemap::{file_uri, Mapping, MappingKind, SourceMap, SourceSpan};
     use std::path::Path;
 
+    // TODO(phase0) (issue #9 Gate 3 review, L15's SKIP item): this fixture
+    // is duplicated verbatim in `diagnostics.rs`'s own test module, and
+    // several other test modules in this crate hand-build a similar
+    // `Workspace { .. }` literal. A shared `#[cfg(test)] pub(crate) fn
+    // test_workspace()` beside `documents::test_generated_unit` would
+    // remove the duplication; not required for Gate 3.
     fn sample_workspace() -> (Workspace, lsp_types::Uri, lsp_types::Uri) {
         // Build a minimal registry/document pair by hand rather than
         // going through `Workspace::load` (which needs real files on

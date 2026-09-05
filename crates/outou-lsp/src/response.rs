@@ -24,7 +24,25 @@ use serde_json::Value;
 
 use crate::documents::Workspace;
 use crate::mapping::{self, MappedLocation};
+use crate::plan;
 use crate::translate;
+
+/// Every `#[component]` function name declared anywhere in the workspace's
+/// currently known `.rsx` buffers (issue #9 Gate 3 review, H3): the
+/// authoritative set of names this backend can actually have generated a
+/// `<Name>Props`/`<Name>PropsBuilder` type for, used to narrow the hover
+/// sanitizer's `Props` heuristic so an ordinary user type coincidentally
+/// named `<Something>Props` (`MyProps`) is not mistaken for one.
+fn known_component_names(workspace: &Workspace) -> Vec<String> {
+    let mut names = Vec::new();
+    for doc in workspace.rsx.values() {
+        let parsed = outou_syntax::parse(doc.line_index.text());
+        for function in plan::component_functions(&parsed.file) {
+            names.push(function.name.name.clone());
+        }
+    }
+    names
+}
 
 /// Rewrites a `textDocument/hover` result in place: maps `range` back to
 /// the `.rsx` file (dropping it, per ADR 0007, if the hover position has
@@ -48,7 +66,8 @@ pub fn sanitize_hover(workspace: &Workspace, generated_uri: &lsp_types::Uri, val
         }
     }
     if let Some(contents) = object.get_mut("contents") {
-        if !sanitize_hover_contents(contents) {
+        let component_names = known_component_names(workspace);
+        if !sanitize_hover_contents(contents, &component_names) {
             *value = Value::Null;
         }
     }
@@ -62,20 +81,20 @@ pub fn sanitize_hover(workspace: &Workspace, generated_uri: &lsp_types::Uri, val
 /// showing once its first line — a bare backend module path — is
 /// removed, so the hover is suppressed entirely rather than shown
 /// starting mid-sentence.
-fn sanitize_hover_contents(contents: &mut Value) -> bool {
+fn sanitize_hover_contents(contents: &mut Value, component_names: &[String]) -> bool {
     match contents {
-        Value::String(s) => sanitize_hover_text(s),
+        Value::String(s) => sanitize_hover_text(s, component_names),
         Value::Array(items) => {
             let mut kept = Vec::with_capacity(items.len());
             for mut item in items.drain(..) {
                 let ok = match &mut item {
-                    Value::String(s) => sanitize_hover_text(s),
+                    Value::String(s) => sanitize_hover_text(s, component_names),
                     Value::Object(object) => object
                         .get_mut("value")
                         .and_then(|v| v.as_str())
                         .map(str::to_string)
                         .map(|mut s| {
-                            let ok = sanitize_hover_text(&mut s);
+                            let ok = sanitize_hover_text(&mut s, component_names);
                             object.insert("value".to_string(), Value::String(s));
                             ok
                         })
@@ -94,7 +113,7 @@ fn sanitize_hover_contents(contents: &mut Value) -> bool {
                 return true;
             };
             let mut text = text.to_string();
-            let ok = sanitize_hover_text(&mut text);
+            let ok = sanitize_hover_text(&mut text, component_names);
             object.insert("value".to_string(), Value::String(text));
             ok
         }
@@ -103,14 +122,19 @@ fn sanitize_hover_contents(contents: &mut Value) -> bool {
 }
 
 /// Rewrites one hover text block in place per issue #9 Gate 3 review
-/// (M4/HIGH-9(d)): every `::outou::__private::…`/`dioxus_*::…` path
-/// prefix is stripped (rustc's own type printer routinely chooses the
-/// shortest public path, which is this one, `docs/backend-leakage.md`
-/// row 19), and any *line* still containing a backend marker after that
-/// is dropped outright rather than partially rewritten. Returns `false`
-/// when nothing is left (the whole block was backend vocabulary, e.g. an
-/// HTML element's own `dioxus_html::elements` doc comment).
-fn sanitize_hover_text(text: &mut String) -> bool {
+/// (M4/HIGH-9(d), narrowed by H3): every `::outou::__private::…`/
+/// `dioxus_*::…` path prefix is stripped (rustc's own type printer
+/// routinely chooses the shortest public path, which is this one,
+/// `docs/backend-leakage.md` row 19), and any *line* still containing a
+/// backend marker, or still naming a real component's own
+/// `Props`/`PropsBuilder` type (`component_names`, H3 — never the bare
+/// shape-based `…Props` guess, which would also blank an ordinary user
+/// type like `MyProps`), is dropped outright rather than partially
+/// rewritten. Returns `false` when nothing worth showing is left: the
+/// whole block was backend vocabulary (e.g. an HTML element's own
+/// `dioxus_html::elements` doc comment), or what survives is only
+/// markdown layout (fences, headings) with no actual content (H3).
+fn sanitize_hover_text(text: &mut String, component_names: &[String]) -> bool {
     let rewritten = text
         .replace("::outou::__private::", "")
         .replace("dioxus_core::", "")
@@ -120,10 +144,38 @@ fn sanitize_hover_text(text: &mut String) -> bool {
         .replace("dioxus::", "");
     let kept: Vec<&str> = rewritten
         .lines()
-        .filter(|line| !translate::contains_backend_marker(line))
+        .filter(|line| {
+            !translate::contains_backend_marker(line)
+                && !translate::contains_component_props_marker(line, component_names)
+        })
         .collect();
     *text = kept.join("\n");
-    !text.trim().is_empty()
+    let trimmed = text.trim();
+    !trimmed.is_empty() && !is_layout_only(trimmed)
+}
+
+/// Whether `text` (already known non-empty) is made up entirely of
+/// markdown layout — blank lines, fences (` ``` `), and heading/rule
+/// punctuation — with no actual prose or code left (issue #9 Gate 3
+/// review, H3): stripping backend-vocabulary lines out of a hover can
+/// leave behind an empty code fence or a bare heading marker that reads
+/// as a broken hover rather than an honest `null`.
+fn is_layout_only(text: &str) -> bool {
+    text.lines().all(is_layout_line)
+}
+
+/// Whether one line, on its own, is markdown layout rather than content: a
+/// blank line, a fence (` ``` ` optionally followed by a bare language tag
+/// like `rust`), or a run of heading/rule punctuation (`##`, `---`, `===`).
+fn is_layout_line(line: &str) -> bool {
+    let line = line.trim();
+    if line.is_empty() {
+        return true;
+    }
+    if let Some(rest) = line.strip_prefix("```") {
+        return rest.chars().all(|c| c.is_ascii_alphanumeric());
+    }
+    line.chars().all(|c| matches!(c, '#' | '-' | '*' | '='))
 }
 
 /// Rewrites a `textDocument/definition` response (`null`, a `Location`, or
@@ -167,7 +219,7 @@ fn map_one_location(workspace: &Workspace, mut item: Value) -> Option<Value> {
 /// Rewrites every range inside a `textDocument/completion` response (a
 /// `CompletionList` or a plain array of `CompletionItem`) from generated
 /// to `.rsx` coordinates, and sanitizes the item list itself (issue #9
-/// Gate 3 review, M4/HIGH-9(c) and HIGH-8):
+/// Gate 3 review, M4/HIGH-9(c), HIGH-8 and H1):
 ///
 /// - Any item whose primary `textEdit` range (in *generated* coordinates,
 ///   before mapping) does not contain `cursor` — the generated position
@@ -175,13 +227,35 @@ fn map_one_location(workspace: &Workspace, mut item: Value) -> Option<Value> {
 ///   the generic fix for HIGH-8: a wrongly-mapped edit (e.g. `<div
 ///   class=`'s zero-width edit ten columns from the cursor) corrupts the
 ///   buffer if accepted, so it is never returned rather than trusted.
-/// - Any item whose `label`, `detail`, `documentation` or `filterText`
-///   contains a backend marker (`crate::translate::contains_backend_marker`)
-///   is dropped: `dioxus_core::`, `__TEMPLATE_ROOTS`, `GreetingProps`, …
+/// - Any item whose `label`, `detail`, `documentation`, `filterText` or
+///   `insertText` (or `labelDetails.detail`/`.description`) names a
+///   backend marker (`crate::translate::contains_backend_marker`) or
+///   looks shape-like backend-generated
+///   (`crate::translate::looks_like_generated_name`) is dropped:
+///   `dioxus_core::`, `__TEMPLATE_ROOTS`, `GreetingProps`, …
 /// - `build`/`into(as Into)`/`try_into(as TryInto)` — the typed-builder
 ///   internals a `PropsBuilder` chain exposes — are dropped specifically
 ///   when `detail` names a `PropsBuilder`, rather than blanket-dropping
 ///   every `.into()`/`.try_into()` completion elsewhere.
+/// - After mapping, any item whose primary edit's range no longer
+///   contains `rsx_cursor` — the *original* `.rsx` position the editor
+///   asked about — is dropped too (H1): reverse-mapping an element name
+///   whose mapping has more than one source always resolves to the
+///   first one (`crate::mapping::generated_location_to_source`), which
+///   for a closing tag's own generated occurrence is its opening tag's
+///   `.rsx` location — a mismatch the pre-mapping check above cannot see
+///   at all, since it only compares generated coordinates.
+/// - `additionalTextEdits` is stripped from every surviving item rather
+///   than mapped (M9): contrary to what this comment used to argue,
+///   `resolveProvider` governs only `completionItem/resolve` — an
+///   `additionalTextEdits` already present on the *initial* item is
+///   applied by a conformant client on accept regardless of whether
+///   `resolveProvider` is advertised, and `map_range_field` leaves an
+///   unmapped range untouched (i.e. in *generated* coordinates), so such
+///   an edit would otherwise be silently applied at the wrong position
+///   inside the `.rsx` buffer. Dropping it loses an auto-import
+///   suggestion but never corrupts the buffer; mapping it correctly (and
+///   only keeping it when every field maps) is future work.
 /// - `documentation` is stripped from every surviving item rather than
 ///   attempting to rewrite it (it is free-form Markdown/plaintext, most
 ///   often rustdoc pulled from the backend's own crates).
@@ -189,6 +263,7 @@ pub fn map_completion_response(
     workspace: &Workspace,
     generated_uri: &lsp_types::Uri,
     cursor: lsp_types::Position,
+    rsx_cursor: lsp_types::Position,
     value: &mut Value,
 ) {
     let items: &mut Vec<Value> = match value {
@@ -204,36 +279,18 @@ pub fn map_completion_response(
         .drain(..)
         .filter(|item| primary_edit_contains_cursor(item, cursor))
         .filter(|item| !is_backend_leak(item))
-        .map(|mut item| {
+        .filter_map(|mut item| {
             if let Some(object) = item.as_object_mut() {
                 if let Some(text_edit) = object.get_mut("textEdit") {
                     map_text_edit(workspace, generated_uri, text_edit);
                 }
-                // TODO(phase0) (issue #9 Gate 3 review, HIGH-8's SKIP
-                // item): `additionalTextEdits` (typically an
-                // auto-import) is mapped the same way as the primary
-                // edit, but this server's `completionProvider` does not
-                // advertise `resolveProvider`
-                // (`crate::server::build_server_capabilities`), so a
-                // conformant client never calls
-                // `completionItem/resolve` to begin with and any
-                // `additionalTextEdits` rust-analyzer attaches directly
-                // to the initial response is simply unused by such a
-                // client — degraded (an auto-import edit is lost), not
-                // corrupting. Left unfixed for Phase 0; advertising
-                // `resolveProvider` and mapping its own response is
-                // future work.
-                if let Some(edits) = object
-                    .get_mut("additionalTextEdits")
-                    .and_then(Value::as_array_mut)
-                {
-                    for edit in edits.iter_mut() {
-                        map_range_field(workspace, generated_uri, edit, "range");
-                    }
-                }
+                object.remove("additionalTextEdits");
                 object.remove("documentation");
             }
-            item
+            // H1: re-check cursor containment a second time, now that the
+            // primary edit's range (if any) has been mapped back to
+            // `.rsx` coordinates, against the original `.rsx` cursor.
+            primary_edit_contains_cursor(&item, rsx_cursor).then_some(item)
         })
         .collect();
     *items = sanitized;
@@ -271,14 +328,39 @@ fn position_le(a: lsp_types::Position, b: lsp_types::Position) -> bool {
 }
 
 /// Whether `item` is a backend-vocabulary leak that must never reach the
-/// editor: its `label`/`detail`/`documentation`/`filterText` names a
-/// backend marker, or it is a typed-builder internal method
-/// (`build`/`into`/`try_into`) exposed by a `PropsBuilder` chain.
+/// editor: its `label`/`detail`/`documentation`/`filterText`/`insertText`
+/// (or `labelDetails.detail`/`.description`, M8: LSP 3.17's
+/// `labelDetails.description` is where rust-analyzer puts the defining
+/// module path when the client advertises `labelDetailsSupport`, and
+/// nothing before this scanned it) names a backend marker or looks
+/// shape-like backend-generated (`crate::translate::looks_like_generated_name`
+/// — safe here, unlike for hover text, since dropping one completion
+/// label among many costs nothing), or it is a typed-builder internal
+/// method (`build`/`into`/`try_into`) exposed by a `PropsBuilder` chain.
 fn is_backend_leak(item: &Value) -> bool {
-    for field in ["label", "detail", "documentation", "filterText"] {
+    for field in [
+        "label",
+        "detail",
+        "documentation",
+        "filterText",
+        "insertText",
+    ] {
         if let Some(text) = item.get(field).and_then(field_text) {
-            if translate::contains_backend_marker(&text) {
+            if translate::contains_backend_marker(&text)
+                || translate::looks_like_generated_name(&text)
+            {
                 return true;
+            }
+        }
+    }
+    if let Some(label_details) = item.get("labelDetails").and_then(Value::as_object) {
+        for key in ["detail", "description"] {
+            if let Some(text) = label_details.get(key).and_then(Value::as_str) {
+                if translate::contains_backend_marker(text)
+                    || translate::looks_like_generated_name(text)
+                {
+                    return true;
+                }
             }
         }
     }
@@ -402,18 +484,145 @@ mod tests {
             { "label": "unwrap", "documentation": "docs" },
             { "label": "dioxus_core::" },
         ]);
-        map_completion_response(&workspace, &generated_uri, cursor(0, 0), &mut value);
+        map_completion_response(
+            &workspace,
+            &generated_uri,
+            cursor(0, 0),
+            cursor(0, 0),
+            &mut value,
+        );
         let items = value.as_array().unwrap();
         assert_eq!(items.len(), 1);
         assert_eq!(items[0]["label"], "unwrap");
         assert!(items[0].get("documentation").is_none());
     }
 
+    /// M9: `additionalTextEdits` must never survive to the editor — a
+    /// conformant client applies it on accept even without
+    /// `resolveProvider`, and an unmapped one would land at the wrong
+    /// (generated-file) position inside the `.rsx` buffer.
+    #[test]
+    fn map_completion_response_strips_additional_text_edits() {
+        let workspace = Workspace {
+            manifest_dir: std::path::PathBuf::from("/app"),
+            plan: None,
+            registry: outou_sourcemap::Registry::new(),
+            rsx: std::collections::HashMap::new(),
+            generated: std::collections::HashMap::new(),
+            rsx_to_generated: std::collections::HashMap::new(),
+        };
+        let generated_uri: lsp_types::Uri =
+            "file:///app/src/.generated/crate-root.rs".parse().unwrap();
+        let mut value = json!([{
+            "label": "unwrap",
+            "additionalTextEdits": [
+                { "range": { "start": { "line": 0, "character": 0 }, "end": { "line": 0, "character": 0 } }, "newText": "use foo;\n" }
+            ],
+        }]);
+        map_completion_response(
+            &workspace,
+            &generated_uri,
+            cursor(0, 0),
+            cursor(0, 0),
+            &mut value,
+        );
+        let items = value.as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert!(items[0].get("additionalTextEdits").is_none());
+    }
+
+    /// H1: an item can pass the pre-mapping (generated-coordinate) cursor
+    /// check while its primary edit still reverse-maps to the *wrong*
+    /// `.rsx` location entirely — a multi-source mapping always resolving
+    /// to its first source, standing in for a closing tag's own
+    /// occurrence resolving to its opening tag's position.
+    #[test]
+    fn map_completion_response_drops_an_item_whose_mapped_range_excludes_the_original_rsx_cursor() {
+        use outou_sourcemap::{
+            file_uri, Mapping, MappingKind, SourceId, SourceMap, SourceSpan, Span,
+        };
+
+        let rsx_path = std::path::Path::new("/app/src/main.rsx");
+        let generated_path = std::path::Path::new("/app/src/.generated/crate-root.rs");
+        let rsx_uri = file_uri(rsx_path);
+        let generated_uri = file_uri(generated_path);
+
+        // Generated bytes 30..34 map back to `.rsx` bytes 4..8 (standing
+        // in for the *opening* tag's own name span).
+        let map = SourceMap::new(generated_uri.clone(), vec![rsx_uri.clone()]).with_mapping(
+            Mapping::new(
+                Span::new(30, 34),
+                vec![SourceSpan::new(SourceId(0), Span::new(4, 8))],
+                MappingKind::Identifier,
+            ),
+        );
+        let registry = outou_sourcemap::Registry::new().with_map(map);
+        let mut workspace = Workspace {
+            manifest_dir: std::path::PathBuf::from("/app"),
+            plan: None,
+            registry,
+            rsx: std::collections::HashMap::new(),
+            generated: std::collections::HashMap::new(),
+            rsx_to_generated: std::collections::HashMap::new(),
+        };
+        workspace.rsx.insert(
+            rsx_uri.as_str().to_string(),
+            crate::documents::RsxDocument::new("x".repeat(20), 0),
+        );
+        let generated_text = format!("{}main{}", "y".repeat(30), "z".repeat(10));
+        workspace.generated.insert(
+            generated_uri.as_str().to_string(),
+            crate::documents::test_generated_unit(&generated_uri, &rsx_uri, &generated_text),
+        );
+        workspace.rsx_to_generated.insert(
+            rsx_uri.as_str().to_string(),
+            generated_uri.as_str().to_string(),
+        );
+
+        let generated_uri_lsp: lsp_types::Uri = generated_uri.as_str().parse().unwrap();
+        // Passes the pre-mapping check: the item's own edit (30..34) does
+        // contain the generated cursor (32).
+        let mut value = json!([
+            { "label": "AttributeDescription", "textEdit": edit_range(0, 30, 0, 34) }
+        ]);
+        // But the *original* `.rsx` cursor the editor actually asked
+        // about (character 12) is nowhere near the 4..8 range this
+        // item's edit reverse-maps to.
+        map_completion_response(
+            &workspace,
+            &generated_uri_lsp,
+            cursor(0, 32),
+            cursor(0, 12),
+            &mut value,
+        );
+        assert_eq!(value.as_array().unwrap().len(), 0);
+    }
+
+    /// M8: `labelDetails.description`/`.detail` (LSP 3.17, where
+    /// rust-analyzer puts a defining module path when the client
+    /// advertises `labelDetailsSupport`) must be scanned too, not only
+    /// the top-level fields.
+    #[test]
+    fn is_backend_leak_scans_label_details_and_insert_text() {
+        assert!(is_backend_leak(&json!({
+            "label": "Props",
+            "labelDetails": { "description": "dioxus_core::Props" },
+        })));
+        assert!(is_backend_leak(&json!({
+            "label": "x",
+            "insertText": "dioxus_core::something",
+        })));
+        assert!(!is_backend_leak(&json!({
+            "label": "unwrap",
+            "labelDetails": { "description": "core::option" },
+        })));
+    }
+
     #[test]
     fn sanitize_hover_text_drops_a_pure_backend_module_line() {
         let mut text =
             "dioxus_html::elements\n\npub mod main\n\nBuild a <main> element.".to_string();
-        assert!(sanitize_hover_text(&mut text));
+        assert!(sanitize_hover_text(&mut text, &[]));
         assert!(!text.contains("dioxus_html"));
         assert!(text.contains("pub mod main"));
     }
@@ -422,7 +631,7 @@ mod tests {
     fn sanitize_hover_text_rewrites_private_path_prefixes() {
         let mut text =
             "pub fn UserCard(::outou::__private::dioxus_core::Props) -> Element".to_string();
-        assert!(sanitize_hover_text(&mut text));
+        assert!(sanitize_hover_text(&mut text, &[]));
         assert!(!text.contains("::outou::__private::"));
         assert!(!text.contains("dioxus_core::"));
     }
@@ -430,6 +639,35 @@ mod tests {
     #[test]
     fn sanitize_hover_text_drops_a_hover_that_is_entirely_backend_vocabulary() {
         let mut text = "dioxus_core::PropsBuilder".to_string();
-        assert!(!sanitize_hover_text(&mut text));
+        assert!(!sanitize_hover_text(&mut text, &[]));
+    }
+
+    /// H3: an ordinary user type whose name happens to end in `Props`
+    /// (`MyProps`, not anything this backend generated) must hover
+    /// normally — the bare shape-based heuristic must never be used for
+    /// hover text.
+    #[test]
+    fn sanitize_hover_text_keeps_an_unrelated_props_suffixed_type() {
+        let mut text = "pub fn Card2(config: MyProps) -> Element".to_string();
+        assert!(sanitize_hover_text(&mut text, &[]));
+        assert!(text.contains("MyProps"));
+    }
+
+    /// H3: a real component's own generated `Props`/`PropsBuilder` type
+    /// name is still dropped, once anchored to the plan's actual
+    /// `#[component]` functions.
+    #[test]
+    fn sanitize_hover_text_drops_a_real_components_props_type() {
+        let mut text = "pub struct GreetingProps { name: String }".to_string();
+        assert!(!sanitize_hover_text(&mut text, &["Greeting".to_string()]));
+    }
+
+    /// H3: stripping backend-vocabulary lines out of a hover must not
+    /// leave behind only markdown layout (an empty fence, a bare
+    /// heading) — that is just as unhelpful as the leak it replaced.
+    #[test]
+    fn sanitize_hover_text_drops_content_that_is_only_markdown_layout() {
+        let mut text = "## Usage in rsx\n\n```rust\n```".to_string();
+        assert!(!sanitize_hover_text(&mut text, &[]));
     }
 }

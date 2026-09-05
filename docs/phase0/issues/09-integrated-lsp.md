@@ -23,23 +23,38 @@ Connect the real parser and codegen to the Week 1 pipeline.
 - [x] latency measured against the budget in `docs/phase0.md`
 - [x] every payload reaching the editor verified free of backend vocabulary (`docs/gate3-results.md`'s `assert_no_leakage`, applied recursively to every probe's full result — the first review found two live leaks, hover and completion, that the original evidence collection had not been checking for at all)
 
-**Gate 3: PASS**, re-verified after a review found the original sign-off premature (see `docs/gate3-results.md`'s own note at the top). Through the real parser, completion / hover / definition / diagnostics all work for `let user = load_user(); <UserCard user={user} />`, including cross-file definition and completion under incomplete input. Full writeup, evidence files and known limitations: [`docs/gate3-results.md`](../../gate3-results.md).
+**Gate 3: PASS**, re-verified twice: once after a review found the original sign-off premature, and again after a second review found three more HIGH defects (H1-H3 — completion/hover leaking at a *closing* tag's own name, and an ordinary user type coincidentally named `…Props` losing its hover) plus a repeat of the latency-table transcription defect below. See `docs/gate3-results.md`'s own note at the top for both. Through the real parser, completion / hover / definition / diagnostics all work for `let user = load_user(); <UserCard user={user} />`, including cross-file definition and completion under incomplete input, for both the opening and closing side of a JSX element. Full writeup, evidence files and known limitations: [`docs/gate3-results.md`](../../gate3-results.md).
 
-### Latency (from `docs/gate3-results.md`, one honest run — see that document for why the previous "two runs" table is not reproducible from its own retained evidence)
+### Latency
 
-| Request | ms |
+**Generated, not transcribed** (issue #9 Gate 3 review, M4/MEDIUM-12, and its
+repeat in the second review): this table and `docs/gate3-results.md`'s copy
+of it are both printed verbatim by
+[`spikes/rust-analyzer/client/gate3-latency-table.mjs`](../../../spikes/rust-analyzer/client/gate3-latency-table.mjs)
+from one `cargo test -p outou-lsp --test gate3 -- --ignored --nocapture`
+run's artifacts — re-run the script after any gate3 run and re-paste its
+output into both documents rather than hand-editing either one. See
+`docs/gate3-results.md`'s "Measured latency" for the full table (every row,
+including the three new H1-H3 probes); this is the same run, trimmed to the
+rows this issue originally tracked:
+
+<!-- BEGIN GENERATED (subset): node spikes/rust-analyzer/client/gate3-latency-table.mjs -->
+
+| Request | Latency (ms) |
 |---|---|
-| hover (`user`) | 4594 |
-| definition (same file) | 808 |
-| definition (cross-file) | 4031 |
-| completion (member) | 4118 |
-| completion (tag name, component) | 3 (answered locally; never forwarded) |
-| completion (attribute name) | 2 (answered locally; never forwarded) |
-| completion (prop value) | 4205 |
-| `didSave` → type-mismatch diagnostic | 4262 |
-| `didChange` → Outou syntax diagnostic | 102 |
+| hover (`user`) | 6273 |
+| definition (`load_user`, same file) | 809 |
+| definition (`UserCard`, cross-file) | 5689 |
+| completion (member, `user.`) | 4637 |
+| completion (tag, component) | 3 (answered locally; never forwarded) |
+| completion (attribute name) | 3 (answered locally; never forwarded) |
+| completion (prop value, `user={us}`) | 4241 |
+| `didSave` -> mismatched-types diagnostic | 4561 |
+| `didChange` -> Outou syntax diagnostic | 101 |
 
-These are real elapsed times to a *correct* answer (this pass's test client retries until the answer is useful, not merely non-`null`), not sleep durations and not the first-answer-however-wrong figures the previous revision reported — see `docs/gate3-results.md`'s "Measured latency" section for the full comparison.
+<!-- END GENERATED -->
+
+These are real elapsed times to a *correct* answer (this pass's test client retries until the answer is useful, not merely non-`null`), not sleep durations and not the first-answer-however-wrong figures an earlier revision reported.
 
 ### Implementation notes
 
@@ -47,7 +62,7 @@ These are real elapsed times to a *correct* answer (this pass's test client retr
   reads the editor (via `lsp_server::Connection`), one reads a spawned
   rust-analyzer child (`crates/outou-lsp/src/ra.rs`, reusing
   `lsp_server::Message`'s own framing for that side too), correlated by a
-  request-id map (`crates/outou-lsp/src/dispatch.rs`).
+  request-id map (`crates/outou-lsp/src/dispatch/{mod,requests,responses}.rs`).
 - Position/location mapping (`crates/outou-lsp/src/mapping.rs`) does not use
   `outou_sourcemap::SourceMap::to_generated`/`map_range` directly for
   single-position queries: those are designed for the many-to-many

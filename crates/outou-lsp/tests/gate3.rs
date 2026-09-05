@@ -30,6 +30,16 @@
 //! `rust-analyzer` binary is not available, since neither is a Rust
 //! toolchain component this repository can assume in every environment
 //! that runs `cargo test --workspace`.
+//!
+//! Saving raw probe outputs to `spikes/rust-analyzer/results/gate3-*.json.gz`
+//! (the evidence `docs/gate3-results.md`'s and
+//! `docs/phase0/issues/09-integrated-lsp.md`'s latency tables are generated
+//! from, via `spikes/rust-analyzer/client/gate3-latency-table.mjs`) is
+//! **opt-in**: set `GATE3_SAVE_ARTIFACTS=1` to write there. Without it, this
+//! run still executes every probe and every assertion exactly as before —
+//! it only writes its JSON output to a temporary directory instead, so a
+//! routine or CI run of this test never silently overwrites the checked-in
+//! evidence a docs table was generated from.
 
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -43,11 +53,14 @@ const PROBES: &[&str] = &[
     "hover-user",
     "hover-nonascii",
     "hover-element-tag",
+    "hover-closing-tag",
+    "hover-props-named-type",
     "definition-load-user",
     "definition-user-card",
     "completion-member",
     "completion-tag-component",
     "completion-tag-element",
+    "completion-closing-tag",
     "completion-prop-name",
     "completion-attr-value",
     "completion-prop-value",
@@ -76,6 +89,11 @@ const LEAKAGE_MARKERS: &[&str] = &[
     "__private",
     "__template",
     "rsx!",
+    // H2 (issue #9 Gate 3 review): an HTML element's rustdoc "## Usage in
+    // rsx" section named no `dioxus_*` path directly, so it survived
+    // every marker above for a closing tag whose hover was not otherwise
+    // classified locally.
+    "Usage in rsx",
 ];
 
 fn repo_root() -> PathBuf {
@@ -256,13 +274,29 @@ fn run_probe(
         .unwrap_or_else(|e| panic!("parsing outou-lsp-client.mjs output for probe {probe}: {e}"))
 }
 
-/// Writes `json` gzip-compressed to
-/// `spikes/rust-analyzer/results/gate3-<probe>.json.gz`, matching the
-/// Gate 0 results' own convention (`spikes/rust-analyzer/results/README.md`):
-/// shells out to the system `gzip`, since this repository has no gzip
-/// crate dependency and the Gate 0 raw results were produced the same way.
+/// The directory `save_gzipped` writes its artifacts to: the checked-in
+/// `spikes/rust-analyzer/results/` only when the environment variable
+/// `GATE3_SAVE_ARTIFACTS=1` is set (opt-in, since those files are the
+/// evidence `docs/gate3-results.md`'s and
+/// `docs/phase0/issues/09-integrated-lsp.md`'s latency tables are generated
+/// from, and a routine test run must never silently overwrite them);
+/// otherwise a directory under the system temp dir, so the probes and their
+/// assertions still run exactly the same either way.
+fn artifacts_dir(root: &Path) -> PathBuf {
+    if std::env::var("GATE3_SAVE_ARTIFACTS").as_deref() == Ok("1") {
+        root.join("spikes/rust-analyzer/results")
+    } else {
+        std::env::temp_dir().join("outou-gate3-results")
+    }
+}
+
+/// Writes `json` gzip-compressed to `gate3-<probe>.json.gz` under
+/// [`artifacts_dir`], matching the Gate 0 results' own convention
+/// (`spikes/rust-analyzer/results/README.md`): shells out to the system
+/// `gzip`, since this repository has no gzip crate dependency and the Gate 0
+/// raw results were produced the same way.
 fn save_gzipped(root: &Path, probe: &str, json: &serde_json::Value) {
-    let results_dir = root.join("spikes/rust-analyzer/results");
+    let results_dir = artifacts_dir(root);
     let pretty = serde_json::to_vec_pretty(json).expect("gate3 results always serialize");
 
     let tmp_path =
@@ -438,6 +472,42 @@ fn check_probe(
             let _ = has_hover;
             Ok(())
         }
+        "hover-closing-tag" => {
+            // H2: a closing tag's own name is classified locally, exactly
+            // like the opening tag's (`crate::complete::is_tag_name_position`),
+            // and answered `null` directly — never forwarded to
+            // rust-analyzer at all, so the result must be exactly `null`,
+            // not merely leakage-free.
+            let hover = result
+                .get("hover")
+                .cloned()
+                .unwrap_or(serde_json::Value::Null);
+            if !hover.is_null() {
+                return Err(format!(
+                    "hover on a closing tag name must be exactly null (answered locally): {hover}"
+                ));
+            }
+            Ok(())
+        }
+        "hover-props-named-type" => {
+            // H3: `MyProps` is an ordinary user struct, not backend
+            // vocabulary, so hover on the `config` parameter must resolve
+            // normally (mentioning `MyProps`, at the parameter's own
+            // exact range) rather than come back `null`/fences-only.
+            let value = result
+                .pointer("/hover/contents/value")
+                .and_then(|v| v.as_str())
+                .ok_or("no hover contents for the `MyProps`-named-type probe")?;
+            if !value.contains("MyProps") {
+                return Err(format!(
+                    "hover on `config: MyProps` did not mention `MyProps`: {value}"
+                ));
+            }
+            let range = result
+                .pointer("/hover/range")
+                .ok_or("no hover range for the `MyProps`-named-type probe")?;
+            require_range_matches(range, 40, 13, 40, 19)
+        }
         "definition-load-user" => {
             let uri = result
                 .pointer("/definition/0/uri")
@@ -477,6 +547,20 @@ fn check_probe(
         "completion-tag-element" => {
             let item = find_completion_item(result, "div").ok_or("no `div` item")?;
             require_edit_range_matches(item, 9, 11)
+        }
+        "completion-closing-tag" => {
+            // H1: answered locally (never forwarded), so the closing
+            // `</p>` tag offers HTML element names starting with "p"
+            // (`p`, `pre`), and — the actual regression this probe
+            // guards — the edit range sits on the *closing* tag's own
+            // "p" (line 30, columns 28..29), never the opening tag's
+            // position the old reverse-mapping bug always produced.
+            let item = find_completion_item(result, "p")
+                .ok_or("no `p` item for the closing tag completion")?;
+            let range = item
+                .pointer("/textEdit/range")
+                .ok_or_else(|| format!("item has no textEdit.range: {item}"))?;
+            require_range_matches(range, 30, 28, 30, 29)
         }
         "completion-prop-name" => {
             let item = find_completion_item(result, "user").ok_or("no `user` item")?;
@@ -690,6 +774,45 @@ fn require_range_on_line(range: &serde_json::Value, line: i64) -> Result<(), Str
     if start_line != line || end_line != line {
         return Err(format!(
             "expected range on line {line}, got {start_line}..{end_line}"
+        ));
+    }
+    Ok(())
+}
+
+/// Asserts a range is exactly `{start_line}:{start_char}..{end_line}:{end_char}`
+/// (0-indexed) — stricter than [`require_range_on_line`] (which only
+/// checks the line) or [`require_edit_range_matches`] (which only checks
+/// the character columns), used where a probe's whole point is that the
+/// range landed at one *specific* line and column, not merely somewhere
+/// on the right line.
+fn require_range_matches(
+    range: &serde_json::Value,
+    start_line: i64,
+    start_char: i64,
+    end_line: i64,
+    end_char: i64,
+) -> Result<(), String> {
+    let got_start_line = range
+        .pointer("/start/line")
+        .and_then(|v| v.as_i64())
+        .ok_or("range has no start.line")?;
+    let got_start_char = range
+        .pointer("/start/character")
+        .and_then(|v| v.as_i64())
+        .ok_or("range has no start.character")?;
+    let got_end_line = range
+        .pointer("/end/line")
+        .and_then(|v| v.as_i64())
+        .ok_or("range has no end.line")?;
+    let got_end_char = range
+        .pointer("/end/character")
+        .and_then(|v| v.as_i64())
+        .ok_or("range has no end.character")?;
+    if (got_start_line, got_start_char, got_end_line, got_end_char)
+        != (start_line, start_char, end_line, end_char)
+    {
+        return Err(format!(
+            "expected range {start_line}:{start_char}..{end_line}:{end_char}, got {got_start_line}:{got_start_char}..{got_end_line}:{got_end_char}"
         ));
     }
     Ok(())

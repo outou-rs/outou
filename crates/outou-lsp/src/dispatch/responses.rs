@@ -157,17 +157,29 @@ fn map_pending_result(
         PendingKind::Completion {
             generated_uri,
             cursor,
-        } => response::map_completion_response(workspace, &generated_uri, cursor, &mut value),
+            rsx_cursor,
+        } => response::map_completion_response(
+            workspace,
+            &generated_uri,
+            cursor,
+            rsx_cursor,
+            &mut value,
+        ),
     }
     Ok(value)
 }
 
-/// TODO(phase0) (issue #9 Gate 3 review, S6): forward `$/progress` to the
-/// editor (rewriting the token so it does not collide with the editor's
-/// own) instead of dropping it here, so a real editor gets a readiness
-/// signal for rust-analyzer's indexing; `outou-lsp-client.mjs` currently
-/// works around the lack of one with a fixed settle window (see its own
-/// module doc comment).
+/// TODO(phase0) (issue #9 Gate 3 review, S6, and L12's SKIP item): forward
+/// `$/progress` to the editor (rewriting the token so it does not
+/// collide with the editor's own) instead of dropping it here, so a real
+/// editor gets a readiness signal for rust-analyzer's indexing;
+/// `outou-lsp-client.mjs` currently works around the lack of one with
+/// bounded request retries (see its own module doc comment). L12: until
+/// this lands, `handle_ra_request`'s own
+/// `window/workDoneProgress/create` forwarding (`crate::dispatch::responses`,
+/// `forward_ra_request_to_client`) asks a real editor to *create*
+/// progress tokens that then never begin or end here — either land this
+/// together with that, or stop forwarding `create` until it does.
 fn handle_ra_notification(state: &mut State, connection: &Connection, notification: Notification) {
     if notification.method == "textDocument/publishDiagnostics" {
         if let Ok(params) = serde_json::from_value::<PublishDiagnosticsParams>(notification.params)

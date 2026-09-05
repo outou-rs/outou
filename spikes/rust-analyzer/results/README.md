@@ -110,6 +110,19 @@ generated file. The target program is `examples/phase0-app`, not this
 directory's `fixture/`. Produced by `crates/outou-lsp/tests/gate3.rs`; write-up
 in [`docs/gate3-results.md`](../../../docs/gate3-results.md).
 
+Writing these files is **opt-in**: `crates/outou-lsp/tests/gate3.rs` only
+saves its probe outputs here when `GATE3_SAVE_ARTIFACTS=1` is set in the
+environment; otherwise it writes to a temporary directory instead (running
+every probe and assertion exactly the same either way), so a routine or CI
+run of the test never silently overwrites the evidence the latency tables in
+`docs/gate3-results.md` and `docs/phase0/issues/09-integrated-lsp.md` were
+generated from. Set the variable only when deliberately regenerating this
+directory's artifacts:
+
+```sh
+GATE3_SAVE_ARTIFACTS=1 cargo test -p outou-lsp --test gate3 -- --ignored --nocapture
+```
+
 **Revised after a review of the original 8-probe run** (issue #9 fix list):
 `gate3-completion-component.json.gz` and `gate3-completion-prop.json.gz` are
 removed — the probes they were named for were replaced (`completion-tag-

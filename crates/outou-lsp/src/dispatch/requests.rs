@@ -16,15 +16,35 @@ use crate::uri;
 
 pub(crate) fn dispatch_client_request(state: &mut State, connection: &Connection, req: Request) {
     match req.method.as_str() {
-        "textDocument/hover" => forward_position_request(state, connection, req, |uri, _pos| {
-            PendingKind::Hover { generated_uri: uri }
-        }),
+        "textDocument/hover" => dispatch_hover_request(state, connection, req),
         "textDocument/completion" => dispatch_completion_request(state, connection, req),
         "textDocument/definition" => {
-            forward_position_request(state, connection, req, |_, _| PendingKind::Definition)
+            forward_position_request(state, connection, req, |_, _, _| PendingKind::Definition)
         }
         _ => forward_transparent_request(state, connection, req),
     }
+}
+
+/// `textDocument/hover` needs the same local/forward split H1 gave
+/// completion (issue #9 Gate 3 review, H2): a tag-name position (element
+/// or component, opening or closing) is answered locally with `null`,
+/// never forwarded — see `crate::complete::is_tag_name_position`'s own
+/// doc comment for why.
+fn dispatch_hover_request(state: &mut State, connection: &Connection, req: Request) {
+    if let Some(workspace) = &state.workspace {
+        if let Some((rsx_uri, position)) = extract_position_params(&req.params) {
+            let rsx_uri_string = uri::to_outou(&rsx_uri).as_str().to_string();
+            if complete::is_tag_name_position(workspace, &rsx_uri_string, position) {
+                let _ = connection
+                    .sender
+                    .send(Message::Response(Response::new_ok(req.id, Value::Null)));
+                return;
+            }
+        }
+    }
+    forward_position_request(state, connection, req, |uri, _pos, _rsx_pos| {
+        PendingKind::Hover { generated_uri: uri }
+    });
 }
 
 fn extract_position_params(params: &Value) -> Option<(lsp_types::Uri, lsp_types::Position)> {
@@ -54,10 +74,11 @@ fn dispatch_completion_request(state: &mut State, connection: &Connection, req: 
             }
         }
     }
-    forward_position_request(state, connection, req, |uri, cursor| {
+    forward_position_request(state, connection, req, |uri, cursor, rsx_cursor| {
         PendingKind::Completion {
             generated_uri: uri,
             cursor,
+            rsx_cursor,
         }
     });
 }
@@ -66,7 +87,7 @@ fn forward_position_request(
     state: &mut State,
     connection: &Connection,
     req: Request,
-    make_kind: impl FnOnce(lsp_types::Uri, lsp_types::Position) -> PendingKind,
+    make_kind: impl FnOnce(lsp_types::Uri, lsp_types::Position, lsp_types::Position) -> PendingKind,
 ) {
     let client_id = req.id.clone();
     let Some(workspace) = &state.workspace else {
@@ -95,7 +116,7 @@ fn forward_position_request(
         ra_id.clone(),
         Pending {
             client_id,
-            kind: make_kind(mapped.generated_uri, mapped.position),
+            kind: make_kind(mapped.generated_uri, mapped.position, position),
             epoch: state.epoch,
         },
     );

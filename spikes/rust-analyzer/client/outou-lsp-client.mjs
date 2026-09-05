@@ -53,11 +53,14 @@ const PROBES = [
   "hover-user",
   "hover-nonascii",
   "hover-element-tag",
+  "hover-closing-tag",
+  "hover-props-named-type",
   "definition-load-user",
   "definition-user-card",
   "completion-member",
   "completion-tag-component",
   "completion-tag-element",
+  "completion-closing-tag",
   "completion-prop-name",
   "completion-attr-value",
   "completion-prop-value",
@@ -105,6 +108,13 @@ const root = resolve(args.root);
 const mainRsxPath = resolve(root, "src/main.rsx");
 const mainUri = pathToFileURL(mainRsxPath).href;
 const originalText = readFileSync(mainRsxPath, "utf8");
+// `hover-props-named-type` (H3, issue #9 Gate 3 review) needs a position
+// inside `components.rsx`, not `main.rsx` — `outou-lsp` already knows this
+// file's text from planning the crate at startup, so no `didOpen` for it
+// is needed before querying it.
+const componentsRsxPath = resolve(root, "src/components.rsx");
+const componentsUri = pathToFileURL(componentsRsxPath).href;
+const componentsText = readFileSync(componentsRsxPath, "utf8");
 const timeoutMs = Number(args.timeout ?? 60000);
 
 const env = { ...process.env };
@@ -389,6 +399,38 @@ async function runProbe(probe) {
       );
       break;
     }
+    case "hover-closing-tag": {
+      // H2 (issue #9 Gate 3 review): hovering a *closing* tag's own name
+      // must be just as free of backend vocabulary as the opening tag
+      // already is (`hover-element-tag`) — the same leak, reachable from
+      // the other end of the element (`</main>`'s "main" is the mapping's
+      // second source; `<main class="app">`'s own "main" is the first).
+      const pos = positionOf(originalText, "</main>");
+      await requestUntilReady(
+        "hover",
+        "textDocument/hover",
+        { textDocument: { uri: mainUri }, position: { line: pos.line, character: pos.character + 2 } },
+        () => true,
+      );
+      break;
+    }
+    case "hover-props-named-type": {
+      // H3 (issue #9 Gate 3 review): `MyProps` (`components.rsx`) is an
+      // ordinary user struct, not anything this backend generated, but
+      // its name happens to end in `Props` — exactly the shape the old
+      // bare heuristic mistook for backend vocabulary, blanking hover on
+      // the `config` parameter entirely. Position is inside
+      // `components.rsx`, which this server already knows from planning
+      // the crate — no `didOpen` needed.
+      const pos = positionOf(componentsText, "config: MyProps");
+      await requestUntilReady(
+        "hover",
+        "textDocument/hover",
+        { textDocument: { uri: componentsUri }, position: { line: pos.line, character: pos.character + 1 } },
+        isUsefulHover,
+      );
+      break;
+    }
     case "definition-load-user": {
       const pos = positionOf(originalText, "load_user()", 0);
       await requestUntilReady(
@@ -453,6 +495,22 @@ async function runProbe(probe) {
         "completion",
         "textDocument/completion",
         { textDocument: { uri: mainUri }, position: { line, character: 11 } },
+        hasCompletionItems,
+      );
+      break;
+    }
+    case "completion-closing-tag": {
+      // H1 (issue #9 Gate 3 review): completion at a *closing* tag's own
+      // name must be answered locally too, exactly like the opening tag
+      // — never forwarded to rust-analyzer, which returned a
+      // `dioxus_html::AttributeDescription`-shaped item whose `textEdit`
+      // reverse-mapped back to the *opening* tag's position instead of
+      // the closing tag actually being edited.
+      const pos = positionOf(originalText, "</p>");
+      await requestUntilReady(
+        "completion",
+        "textDocument/completion",
+        { textDocument: { uri: mainUri }, position: { line: pos.line, character: pos.character + 3 } },
         hasCompletionItems,
       );
       break;

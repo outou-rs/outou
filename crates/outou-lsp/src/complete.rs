@@ -169,6 +169,36 @@ pub fn local_completion(
     }
 }
 
+/// Whether `position` inside `rsx_uri` sits on a JSX tag name — element or
+/// component, opening or closing (issue #9 Gate 3 review, H2): used by
+/// `crate::dispatch::requests` to answer `textDocument/hover` there with
+/// `null` directly, exactly like [`local_completion`] does for
+/// completion, rather than forwarding it to rust-analyzer and sanitizing
+/// whatever comes back. Every generated occurrence of a tag name is
+/// either backend vocabulary (an HTML element's own `dioxus_html::…`
+/// rustdoc) or this backend's own macro-internal token for a user
+/// component — and a *closing* tag's occurrence in particular
+/// reverse-maps to the *opening* tag's `.rsx` position (H1), which would
+/// make even a correctly-sanitized non-`null` hover shown there
+/// misleading regardless of its content.
+pub fn is_tag_name_position(
+    workspace: &Workspace,
+    rsx_uri: &str,
+    position: lsp_types::Position,
+) -> bool {
+    let Some(doc) = workspace.rsx.get(rsx_uri) else {
+        return false;
+    };
+    let offset = doc
+        .line_index
+        .position_to_offset(outou_sourcemap::Position::new(
+            position.line,
+            position.character,
+        ));
+    let parsed = outou_syntax::parse(doc.line_index.text());
+    matches!(classify(&parsed.file, offset), Cursor::TagName { .. })
+}
+
 fn touches(span: outou_sourcemap::Span, offset: u32) -> bool {
     span.contains(outou_sourcemap::Span::new(offset, offset))
 }
@@ -252,18 +282,63 @@ fn classify_element(element: &ast::JsxElement, offset: u32) -> Option<Cursor> {
             return Some(cursor);
         }
     }
+    // H1 (issue #9 Gate 3 review): a closing tag's own name is a tag-name
+    // position too, exactly like the opening tag's, and must be answered
+    // locally for the same reason — forwarding it to rust-analyzer
+    // returned a `dioxus_html::AttributeDescription`-shaped completion (or
+    // the element's full rustdoc on hover), and its `textEdit`/range
+    // always reverse-mapped back to the *opening* tag's `.rsx` position
+    // instead (`crate::mapping::generated_location_to_source`'s multi-source
+    // mapping always uses the first source) — accepting it silently
+    // rewrote the wrong tag.
+    if let Some(close) = &element.close {
+        if let Some(cursor) = classify_tag(close, offset) {
+            return Some(cursor);
+        }
+    }
     None
 }
 
 fn classify_tag(tag: &ast::JsxTag, offset: u32) -> Option<Cursor> {
-    let name = match tag {
-        ast::JsxTag::Named { name, .. } => Some(name),
-        ast::JsxTag::Incomplete(incomplete) => incomplete.name.as_ref(),
-    }?;
-    touches(name.span, offset).then(|| Cursor::TagName {
-        partial: name.name.clone(),
-        span: name.span,
-    })
+    match tag {
+        ast::JsxTag::Named { name, .. } => touches(name.span, offset).then(|| Cursor::TagName {
+            partial: prefix_before_cursor(name, offset),
+            span: name.span,
+        }),
+        ast::JsxTag::Incomplete(incomplete) => match &incomplete.name {
+            Some(name) => touches(name.span, offset).then(|| Cursor::TagName {
+                partial: prefix_before_cursor(name, offset),
+                span: name.span,
+            }),
+            // M6 (issue #9 Gate 3 review): a bare `<` with no name typed
+            // yet at all is still a tag-name position, not an ordinary
+            // Rust expression — without this, `JsxTag::Incomplete { name:
+            // None }` fell through every classifier all the way to
+            // `Cursor::Expression`, which then forwarded the bare `<`
+            // into an overlay that is not even valid Rust (recovery emits
+            // it verbatim), so the advertised `<` trigger character
+            // returned nothing.
+            None => touches(incomplete.span, offset).then(|| Cursor::TagName {
+                partial: String::new(),
+                span: outou_sourcemap::Span::new(offset, offset),
+            }),
+        },
+    }
+}
+
+/// The prefix of `name`'s text up to (not including) byte offset `cursor`
+/// — the identifier text actually typed so far — rather than `name`'s
+/// whole (possibly longer) text (issue #9 Gate 3 review, M7): filtering
+/// candidates by the *whole* name instead left only an exact match while
+/// an edit was still in progress (editing `<TagL‸ist` in place filtered
+/// candidates by the full `"TagList"`, not the `"TagL"` actually typed
+/// before the cursor, so `TagList` itself was the only survivor and
+/// nothing else). Byte-safe: falls back to the whole name if `cursor`
+/// does not land on a `char` boundary within it (defensive only — tag and
+/// attribute names are ordinary Rust identifiers, always ASCII).
+fn prefix_before_cursor(name: &ast::Ident, cursor: u32) -> String {
+    let len = cursor.saturating_sub(name.span.start) as usize;
+    name.name.get(..len).unwrap_or(&name.name).to_string()
 }
 
 fn tag_name(tag: &ast::JsxTag) -> Option<String> {
@@ -281,7 +356,7 @@ fn classify_attribute(
     if attribute.value.is_none() && touches(attribute.name.span, offset) {
         return Some(Cursor::AttrName {
             tag_name: tag_name(open),
-            partial: attribute.name.name.clone(),
+            partial: prefix_before_cursor(&attribute.name, offset),
             span: attribute.name.span,
         });
     }
@@ -311,6 +386,15 @@ fn classify_child(child: &ast::JsxChild, offset: u32) -> Option<Cursor> {
 /// editor has it open), reparsed fresh so tag-name/attribute-name
 /// completion always reflects the current buffers rather than a plan-time
 /// snapshot.
+///
+/// TODO(phase0) (issue #9 Gate 3 review, L15's SKIP item): this reparses
+/// **every** `.rsx` file in the workspace on every tag/attribute-name
+/// keystroke (plus one further reparse of the current document inside
+/// `local_completion`, whose own `RsxDocument` already parsed it). Fine
+/// at Phase 0 scale (`examples/phase0-app`'s two files reparse in well
+/// under a millisecond); caching each file's last parse (invalidated on
+/// its own edit) or reusing the current document's own parse is future
+/// work, not required for Gate 3.
 fn parsed_files(workspace: &Workspace) -> Vec<outou_syntax::Parsed> {
     workspace
         .rsx
@@ -521,5 +605,95 @@ mod tests {
         let parsed = outou_syntax::parse(source);
         let offset = source.find("class=").unwrap() as u32 + "class=".len() as u32;
         assert!(matches!(classify(&parsed.file, offset), Cursor::Expression));
+    }
+
+    /// H1: a *closing* tag's own name is a tag-name position too, not
+    /// merely something that falls through to `Cursor::Expression` (which
+    /// used to forward it to rust-analyzer).
+    #[test]
+    fn classify_finds_a_closing_tag_name() {
+        let source = "#[component]\nfn App() -> Element {\n    <p>hi</p>\n}\n";
+        let parsed = outou_syntax::parse(source);
+        let offset = source.find("</p>").unwrap() as u32 + "</p".len() as u32;
+        match classify(&parsed.file, offset) {
+            Cursor::TagName { partial, .. } => assert_eq!(partial, "p"),
+            _ => panic!("expected a TagName cursor for the closing tag"),
+        }
+    }
+
+    /// M6: a bare `<` with nothing typed after it yet is still a
+    /// tag-name position (with an empty partial), not `Cursor::Expression`.
+    /// Needs a nested-child `<` (grammar §2.1's "always a nested element,
+    /// no Rust-vs-JSX ambiguity" rule,
+    /// `outou_syntax::parser::jsx::children::parse_nested_child_element`)
+    /// rather than a top-level one: a bare `<` at a fresh Rust-expression
+    /// position with no JSX-shaped token after it (here, `}`) is rule 2's
+    /// ordinary less-than operator, and never becomes JSX at all.
+    #[test]
+    fn classify_treats_a_bare_open_angle_bracket_as_an_empty_tag_name() {
+        let source = "#[component]\nfn App() -> Element {\n    <div>\n        <\n    </div>\n}\n";
+        let parsed = outou_syntax::parse(source);
+        let offset = source.find("<\n").unwrap() as u32 + 1;
+        match classify(&parsed.file, offset) {
+            Cursor::TagName { partial, .. } => assert_eq!(partial, ""),
+            _ => panic!("expected an empty TagName cursor"),
+        }
+    }
+
+    /// M7: editing a name *in place* must filter by the prefix before the
+    /// cursor, not the whole (longer) name — `<TagL‸ist` should behave
+    /// like `<TagL`, not like a complete, exact `"TagList"` filter.
+    #[test]
+    fn classify_uses_the_prefix_before_the_cursor_not_the_whole_name() {
+        let source = "#[component]\nfn App() -> Element {\n    <TagList\n}\n";
+        let parsed = outou_syntax::parse(source);
+        let offset = source.find("<TagList").unwrap() as u32 + "<TagL".len() as u32;
+        match classify(&parsed.file, offset) {
+            Cursor::TagName { partial, .. } => assert_eq!(partial, "TagL"),
+            _ => panic!("expected a TagName cursor"),
+        }
+    }
+
+    #[test]
+    fn is_tag_name_position_is_true_on_a_closing_tag_and_false_on_an_expression() {
+        let source =
+            "#[component]\nfn App() -> Element {\n    let user = load_user();\n    <p>hi</p>\n}\n";
+        let workspace = crate::documents::Workspace {
+            manifest_dir: std::path::PathBuf::from("/app"),
+            plan: None,
+            registry: outou_sourcemap::Registry::new(),
+            rsx: std::collections::HashMap::new(),
+            generated: std::collections::HashMap::new(),
+            rsx_to_generated: std::collections::HashMap::new(),
+        };
+        let mut workspace = workspace;
+        workspace.rsx.insert(
+            "file:///app/src/main.rsx".to_string(),
+            crate::documents::RsxDocument::new(source.to_string(), 1),
+        );
+        let doc = workspace.rsx.get("file:///app/src/main.rsx").unwrap();
+        let close_offset = source.find("</p>").unwrap() as u32 + "</p".len() as u32;
+        let close_position = mapping::to_lsp_range(
+            doc.line_index
+                .span_to_range(outou_sourcemap::Span::new(close_offset, close_offset)),
+        )
+        .start;
+        assert!(is_tag_name_position(
+            &workspace,
+            "file:///app/src/main.rsx",
+            close_position
+        ));
+
+        let expr_offset = source.find("load_user()").unwrap() as u32 + 2;
+        let expr_position = mapping::to_lsp_range(
+            doc.line_index
+                .span_to_range(outou_sourcemap::Span::new(expr_offset, expr_offset)),
+        )
+        .start;
+        assert!(!is_tag_name_position(
+            &workspace,
+            "file:///app/src/main.rsx",
+            expr_position
+        ));
     }
 }

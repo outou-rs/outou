@@ -52,6 +52,17 @@ enum PendingKind {
         /// does not contain it (issue #9 Gate 3 review, M4/HIGH-8: a
         /// wrongly mapped `textEdit` corrupts the buffer if accepted).
         cursor: lsp_types::Position,
+        /// The original `.rsx` position the editor actually asked about,
+        /// so the response mapping can re-check cursor containment a
+        /// *second* time, after mapping each item's edit back to `.rsx`
+        /// coordinates (issue #9 Gate 3 review, H1): `cursor` above only
+        /// catches a mismatch in *generated* coordinates; a mapping that
+        /// reverse-maps to the wrong `.rsx` location entirely (e.g. an
+        /// element name whose mapping has more than one source always
+        /// resolving to the first — a closing tag's own occurrence
+        /// resolving to its opening tag) passes that check while still
+        /// landing on the wrong place, and is only caught here.
+        rsx_cursor: lsp_types::Position,
     },
     /// Forwarded verbatim; the response is relayed with no mapping.
     Forward,

@@ -74,15 +74,23 @@ After that:
   — for one that already existed, `didClose` for one that no longer
   exists).
 - `textDocument/completion` first classifies the `.rsx` cursor against
-  Outou's own parse tree (`src/complete.rs`): a JSX tag name or attribute
-  name is answered **locally**, from the plan's `#[component]` functions
-  and a static HTML element list — never forwarded to rust-analyzer,
-  which only ever sees the *expanded* Rust and cannot tell a tag-name
-  position from an ordinary identifier. Every other position (`user.`, a
-  prop *value*) is forwarded and mapped as below.
-- `textDocument/{hover,definition}` map the position to the generated
-  file, forward the request, and map the response back, sanitizing it on
-  the way (see "What gets sanitized" below).
+  Outou's own parse tree (`src/complete.rs`): a JSX tag name (element or
+  component, opening **or closing**) or attribute name is answered
+  **locally**, from the plan's `#[component]` functions and a static
+  HTML element list — never forwarded to rust-analyzer, which only ever
+  sees the *expanded* Rust and cannot tell a tag-name position from an
+  ordinary identifier, and would in any case reverse-map a closing tag's
+  own name back to its opening tag's position (issue #9 Gate 3 review,
+  H1). Every other position (`user.`, a prop *value*) is forwarded and
+  mapped as below.
+- `textDocument/hover` uses the same tag-name classification: a tag name
+  is answered `null` **locally** too (issue #9 Gate 3 review, H2) —
+  neither an HTML element's nor a user component's generated occurrence
+  has anything useful to show once sanitized, and the closing tag's own
+  occurrence has the same reverse-mapping ambiguity as completion's. Every
+  other hover, and every `textDocument/definition`, maps the position to
+  the generated file, forwards the request, and maps the response back,
+  sanitizing it on the way (see "What gets sanitized" below).
 - `textDocument/publishDiagnostics` from rust-analyzer is mapped back,
   merged with Outou's own syntax diagnostics, and translated out of
   backend vocabulary; an unmapped diagnostic (synthesized code, no direct
@@ -131,18 +139,35 @@ failure):
   coordinates (an entry with no source is dropped, not shown pointing at
   `src/.generated/…`), and their messages translated.
 - A completion item is dropped outright if its `label`/`detail`/
-  `documentation`/`filterText` names a backend marker (an extended list:
-  `dioxus_*`, `PropsBuilder`, `VNode`, `RenderError`, `__template`,
-  `_completions`, a `^__`-prefixed or `…Props`-suffixed name, …), if it is
-  a typed-builder internal (`build`/`into`/`try_into`) exposed by a
-  `PropsBuilder` chain, or if its primary edit's mapped range does not
-  contain the request's cursor position (a wrongly-mapped edit would
-  otherwise corrupt the buffer if accepted). `documentation` is stripped
-  from every surviving item.
-- Hover contents have `::outou::__private::…`/`dioxus_*::…` path
-  prefixes stripped, and any line that still names a backend marker after
-  that is dropped; a hover with nothing left is suppressed entirely
-  rather than shown starting mid-sentence.
+  `documentation`/`filterText`/`insertText`/`labelDetails.detail`/
+  `.description` names a backend marker (an extended list: `dioxus_*`,
+  `PropsBuilder`, `VNode`, `RenderError`, `__template`, `_completions`, a
+  `^__`-prefixed or `…Props`-suffixed name, `Usage in rsx`,
+  `ChildComponent`, …), if it is a typed-builder internal
+  (`build`/`into`/`try_into`) exposed by a `PropsBuilder` chain, or if its
+  primary edit's range does not contain the request's cursor — checked
+  **twice**: once before mapping (in generated coordinates, against the
+  generated cursor the request was sent for) and again after mapping the
+  edit back to `.rsx` coordinates (against the original `.rsx` cursor,
+  issue #9 Gate 3 review, H1) — a mapping that reverse-maps to the wrong
+  `.rsx` location entirely (a multi-source mapping always resolving to
+  its first source: a closing tag's own generated occurrence resolving to
+  its opening tag) passes the first check but fails the second.
+  `additionalTextEdits` is stripped from every surviving item rather than
+  mapped (an unmapped one would apply at the wrong, generated-coordinate
+  position), and so is `documentation`.
+- A JSX tag name (element or component, opening **or closing**) is never
+  even sent to rust-analyzer for hover: it is classified locally, exactly
+  like completion, and answered `null` directly
+  (`crate::complete::is_tag_name_position`). Every hover that *is*
+  forwarded has `::outou::__private::…`/`dioxus_*::…` path prefixes
+  stripped, and any line that still names a backend marker — or names a
+  real component's own `Props`/`PropsBuilder` type, anchored to the
+  plan's actual `#[component]` functions rather than the bare
+  `…Props`-suffix shape guess (issue #9 Gate 3 review, H3) — is dropped;
+  a hover with nothing left, or with only markdown layout (an empty
+  fence, a bare heading) surviving, is suppressed entirely rather than
+  shown starting mid-sentence or empty-looking.
 
 ## Layout
 
@@ -150,10 +175,15 @@ failure):
 |---|---|
 | `src/main.rs` | Arg parsing (`--version`), resolves the rust-analyzer binary, fails fast if it cannot be found. |
 | `src/server.rs` | The main loop: `initialize`, crate planning, rust-analyzer setup (capability forcing/validation), the client/rust-analyzer select loop. |
-| `src/dispatch.rs` | Per-message handling once the handshake is done: request/response mapping, cancel/epoch bookkeeping, notification handling, single-unit regeneration and re-planning. |
-| `src/complete.rs` | Outou-native tag-name/attribute-name completion, answered without ever asking rust-analyzer. |
+| `src/dispatch/mod.rs` | Shared `State`/`Pending`/`PendingKind` bookkeeping (cancel/epoch tracking) the three sibling modules below mutate. |
+| `src/dispatch/requests.rs` | Requests the editor sends this server: position mapping, the local completion/hover split, `$/cancelRequest` rewriting. |
+| `src/dispatch/responses.rs` | Everything coming back from rust-analyzer: its responses (mapped back), its own requests to the editor, its notifications. |
+| `src/dispatch/notifications.rs` | `.rsx` `didOpen`/`didChange`/`didSave`/`didClose` handling, single-unit regeneration and crate-wide re-planning. |
+| `src/complete.rs` | Outou-native tag-name/attribute-name completion (and the hover-side tag-name classifier), answered without ever asking rust-analyzer. |
 | `src/ra.rs` | Spawns rust-analyzer and speaks JSON-RPC to it (reuses `lsp_server::Message`'s own framing for that side too); bounded waits for its `initialize`/`shutdown` responses. |
-| `src/documents.rs` | In-memory state: `.rsx` documents, generated units, the registry, the editor-buffer planning overlay. |
+| `src/documents/mod.rs` | Re-exports; module doc for the split below. |
+| `src/documents/units.rs` | The per-document (`RsxDocument`) and per-generated-unit (`GeneratedUnit`) types. |
+| `src/documents/workspace.rs` | `Workspace`: the plan, the registry, loading, single-unit regeneration and crate-wide re-planning. |
 | `src/plan.rs` | Thin wrapper over `outou_cli::build::plan` (degraded-mode detection, module-declaration-change detection, the planning overlay). |
 | `src/mapping.rs` | Position/range translation between `.rsx` and generated Rust; refuses to translate a transformed (non-exact-length) mapping rather than guess. |
 | `src/response.rs` | Rewrites and sanitizes hover/definition/completion response payloads through `mapping.rs`. |
