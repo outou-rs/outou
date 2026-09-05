@@ -287,7 +287,15 @@ fn rule3_scan(
     name_end: usize,
 ) -> Classification {
     let bytes = source.as_bytes();
-    let generic_args = |resume_at: usize| {
+    // Where attribute parsing resumes once this commits to JSX: right
+    // after the *inner* generic-argument list (`<T>`), never after the
+    // point the whole-tag scan below reaches depth zero — for a
+    // self-closing tag that point is the tag's own `/>`, which would
+    // otherwise swallow every attribute into a widened, wrong element
+    // span (HIGH-2, issue #4 fix list item 1). Computed once up front:
+    // both branches below that commit to JSX use the same value.
+    let resume_at = skip_nested_generic_arguments(bytes, inner_lt);
+    let generic_args = || {
         Classification::Named(NamedTag {
             name_start,
             name_end,
@@ -295,8 +303,13 @@ fn rule3_scan(
             generic_args_skipped_at: Some(inner_lt),
         })
     };
+    // The Rust-vs-JSX decision itself still needs the *whole-candidate*
+    // scan (from the tag's own `<`, not the inner one): only that scan
+    // counts both angle brackets of a real qualified path like
+    // `<Vec<i32>>::new()`, where depth must return to zero at the
+    // *outer* `>` before checking for a following `::`.
     match scan_angle_depth(bytes, candidate_lt) {
-        AngleScanStop::GaveUp { at } => generic_args(at),
+        AngleScanStop::GaveUp { .. } => generic_args(),
         AngleScanStop::DepthZero { after_gt } => {
             let next = next_dtoken(bytes, after_gt);
             let next_is_path_sep =
@@ -304,7 +317,7 @@ fn rule3_scan(
             if next_is_path_sep {
                 Classification::Rust
             } else {
-                generic_args(after_gt)
+                generic_args()
             }
         }
     }
@@ -440,8 +453,18 @@ mod tests {
 
     #[test]
     fn rule3_generics_without_path_sep_is_jsx() {
-        match classify_at("<List<T> items={items} />", "<") {
-            Classification::Named(tag) => assert!(tag.generic_args_skipped_at.is_some()),
+        let src = "<List<T> items={items} />";
+        match classify_at(src, "<") {
+            Classification::Named(tag) => {
+                assert!(tag.generic_args_skipped_at.is_some());
+                // `resume_at` must point right after the skipped `<T>`
+                // generic-argument list, not after the whole tag (HIGH-2,
+                // issue #4 fix list item 1/7): the byte right after `resume_at`
+                // is the space before `items`, not anything past `/>`.
+                let expected_resume = src.find("T>").expect("needle") + 2;
+                assert_eq!(tag.resume_at, expected_resume);
+                assert_eq!(&src[tag.resume_at..], " items={items} />");
+            }
             other => panic!("expected Named, got {other:?}"),
         }
     }

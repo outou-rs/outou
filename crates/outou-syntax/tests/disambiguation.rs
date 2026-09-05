@@ -19,7 +19,15 @@ fn contains_jsx_in_item(item: &ast::Item) -> bool {
                 || f.body.tail.as_deref().is_some_and(contains_jsx_in_expr)
         }
         ast::Item::Module(m) => m.items.iter().flatten().any(contains_jsx_in_item),
-        ast::Item::Rust(_) | ast::Item::Error(_) => false,
+        // LOW-12, issue #4 fix list item 7: an `Item::Rust` run is scanned
+        // for JSX at any brace depth (decision D1, `parser::item`) just
+        // like a function body, so a row whose JSX lands at item level
+        // (a `const`/`static` initializer, for instance) must be found
+        // here too — otherwise this helper would silently report "no
+        // JSX" for a row that actually has some, exactly the gap that let
+        // HIGH-2 go undetected by this file's own tests.
+        ast::Item::Rust(r) => r.parts.iter().any(contains_jsx_in_expr),
+        ast::Item::Error(_) => false,
     }
 }
 
@@ -302,6 +310,28 @@ fn block_operand_comparison_stays_rust() {
     );
 }
 
+/// Two more shapes of the same accepted divergence (issue #4 fix list's
+/// SKIP note for LOW-7): any `}`-ending Rust expression used as a
+/// comparison operand — not just a plain block — hits the same
+/// `from_prev` limitation, since `S { f: a }` and `if c {1} else {2}` both
+/// end in a `}` exactly like `{ 1 }` does. Recorded here, not fixed, for
+/// the same reason as the block case above.
+#[test]
+fn block_operand_comparison_divergence_also_covers_struct_literals_and_if_else() {
+    for (label, source) in [
+        (
+            "struct-literal-as-comparison-operand",
+            "fn f() { let q = S { f: a } < b; }",
+        ),
+        (
+            "if-else-as-comparison-operand",
+            "fn f() { let x = if c { 1 } else { 2 } < y; }",
+        ),
+    ] {
+        assert_source_has_jsx(label, source, true);
+    }
+}
+
 #[test]
 fn field_init_colon_is_expression_position() {
     assert_source_has_jsx(
@@ -405,6 +435,34 @@ fn digit_leading_attribute_name_is_rejected() {
     assert!(
         !parsed.diagnostics.is_empty(),
         "expected a diagnostic for a digit-leading attribute name, got none"
+    );
+}
+
+// ---------------------------------------------------------------------
+// Item 7 (LOW-12): `contains_jsx_in_item` must recurse into `Item::Rust`,
+// not just `Item::Function` — otherwise a decision-table row whose JSX
+// lands at item level (a `const`/`static` initializer, not inside any
+// `fn`) would silently report "no JSX" here even though the parser found
+// some.
+// ---------------------------------------------------------------------
+
+#[test]
+fn item_level_jsx_is_found_by_the_test_helper() {
+    let source = "const VIEW: Element = <A/>;";
+    let parsed = outou_syntax::parse(source);
+    assert!(
+        parsed
+            .file
+            .items
+            .iter()
+            .any(|item| matches!(item, ast::Item::Rust(_))),
+        "expected an Item::Rust for this source: {:#?}",
+        parsed.file
+    );
+    assert!(
+        contains_jsx_in_file(&parsed.file),
+        "contains_jsx_in_item must recurse into Item::Rust.parts: {:#?}",
+        parsed.file
     );
 }
 

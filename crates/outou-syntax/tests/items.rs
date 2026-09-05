@@ -165,6 +165,35 @@ fn attribute_path_is_matched_exactly() {
     assert_eq!(module.path.as_deref(), Some("x"), "{:#?}", module);
 }
 
+// ---------------------------------------------------------------------
+// Item 8 (LOW-11): a body-less `fn` signature (ending in `;`, as inside an
+// `extern` block, or any other bodyless declaration) must stop its
+// signature scan at that `;` rather than hunting for the next `{`
+// anywhere in the file, which used to belong to a completely unrelated
+// following item.
+// ---------------------------------------------------------------------
+
+#[test]
+fn bodyless_fn_signature_does_not_swallow_the_next_item() {
+    let source = "extern \"C\" fn foo();\nfn g() -> Element { <a/> }";
+    let parsed = outou_syntax::parse(source);
+    let functions: Vec<&ast::Function> = parsed
+        .file
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ast::Item::Function(f) => Some(f),
+            _ => None,
+        })
+        .collect();
+    let g = functions
+        .iter()
+        .find(|f| f.name.name == "g")
+        .unwrap_or_else(|| panic!("no `g` function item found: {:#?}", parsed.file));
+    assert_eq!(total_jsx_count(&parsed.file), 1, "{:#?}", parsed.file);
+    assert!(g.body.close.is_some(), "{:#?}", g.body);
+}
+
 #[test]
 fn generic_rust_produces_no_jsx() {
     let cases = [

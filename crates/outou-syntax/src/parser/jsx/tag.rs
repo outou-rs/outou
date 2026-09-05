@@ -246,16 +246,20 @@ impl<'s> Parser<'s> {
 
     /// Handles every attribute-value shape [`Parser::parse_attribute_value`]
     /// does not special-case itself (`'`, `{`, and end of input): grammar
-    /// §5.1 allows exactly Rust's own string-literal grammar (`"…"`,
-    /// `r"…"`, `r#"…"#`, `b"…"`, `br"…"`, `c"…"`, `cr"…"`, …), so this
-    /// tokenizes at `pos` and accepts the value only if the literal found
-    /// there is one of those *string* forms — never a char or numeric
-    /// literal, which [`crate::lexer::rust_token::RtKind::Literal`] does
-    /// not otherwise distinguish (M1). Anything else (a missing value
-    /// right before `/` or `>`, a bare identifier, a number, a char
-    /// literal, …) is diagnosed and left **unconsumed**, so the tag's own
-    /// attribute loop can still find `/>` or `>` normally, or scan
-    /// whatever follows as its own (separate) bare attribute.
+    /// §5.1 allows exactly Rust's own plain and raw *string*-literal
+    /// grammar (`"…"`, `r"…"`, `r#"…"#`, …) — never a byte-string
+    /// (`b"…"`, `br"…"`), a C-string (`c"…"`, `cr"…"`), a char literal, or
+    /// a numeric literal (M1, MEDIUM-4), none of which
+    /// [`crate::lexer::rust_token::RtKind::Literal`] otherwise
+    /// distinguishes from a string. So this tokenizes at `pos` and accepts
+    /// the value only if the literal found there is a plain or raw string.
+    /// Anything else (a missing value right before `/` or `>`, a bare
+    /// identifier, a number, a char/byte-string/C-string literal, …) is
+    /// diagnosed. A literal or identifier is consumed whole (MEDIUM-5):
+    /// leaving it unconsumed made the tag's own attribute loop re-scan it
+    /// one byte at a time, one diagnostic per byte. Punctuation (`/`, `>`,
+    /// …) is left unconsumed on purpose — it may be the tag's own
+    /// terminator, which the caller must still see fresh.
     fn parse_string_or_invalid_attribute_value(
         &mut self,
         pos: usize,
@@ -291,12 +295,22 @@ impl<'s> Parser<'s> {
             }
         }
         self.push_diag_at(pos_span(pos), diag::invalid_attribute_value());
+        let end = if matches!(
+            tok.kind,
+            crate::lexer::rust_token::RtKind::Literal
+                | crate::lexer::rust_token::RtKind::Ident
+                | crate::lexer::rust_token::RtKind::RawIdent
+        ) {
+            tok.end
+        } else {
+            pos
+        };
         (
             Some(ast::JsxAttributeValue::Error(ast::ErrorNode {
-                span: Span::new(pos as u32, pos as u32),
+                span: Span::new(pos as u32, end as u32),
                 expected: None,
             })),
-            pos,
+            end,
             false,
         )
     }
@@ -351,28 +365,22 @@ impl<'s> Parser<'s> {
     }
 }
 
-/// If the literal spanning `[start, end)` is one of Rust's *string*
-/// literal forms — `"…"`, `r"…"`, `r#"…"#`, …, `b"…"`, `br"…"`, …, `c"…"`,
-/// `cr"…"`, … — returns the byte range of its content, with every prefix
-/// letter, quote, and raw-string hash stripped. Returns `None` for a char
-/// literal (`'x'`, `b'x'`) or a numeric literal, which
-/// [`crate::lexer::rust_token::RtKind::Literal`] does not otherwise
-/// distinguish from a string (M1, grammar §5.1: only Rust's string-literal
-/// grammar is a valid attribute value).
+/// If the literal spanning `[start, end)` is one of Rust's plain or raw
+/// *string* literal forms — `"…"`, `r"…"`, `r#"…"#`, … — returns the byte
+/// range of its content, with the quotes and any raw-string hashes
+/// stripped. Returns `None` for anything else
+/// [`crate::lexer::rust_token::RtKind::Literal`] can also produce: a char
+/// literal (`'x'`), a byte or C string (`b"…"`, `br"…"`, `c"…"`,
+/// `cr"…"`), a byte char (`b'x'`), or a numeric literal. Grammar §5.1
+/// allows exactly Rust's plain and raw *string* grammar as an attribute
+/// value — a byte-string or C-string is rejected even though both look
+/// like an ordinary string apart from their prefix (M1, MEDIUM-4).
 fn string_literal_inner_range(
     bytes: &[u8],
     start: usize,
     end: usize,
 ) -> Option<(usize, usize, bool)> {
     let mut pos = start;
-    // Optional `b`/`c` prefix (byte-string / C-string), only when it is
-    // actually followed by a quote or `r` — `b'x'` (a byte *char*) must
-    // fall through to `None`, not be mistaken for a string prefix.
-    if matches!(bytes.get(pos), Some(b'b') | Some(b'c'))
-        && matches!(bytes.get(pos + 1), Some(b'"') | Some(b'r'))
-    {
-        pos += 1;
-    }
     if bytes.get(pos) == Some(&b'r') && matches!(bytes.get(pos + 1), Some(b'"') | Some(b'#')) {
         pos += 1;
         let hashes_start = pos;

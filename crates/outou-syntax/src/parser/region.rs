@@ -48,14 +48,21 @@ impl<'s> Parser<'s> {
     /// recovery (grammar §2.2's last paragraph), not Outou's to report.
     pub(super) fn parse_block(&mut self, open_brace_pos: usize) -> ast::Block {
         let scan = self.scan_region(open_brace_pos + 1);
-        let end = match scan.end {
-            RegionEnd::Closed { close_end, .. } => close_end,
-            RegionEnd::Eof { pos } => pos,
+        let (end, close) = match scan.end {
+            RegionEnd::Closed {
+                close_start,
+                close_end,
+            } => (
+                close_end,
+                Some(Span::new(close_start as u32, close_end as u32)),
+            ),
+            RegionEnd::Eof { pos } => (pos, None),
         };
         ast::Block {
             span: Span::new(open_brace_pos as u32, end as u32),
             statements: scan.statements,
             tail: scan.tail,
+            close,
         }
     }
 
@@ -76,6 +83,21 @@ impl<'s> Parser<'s> {
                 return finish(nodes, RegionEnd::Eof { pos });
             }
 
+            // Consume a comment token directly, before ever attempting
+            // opaque-region detection: `try_skip_opaque_region` calls
+            // `next_significant`, which walks past an entire comment run to
+            // find the next real token. Attempting that detection again at
+            // every single position inside a long comment run — rather
+            // than once, at the run's very first position — made parsing
+            // quadratic in the run's length (HIGH-3, issue #4 fix list item
+            // 3).
+            let tok = rust_token::next_token(self.bytes, pos);
+            if matches!(tok.kind, RtKind::LineComment | RtKind::BlockComment) {
+                prev = Some(tok);
+                pos = tok.end;
+                continue;
+            }
+
             if let Some(end) = crate::lexer::opaque::try_skip_opaque_region(
                 self.bytes,
                 pos,
@@ -86,7 +108,6 @@ impl<'s> Parser<'s> {
                 continue;
             }
 
-            let tok = rust_token::next_token(self.bytes, pos);
             if tok.start == tok.end {
                 flush(&mut nodes, self.source, chunk_start, tok.start);
                 return finish(nodes, RegionEnd::Eof { pos: tok.start });

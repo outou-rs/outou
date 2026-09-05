@@ -1,0 +1,4 @@
+error: unterminated string in attribute value
+ --> unterminated-string-swallows-block-close.rsx:5:14
+error: unexpected end of file inside tag `<a>`, expected an attribute or `>`
+ --> unterminated-string-swallows-block-close.rsx:5:5

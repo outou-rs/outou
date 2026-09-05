@@ -39,6 +39,19 @@ enum Bound {
     ClosingBrace,
 }
 
+/// Where a `fn` item's signature scan stopped (LOW-11, issue #4 fix list
+/// item 8): a normal body (`{`), a body-less declaration's own `;` (as
+/// inside an `extern` block), or end of input with neither found.
+enum SignatureEnd {
+    /// Position of the opening `{` of a real body.
+    Body(usize),
+    /// Position right after a depth-0 `;` that ended a body-less
+    /// signature.
+    Semicolon(usize),
+    /// End of input reached before either.
+    Eof,
+}
+
 impl<'s> Parser<'s> {
     /// Parses the whole file.
     pub(super) fn parse_file(&mut self) -> ast::File {
@@ -77,9 +90,36 @@ impl<'s> Parser<'s> {
                 return (items, pos);
             }
 
+            // A comment that cannot possibly become part of a `fn`/`mod`'s
+            // attached attributes — any comment once nested past the top
+            // level (`depth > 0`, where `scan_leading_attributes` is never
+            // even consulted), or a top-level comment that is not itself a
+            // doc comment (`///`/`//!`) — is consumed directly as an
+            // ordinary token, before ever attempting the
+            // `scan_leading_attributes`/head lookahead just below, or the
+            // `try_skip_opaque_region` check further down. Both of those
+            // call `rust_token::next_significant`, which itself walks past
+            // an entire run of comments to find the next real token;
+            // attempting either at *every* position inside a long comment
+            // run (rather than once, for the whole run) made parsing
+            // quadratic in the run's length (HIGH-3, issue #4 fix list item
+            // 3).
+            let peek = rust_token::next_token(self.bytes, pos);
+            let is_doc_comment = peek.kind == RtKind::LineComment && {
+                let text = peek.text(self.source);
+                text.starts_with("///") || text.starts_with("//!")
+            };
+            let is_comment = matches!(peek.kind, RtKind::LineComment | RtKind::BlockComment);
+            if is_comment && (depth > 0 || !is_doc_comment) {
+                prev = Some(peek);
+                pos = peek.end;
+                continue;
+            }
+
             if depth == 0 {
                 let (attrs, after_attrs) = self.scan_leading_attributes(pos);
-                let head = rust_token::next_significant(self.bytes, after_attrs);
+                let qualified_at = self.skip_item_qualifiers(after_attrs);
+                let head = rust_token::next_significant(self.bytes, qualified_at);
                 let is_fn_item = head.kind == RtKind::Ident
                     && head.text(self.source) == "fn"
                     && matches!(
@@ -108,6 +148,18 @@ impl<'s> Parser<'s> {
                     prev = None;
                     continue;
                 }
+                if after_attrs > pos {
+                    // Attributes and/or doc comments were collected but did
+                    // not precede a `fn`/`mod` item: jump straight past all
+                    // of them in one step instead of falling through to the
+                    // generic per-token scan below, which would repeat this
+                    // same `scan_leading_attributes` call — and its
+                    // `next_significant` head lookahead — at every token in
+                    // the run (HIGH-3).
+                    pos = after_attrs;
+                    prev = None;
+                    continue;
+                }
             }
 
             if let Some(end) = opaque::try_skip_opaque_region(
@@ -120,7 +172,7 @@ impl<'s> Parser<'s> {
                 continue;
             }
 
-            let tok = rust_token::next_token(self.bytes, pos);
+            let tok = peek;
             if tok.start == tok.end {
                 self.flush_rust_run(&mut parts, chunk_start, len);
                 self.finish_rust_run(&mut items, &mut parts, run_start, len);
@@ -215,14 +267,16 @@ impl<'s> Parser<'s> {
             while matches!(self.bytes.get(pos), Some(b) if b.is_ascii_whitespace()) {
                 pos += 1;
             }
-            if let Some((attr_start, end)) = opaque::try_attribute(self.bytes, pos) {
-                attrs.push(ast::RustSource {
-                    span: Span::new(attr_start as u32, end as u32),
-                    text: self.source[attr_start..end].to_string(),
-                });
-                pos = end;
-                continue;
-            }
+            // A doc comment must be checked for *before* `try_attribute`
+            // (LOW-9): `try_attribute` is trivia-tolerant (it looks ahead
+            // with `next_significant`, which treats a comment as skippable
+            // trivia) so that a caller skipping a *known* opaque region can
+            // find `#` past leading whitespace or comments it does not
+            // care about. Here, though, every individual doc comment must
+            // be recorded as its own attribute, so a `/// doc` immediately
+            // followed by `#[component]` must never have its doc comment
+            // silently skipped over on the way to the attribute that
+            // follows it.
             let tok = rust_token::next_token(self.bytes, pos);
             if tok.kind == RtKind::LineComment {
                 let text = tok.text(self.source);
@@ -235,9 +289,53 @@ impl<'s> Parser<'s> {
                     continue;
                 }
             }
+            if let Some((attr_start, end)) = opaque::try_attribute(self.bytes, pos) {
+                attrs.push(ast::RustSource {
+                    span: Span::new(attr_start as u32, end as u32),
+                    text: self.source[attr_start..end].to_string(),
+                });
+                pos = end;
+                continue;
+            }
             break;
         }
         (attrs, pos)
+    }
+
+    /// Skips a visibility/qualifier prefix that may sit between an item's
+    /// attributes and its `fn`/`mod` keyword — `pub`, `pub(...)`, and any
+    /// run of `default`, `const`, `async`, `unsafe`, `extern "abi"?` — so
+    /// that the head-detection in [`Self::parse_items`] still recognizes
+    /// `fn`/`mod` correctly regardless of them (HIGH-1, issue #4 fix list
+    /// item 2). Phase 0 does not need to validate that the qualifiers
+    /// appear in a legal order or combination; rustc already does that.
+    fn skip_item_qualifiers(&self, mut pos: usize) -> usize {
+        let vis = rust_token::next_significant(self.bytes, pos);
+        if vis.kind == RtKind::Ident && vis.text(self.source) == "pub" {
+            pos = vis.end;
+            let paren = rust_token::next_significant(self.bytes, pos);
+            if paren.kind == RtKind::OpenDelim && self.bytes.get(paren.start) == Some(&b'(') {
+                pos = rust_token::skip_balanced_group(self.bytes, paren.start);
+            }
+        }
+        loop {
+            let tok = rust_token::next_significant(self.bytes, pos);
+            if tok.kind != RtKind::Ident {
+                break;
+            }
+            match tok.text(self.source) {
+                "default" | "const" | "async" | "unsafe" => pos = tok.end,
+                "extern" => {
+                    pos = tok.end;
+                    let abi = rust_token::next_significant(self.bytes, pos);
+                    if abi.kind == RtKind::Literal {
+                        pos = abi.end;
+                    }
+                }
+                _ => break,
+            }
+        }
+        pos
     }
 
     /// Parses a `fn` item: `head` is the already-located `fn` token.
@@ -256,7 +354,7 @@ impl<'s> Parser<'s> {
 
         let mut pos = name_tok.end.max(head.end);
         let mut depth: i32 = 0;
-        let body_open = loop {
+        let signature_end = loop {
             // A function *signature* (parameters, generics, return type)
             // is bounded and short in practice, unlike a statement-level
             // path (M12); `prev_is_path_continuation: false` here always
@@ -268,14 +366,22 @@ impl<'s> Parser<'s> {
             }
             let tok = rust_token::next_token(self.bytes, pos);
             if tok.start == tok.end {
-                break None;
+                break SignatureEnd::Eof;
             }
             match tok.kind {
                 RtKind::OpenDelim if self.bytes[tok.start] == b'{' && depth == 0 => {
-                    break Some(tok.start)
+                    break SignatureEnd::Body(tok.start)
                 }
                 RtKind::OpenDelim => depth += 1,
                 RtKind::CloseDelim => depth = (depth - 1).max(0),
+                // A body-less declaration (`fn foo();`, as inside an
+                // `extern` block) ends its signature at its own `;`
+                // instead of continuing to hunt for the next `{` —
+                // which used to belong to a completely unrelated
+                // following item (LOW-11, issue #4 fix list item 8).
+                RtKind::Punct if self.bytes[tok.start] == b';' && depth == 0 => {
+                    break SignatureEnd::Semicolon(tok.end)
+                }
                 _ => {}
             }
             pos = tok.end;
@@ -285,8 +391,8 @@ impl<'s> Parser<'s> {
             .iter()
             .any(|a| attribute_path(&a.text) == Some("component"));
 
-        match body_open {
-            Some(brace_pos) => {
+        match signature_end {
+            SignatureEnd::Body(brace_pos) => {
                 let signature = ast::RustSource {
                     span: Span::new(head.start as u32, brace_pos as u32),
                     text: self.source[head.start..brace_pos].to_string(),
@@ -305,10 +411,33 @@ impl<'s> Parser<'s> {
                     end,
                 )
             }
-            None => {
-                // No body found before end of input: an incomplete
-                // signature. Recovery: an empty body at end of input, no
-                // panic. Not one of the required fixtures.
+            SignatureEnd::Semicolon(end) => {
+                let signature = ast::RustSource {
+                    span: Span::new(head.start as u32, end as u32),
+                    text: self.source[head.start..end].to_string(),
+                };
+                (
+                    ast::Function {
+                        span: Span::new(item_start as u32, end as u32),
+                        attributes: attrs,
+                        is_component,
+                        name,
+                        signature,
+                        body: ast::Block {
+                            span: Span::new(end as u32, end as u32),
+                            statements: Vec::new(),
+                            tail: None,
+                            close: None,
+                        },
+                    },
+                    end,
+                )
+            }
+            SignatureEnd::Eof => {
+                // No body and no terminating `;` found before end of
+                // input: an incomplete signature. Recovery: an empty body
+                // at end of input, no panic. Not one of the required
+                // fixtures.
                 let end = self.bytes.len();
                 let signature = ast::RustSource {
                     span: Span::new(head.start as u32, end as u32),
@@ -325,6 +454,7 @@ impl<'s> Parser<'s> {
                             span: Span::new(end as u32, end as u32),
                             statements: Vec::new(),
                             tail: None,
+                            close: None,
                         },
                     },
                     end,

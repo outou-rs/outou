@@ -55,10 +55,29 @@ pub struct Function {
 pub struct Block {
     /// Span including the braces.
     pub span: Span,
-    /// Statements, verbatim Rust or JSX.
+    /// Statements, verbatim Rust or JSX, **not necessarily in source
+    /// order**: trailing trivia between the tail expression and the
+    /// block's closing `}` is its own trailing statement (it is never
+    /// widened into an adjacent `Jsx` or `Error` node's span), so a
+    /// caller that needs source order must sort by span start rather than
+    /// assume `statements` then `tail` is byte order (mirrors
+    /// [`Island::parts`], whose own doc states the same caveat; unlike
+    /// `Island::parts`, `Block::statements` does not exactly partition
+    /// `span` on its own — `tail` is part of that partition too).
     pub statements: Vec<Expr>,
     /// Tail expression, if any.
     pub tail: Option<Box<Expr>>,
+    /// Span of this block's own closing `}`, when the region scanner
+    /// actually found one. `None` when the block ran out at end of input
+    /// before finding its own matching `}` (grammar §2.2's Rust-level
+    /// recovery), or when there is no real opening brace at all (an
+    /// incomplete `fn` signature with no body, `span.start == span.end`).
+    /// This must be consulted instead of sniffing whether `source` happens
+    /// to end in a `}` byte: a broken construct nested inside the block
+    /// (an unterminated string literal, a JSX recovery that ran to end of
+    /// input) can itself swallow the source's last `}` without that being
+    /// this block's own close (MEDIUM-6, issue #4 fix list item 4).
+    pub close: Option<Span>,
 }
 
 /// A module declaration or definition.

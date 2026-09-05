@@ -226,18 +226,29 @@ fn check_item(item: &ast::Item, source: &str, case: &str) {
     match item {
         ast::Item::Function(function) => {
             let block = &function.body;
+            if block.span.start == block.span.end {
+                // A synthetic, zero-width block (`item.rs`'s bodyless-`fn`
+                // recovery: no `{` was ever found, so there is nothing to
+                // check coverage of; MEDIUM-6, issue #4 fix list item 4).
+                assert!(
+                    block.statements.is_empty() && block.tail.is_none(),
+                    "{case}: zero-width block unexpectedly has statements"
+                );
+                return;
+            }
             let mut spans: Vec<Span> = function.statements_and_tail_spans();
             spans.sort_by_key(|s| s.start);
             let inner_start = block.span.start + 1;
-            // A block that ran out at end of input before its own `}`
-            // (grammar §2.2's Rust-level recovery) has no closing brace to
-            // exclude; one that closed normally does.
-            let closed_normally = source.as_bytes().get(block.span.end as usize - 1) == Some(&b'}')
-                && block.span.end > block.span.start + 1;
-            let inner_end = if closed_normally {
-                block.span.end - 1
-            } else {
-                block.span.end
+            // `Block::close` — set only when the region scanner actually
+            // found this block's own matching `}` — is the ground truth
+            // for where its content ends, never a sniff of whether
+            // `source` happens to end in a `}` byte (MEDIUM-6): a broken
+            // construct nested inside the block can itself swallow the
+            // source's last `}` without that being this block's own
+            // close.
+            let inner_end = match block.close {
+                Some(close) => close.start,
+                None => block.span.end,
             };
             assert_contiguous(&spans, inner_start, inner_end, case, "function body");
             for expr in function
@@ -521,8 +532,11 @@ fn rebuild_item(item: &ast::Item, source: &str, out: &mut String) {
 }
 
 fn rebuild_block(block: &ast::Block, source: &str, out: &mut String) {
-    let closed_normally = source.as_bytes().get(block.span.end as usize - 1) == Some(&b'}')
-        && block.span.end > block.span.start + 1;
+    if block.span.start == block.span.end {
+        // A synthetic, zero-width block (no real `{` was ever found): no
+        // bytes to splice at all (MEDIUM-6, issue #4 fix list item 4).
+        return;
+    }
     let open_end = block.span.start + 1;
     out.push_str(&source[block.span.start as usize..open_end as usize]);
     // `tail` is not necessarily last in *byte order*: trailing trivia
@@ -536,8 +550,12 @@ fn rebuild_block(block: &ast::Block, source: &str, out: &mut String) {
     for expr in exprs {
         rebuild_expr(expr, source, out);
     }
-    if closed_normally {
-        out.push('}');
+    // `Block::close` is the ground truth for whether this block found its
+    // own matching `}` — never a sniff of whether `source` happens to end
+    // in a `}` byte, which a broken construct nested inside the block can
+    // swallow without that being this block's own close (MEDIUM-6).
+    if let Some(close) = block.close {
+        out.push_str(slice(source, close));
     }
 }
 
