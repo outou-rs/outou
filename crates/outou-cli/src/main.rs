@@ -1,5 +1,9 @@
 //! The `outou` command line tool.
 
+mod check;
+
+use std::process::ExitCode;
+
 use clap::{Parser, Subcommand};
 
 /// Rust with JSX.
@@ -23,11 +27,11 @@ enum Command {
     Package,
 }
 
-fn main() {
+fn main() -> ExitCode {
     let cli = Cli::parse();
     match cli.command {
         Command::Build => todo!("outou build: Phase 0, Week 4 (Gate 2)"),
-        Command::Check => todo!("outou check: Phase 0, Week 3 (Gate 1)"),
+        Command::Check => check::run(),
         Command::Package => todo!("outou package: Phase 0, Week 6"),
     }
 }

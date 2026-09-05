@@ -37,7 +37,14 @@ pub fn render_diagnostics(diagnostics: &[Diagnostic], source: &str, file_name: &
             out.push('\n');
         }
         let (line, col) = line_col(source, diag.span.start);
-        out.push_str("error: ");
+        // Severity-aware (LOW-18, issue #6 fix list item 12): a
+        // `Severity::Warning` diagnostic must not be mislabeled `error:`
+        // — the label is the only thing that tells a reader `outou
+        // check`'s exit code will still be `0` for it.
+        out.push_str(match diag.severity {
+            crate::Severity::Error => "error: ",
+            crate::Severity::Warning => "warning: ",
+        });
         out.push_str(&diag.message);
         out.push('\n');
         out.push_str(" --> ");
@@ -121,6 +128,46 @@ mod tests {
         assert_eq!(
             rendered,
             "error: closing tag `</span>` does not match opening tag `<div>`\n --> mismatched-closing-tag.rsx:2:1"
+        );
+    }
+
+    #[test]
+    fn a_warning_severity_diagnostic_renders_with_a_warning_prefix() {
+        // LOW-18, issue #6 fix list item 12: this crate's own render used
+        // to push `"error: "` unconditionally, ignoring `severity` — a
+        // warning-only file would print `error:` (and, per
+        // `outou-cli`'s documented contract, still exit `0`), which
+        // contradicts the message itself.
+        let diagnostics = vec![Diagnostic {
+            span: Span::new(0, 1),
+            message: "something is suspicious".to_string(),
+            severity: crate::Severity::Warning,
+        }];
+        let rendered = render_diagnostics(&diagnostics, "x", "warn.rsx");
+        assert_eq!(
+            rendered,
+            "warning: something is suspicious\n --> warn.rsx:1:1"
+        );
+    }
+
+    #[test]
+    fn error_and_warning_severities_render_together_in_order() {
+        let diagnostics = vec![
+            Diagnostic {
+                span: Span::new(0, 1),
+                message: "an error".to_string(),
+                severity: crate::Severity::Error,
+            },
+            Diagnostic {
+                span: Span::new(0, 1),
+                message: "a warning".to_string(),
+                severity: crate::Severity::Warning,
+            },
+        ];
+        let rendered = render_diagnostics(&diagnostics, "x", "mixed.rsx");
+        assert_eq!(
+            rendered,
+            "error: an error\n --> mixed.rsx:1:1\nwarning: a warning\n --> mixed.rsx:1:1"
         );
     }
 }

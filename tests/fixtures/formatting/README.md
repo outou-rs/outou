@@ -36,6 +36,7 @@ Non-ASCII and non-printable characters inside `Text("…")` are written as Rust 
 | `tab-becomes-space` | A tab inside text on a single line becomes a single space, not a trim. |
 | `nbsp-not-trimmed` | A no-break space (U+00A0) on its own line survives; only U+0020 is trimmed. |
 | `crlf-line-endings` | `\r\n` and a lone `\r` are both line breaks, exactly like `\n`. The file uses CRLF throughout, with one lone CR between `Hello` and `world`; an implementation that treats only `\r\n` as a break yields `Text("Hello\r        world")`. The lone CR sits inside JSX text, where Outou's lexer — not rustc — decides line breaks. |
+| `attribute-escapes` | A plain (non-raw) attribute string decodes Rust's own escape sequences (`\"`, `\\`, `\t`, `\n`), not just its surrounding text-normalization rules — MEDIUM-8, issue #6 fix list item 9. `expected.txt` only covers the element's children (`Text("note")`); the attribute's decoded value is asserted directly in `crates/outou-syntax/tests/attributes.rs` and observed in the Dioxus backend's golden output (`crates/outou-backend-dioxus/tests/golden/formatting-attribute-escapes/expected.rs`). |
 
 ## Provenance
 

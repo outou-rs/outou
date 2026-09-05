@@ -1,0 +1,2 @@
+error: unexpected `}` inside tag `<div>`, expected an attribute or `>`
+ --> unclosed-tag-mid-file.rsx:13:1

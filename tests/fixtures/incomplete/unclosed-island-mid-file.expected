@@ -1,0 +1,2 @@
+error: missing closing tag `</ul>`
+ --> unclosed-island-mid-file.rsx:10:5

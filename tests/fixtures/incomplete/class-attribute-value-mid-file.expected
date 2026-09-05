@@ -1,0 +1,16 @@
+error: expected an expression for the value of attribute `class`
+ --> class-attribute-value-mid-file.rsx:10:16
+error: unexpected `#` inside tag `<div>`, expected an attribute or `>`
+ --> class-attribute-value-mid-file.rsx:13:1
+error: unexpected `[` inside tag `<div>`, expected an attribute or `>`
+ --> class-attribute-value-mid-file.rsx:13:2
+error: unexpected `]` inside tag `<div>`, expected an attribute or `>`
+ --> class-attribute-value-mid-file.rsx:13:12
+error: unexpected `(` inside tag `<div>`, expected an attribute or `>`
+ --> class-attribute-value-mid-file.rsx:14:9
+error: unexpected `)` inside tag `<div>`, expected an attribute or `>`
+ --> class-attribute-value-mid-file.rsx:14:10
+error: unexpected `-` inside tag `<div>`, expected an attribute or `>`
+ --> class-attribute-value-mid-file.rsx:14:12
+error: missing closing tag `</div>`
+ --> class-attribute-value-mid-file.rsx:10:5

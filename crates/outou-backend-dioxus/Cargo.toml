@@ -9,7 +9,12 @@ rust-version.workspace = true
 
 [dependencies]
 outou-syntax = { workspace = true }
+outou-sourcemap = { workspace = true }
 outou-codegen = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+syn = { workspace = true }
 
 [lints]
 workspace = true

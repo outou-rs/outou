@@ -13,6 +13,7 @@
 //! context-free tokenizer was tried and then removed in Phase 0).
 
 pub mod ast;
+mod escape;
 pub mod lexer;
 pub mod parser;
 pub mod render;

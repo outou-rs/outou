@@ -283,11 +283,22 @@ impl<'s> Parser<'s> {
                         false,
                     );
                 }
-                let inner = self.source[content_start..content_end].to_string();
+                let inner = &self.source[content_start..content_end];
+                // A raw string (`r"…"`, `r#"…"#`) has no escapes at all —
+                // its content is used as-is. A plain string uses Rust's
+                // own escape grammar (grammar §5.1), so its content must
+                // be decoded, not spliced as a raw slice (MEDIUM-8, issue
+                // #6 fix list item 9).
+                let is_raw = self.bytes.get(tok.start) == Some(&b'r');
+                let value = if is_raw {
+                    inner.to_string()
+                } else {
+                    crate::escape::decode_plain_string_escapes(inner)
+                };
                 return (
                     Some(ast::JsxAttributeValue::Text(ast::JsxText {
                         span: Span::new(pos as u32, tok.end as u32),
-                        value: inner,
+                        value,
                     })),
                     tok.end,
                     false,

@@ -109,6 +109,42 @@ fn invalid_non_string_attribute_value_is_diagnosed_exactly_once() {
 }
 
 #[test]
+fn plain_string_attribute_value_decodes_escapes() {
+    // MEDIUM-8, issue #6 fix list item 9: grammar.md §9 says a plain
+    // attribute string "uses Rust's own string literal grammar", which
+    // includes escape processing — `JsxAttributeValue::Text::value` must
+    // be the *decoded* string, matching how a raw string's content
+    // (which has no escapes at all) is already used as-is.
+    let source = r#"fn f() { <A title="tab\there\nline \\ and \"quote\"" />; }"#;
+    let parsed = outou_syntax::parse(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let element = find_jsx_element(&parsed.file).expect("jsx element");
+    let attr = &element.attributes[0];
+    match &attr.value {
+        Some(ast::JsxAttributeValue::Text(text)) => {
+            assert_eq!(text.value, "tab\there\nline \\ and \"quote\"");
+        }
+        other => panic!("expected Text value, got {other:?}"),
+    }
+}
+
+#[test]
+fn raw_string_attribute_value_has_no_escape_processing() {
+    // Raw strings have no escapes at all: their content is exactly the
+    // bytes between the delimiters, contrasted here with
+    // `plain_string_attribute_value_decodes_escapes` above.
+    let source = r####"fn f() { <A title=r#"tab\tliteral"# />; }"####;
+    let parsed = outou_syntax::parse(source);
+    let element = find_jsx_element(&parsed.file).expect("jsx element");
+    match &element.attributes[0].value {
+        Some(ast::JsxAttributeValue::Text(text)) => {
+            assert_eq!(text.value, "tab\\tliteral");
+        }
+        other => panic!("expected Text value, got {other:?}"),
+    }
+}
+
+#[test]
 fn missing_or_unquoted_attribute_value_is_diagnosed() {
     for source in ["fn f() { <A title= />; }", "fn f() { <A title=value />; }"] {
         let parsed = outou_syntax::parse(source);
