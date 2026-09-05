@@ -129,6 +129,10 @@ All seven must hold:
 
 Record the outcome in `docs/ra-spike-results.md`. If (b) satisfies all seven, the `OUT_DIR` layout is dropped: development and published crates then share one layout, and `outou package` only has to generate and include files.
 
+## Results
+
+The spike has been run: layout (b) satisfies all seven criteria, layout (a) fails completion (criterion 4) inside the generated macro call and under incomplete input. Full writeup in [`docs/ra-spike-results.md`](../../docs/ra-spike-results.md); raw JSON output for every probe, with the exact command that produced it, is in [`results/`](results/).
+
 ## If Strategy A fails
 
 Strategy B: the language server maintains a *shadow Cargo project* (under `.outou/lsp/`, reusing dependencies, features, edition and target from `cargo metadata`) whose sources are the generated Rust. `.outou/lsp/` exists only for Strategy B. Strategy C, synthesizing `rust-project.json`, is the last resort because it makes Outou responsible for the crate graph, sysroot, cfg and proc macros.

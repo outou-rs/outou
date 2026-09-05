@@ -1,0 +1,28 @@
+2026年 9月 5日 土曜日 15時16分55秒 JST
+rustc 1.98.1 (48a229cea 2026-09-01)
+cargo 1.98.1 (797e8a9bc 2026-08-05)
+rust-analyzer 1.98.1 (48a229ce 2026-09-01)
+v24.14.0
+ProductName:		macOS
+ProductVersion:		26.6.2
+BuildVersion:		25G83
+arm64
+-- cargo check, default features (gen-src), warm cache
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.24s
+cargo check  0.04s user 0.07s system 38% cpu 0.287 total
+-- build-script-executed rows, gen-outdir
+warning: ra-spike-fixture@0.0.0: outou-spike: generated /Users/kiyoshi/Documents/projects/outou-rs/outou/spikes/rust-analyzer/fixture/target/debug/build/ra-spike-fixture-69ce3b93c1ddbbaa/out/outou/App.rs
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.30s
+registry+https://github.com/rust-lang/crates.io-index#proc-macro2@1.0.107
+registry+https://github.com/rust-lang/crates.io-index#quote@1.0.47
+registry+https://github.com/rust-lang/crates.io-index#libc@0.2.189
+registry+https://github.com/rust-lang/crates.io-index#serde_core@1.0.229
+registry+https://github.com/rust-lang/crates.io-index#serde@1.0.229
+registry+https://github.com/rust-lang/crates.io-index#rustversion@1.0.23
+registry+https://github.com/rust-lang/crates.io-index#parking_lot_core@0.9.12
+registry+https://github.com/rust-lang/crates.io-index#thiserror@2.0.20
+registry+https://github.com/rust-lang/crates.io-index#anyhow@1.0.104
+registry+https://github.com/rust-lang/crates.io-index#slotmap@1.1.1
+registry+https://github.com/rust-lang/crates.io-index#proc-macro2-diagnostics@0.10.1
+registry+https://github.com/rust-lang/crates.io-index#num-traits@0.2.19
+path+file:///Users/kiyoshi/Documents/projects/outou-rs/outou/spikes/rust-analyzer/fixture#ra-spike-fixture@0.0.0

@@ -1,0 +1,14 @@
+OUT_DIR=/Users/kiyoshi/Documents/projects/outou-rs/outou/spikes/rust-analyzer/fixture/target/debug/build/ra-spike-fixture-69ce3b93c1ddbbaa/out
+2026年 9月 5日 土曜日 15時16分41秒 JST
+-- before
+1788587415 337 /Users/kiyoshi/Documents/projects/outou-rs/outou/spikes/rust-analyzer/fixture/target/debug/build/ra-spike-fixture-69ce3b93c1ddbbaa/out/outou/App.rs
+1788587415 293 /Users/kiyoshi/Documents/projects/outou-rs/outou/spikes/rust-analyzer/fixture/target/debug/build/ra-spike-fixture-69ce3b93c1ddbbaa/output
+bf48e41ab81b348fb14bc540cde4661b700d0f02e630ac0078a230041d765988  /Users/kiyoshi/Documents/projects/outou-rs/outou/spikes/rust-analyzer/fixture/target/debug/build/ra-spike-fixture-69ce3b93c1ddbbaa/out/outou/App.rs
+-- after
+1788587415 337 /Users/kiyoshi/Documents/projects/outou-rs/outou/spikes/rust-analyzer/fixture/target/debug/build/ra-spike-fixture-69ce3b93c1ddbbaa/out/outou/App.rs
+1788587415 293 /Users/kiyoshi/Documents/projects/outou-rs/outou/spikes/rust-analyzer/fixture/target/debug/build/ra-spike-fixture-69ce3b93c1ddbbaa/output
+bf48e41ab81b348fb14bc540cde4661b700d0f02e630ac0078a230041d765988  /Users/kiyoshi/Documents/projects/outou-rs/outou/spikes/rust-analyzer/fixture/target/debug/build/ra-spike-fixture-69ce3b93c1ddbbaa/out/outou/App.rs
+{
+  "hover2": "let user: String\n\n\nsize = 24 (0x18), align = 0x8, needs Drop",
+  "overlayChangeToHover": 95
+}
