@@ -9,11 +9,11 @@
       "kind": "expression",
       "generated": {
         "start": {
-          "line": 1,
+          "line": 7,
           "character": 0
         },
         "end": {
-          "line": 1,
+          "line": 7,
           "character": 22
         }
       },
@@ -35,11 +35,11 @@
       "kind": "expression",
       "generated": {
         "start": {
-          "line": 1,
+          "line": 7,
           "character": 22
         },
         "end": {
-          "line": 4,
+          "line": 10,
           "character": 0
         }
       },
@@ -61,11 +61,11 @@
       "kind": "expression",
       "generated": {
         "start": {
-          "line": 4,
+          "line": 10,
           "character": 0
         },
         "end": {
-          "line": 4,
+          "line": 10,
           "character": 20
         }
       },
@@ -87,11 +87,11 @@
       "kind": "expression",
       "generated": {
         "start": {
-          "line": 4,
+          "line": 10,
           "character": 20
         },
         "end": {
-          "line": 4,
+          "line": 10,
           "character": 21
         }
       },
@@ -113,11 +113,11 @@
       "kind": "expression",
       "generated": {
         "start": {
-          "line": 4,
+          "line": 10,
           "character": 21
         },
         "end": {
-          "line": 5,
+          "line": 11,
           "character": 4
         }
       },
@@ -139,11 +139,11 @@
       "kind": "other",
       "generated": {
         "start": {
-          "line": 5,
+          "line": 11,
           "character": 4
         },
         "end": {
-          "line": 5,
+          "line": 11,
           "character": 31
         }
       },
@@ -165,11 +165,11 @@
       "kind": "identifier",
       "generated": {
         "start": {
-          "line": 5,
+          "line": 11,
           "character": 31
         },
         "end": {
-          "line": 5,
+          "line": 11,
           "character": 32
         }
       },
@@ -202,11 +202,11 @@
       "kind": "text",
       "generated": {
         "start": {
-          "line": 5,
+          "line": 11,
           "character": 35
         },
         "end": {
-          "line": 5,
+          "line": 11,
           "character": 38
         }
       },
@@ -228,11 +228,11 @@
       "kind": "other",
       "generated": {
         "start": {
-          "line": 5,
+          "line": 11,
           "character": 41
         },
         "end": {
-          "line": 5,
+          "line": 11,
           "character": 43
         }
       },
@@ -254,11 +254,11 @@
       "kind": "expression",
       "generated": {
         "start": {
-          "line": 5,
+          "line": 11,
           "character": 43
         },
         "end": {
-          "line": 6,
+          "line": 12,
           "character": 0
         }
       },
@@ -280,11 +280,11 @@
       "kind": "expression",
       "generated": {
         "start": {
-          "line": 6,
+          "line": 12,
           "character": 0
         },
         "end": {
-          "line": 6,
+          "line": 12,
           "character": 1
         }
       },
@@ -306,11 +306,11 @@
       "kind": "expression",
       "generated": {
         "start": {
-          "line": 6,
+          "line": 12,
           "character": 1
         },
         "end": {
-          "line": 7,
+          "line": 13,
           "character": 0
         }
       },

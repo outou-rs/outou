@@ -10,6 +10,12 @@ publish = false
 
 [dependencies]
 clap = { workspace = true }
+outou-cli = { workspace = true }
+outou-syntax = { workspace = true }
+outou-sourcemap = { workspace = true }
+outou-codegen = { workspace = true }
+outou-backend-dioxus = { workspace = true }
+serde_json = { workspace = true }
 
 [lints]
 workspace = true

@@ -7,16 +7,23 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[lib]
+name = "outou_cli"
+path = "src/lib.rs"
+
 [[bin]]
 name = "outou"
 path = "src/main.rs"
 
 [dependencies]
 outou-syntax = { workspace = true }
+outou-sourcemap = { workspace = true }
 outou-codegen = { workspace = true }
 outou-backend-dioxus = { workspace = true }
 outou-modules = { workspace = true }
 clap = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
 
 [lints]
 workspace = true

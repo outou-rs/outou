@@ -26,6 +26,7 @@ outou-sourcemap = { version = "0.0.1", path = "crates/outou-sourcemap" }
 outou-codegen = { version = "0.0.1", path = "crates/outou-codegen" }
 outou-backend-dioxus = { version = "0.0.1", path = "crates/outou-backend-dioxus" }
 outou-modules = { version = "0.0.1", path = "crates/outou-modules" }
+outou-cli = { version = "0.0.1", path = "crates/outou-cli" }
 
 # External. `dioxus` is only ever depended on by the `outou` facade crate.
 dioxus = { version = "0.7.10", default-features = false, features = ["macro", "html", "signals", "hooks"] }

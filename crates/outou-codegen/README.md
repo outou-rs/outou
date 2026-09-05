@@ -13,8 +13,10 @@ pub enum Mode { Strict, Recovery }
 pub struct GenerateOptions {
     pub generated_uri: Uri,
     pub source_uri: Uri,
-    pub module_paths: BTreeMap<String, String>, // module name -> `#[path]` value
+    pub module_paths: BTreeMap<String, String>, // module_paths_key(name, own #[path] text) -> `#[path]` value
 }
+
+pub fn module_paths_key(name: &str, own_path_attribute: Option<&str>) -> String;
 
 pub struct Generated { pub rust: String, pub source_map: SourceMap }
 
@@ -48,6 +50,6 @@ impl Writer {
 - A backend receives the Outou AST (`outou_syntax::ast`), never a backend-specific AST, and the `source` text `parsed` was parsed from (needed to splice Rust verbatim).
 - `Mode::Strict` (`cargo build`): a backend calls `reject_syntax_errors_in_strict_mode` first, so it never has to lower an `ast::ErrorNode` itself — any error-severity diagnostic refuses generation with `Error::SyntaxErrors`, carrying every such diagnostic.
 - `Mode::Recovery` (the IDE): error nodes are replaced with placeholders (backend-defined; see `outou-backend-dioxus/README.md`) so rust-analyzer can keep analyzing the rest of the file.
-- `GenerateOptions` steers one `generate` call, which lowers exactly one `.rsx` source into exactly one generated Rust file; a multi-file crate calls `generate` once per module (`outou-modules`' `ModuleGraph::generated_units`). `module_paths` maps a module name to the `#[path]` value its declaration should get; a module absent from the map is emitted verbatim, unchanged (the common case for an inline module, or before the module graph has been resolved into paths).
+- `GenerateOptions` steers one `generate` call, which lowers exactly one `.rsx` source into exactly one generated Rust file; a multi-file crate calls `generate` once per module (`outou-modules`' `ModuleGraph::generated_units`). `module_paths` maps a lookup key ([`module_paths_key`]) to the `#[path]` value a declaration should get; a module whose key is absent from the map is emitted verbatim, unchanged (the common case for an inline module, or before the module graph has been resolved into paths). The key is the module's bare name, except when the module already carries its own explicit `#[path]` attribute (in source, before rewriting) — appending that attribute's verbatim text disambiguates the `cfg`-exclusive `mod imp;` idiom, where two sibling declarations legally share a name and each needs a different rewritten path (issue #8; `crates/outou-cli`'s planner computes the same key from `ModuleNode::attributes`, `outou-backend-dioxus`'s `lower_module` computes it from `ast::Module::attributes` — both sides derive it from the identical source text).
 - `Writer` is the shared "emit" infrastructure every backend reuses instead of hand-rolling its own: `raw` appends synthesized text with no mapping, `mapped`/`verbatim` append text and record a byte-accurate `SourceMapBuilder` mapping in the same call, and `finish` returns the generated text plus the finished `SourceMap`.
 - Generation is deterministic: the same source, compiler version, configuration and backend always yield byte-identical Rust and an identical source map (verified for `outou-backend-dioxus` under `crates/outou-backend-dioxus/tests/golden.rs` and `tests/recovery.rs`).

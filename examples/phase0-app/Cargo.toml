@@ -4,8 +4,18 @@ version = "0.0.0"
 edition = "2021"
 publish = false
 
-# Standalone until `.rsx` files can be built (Gate 2).
+# Standalone Cargo project (excluded from the workspace, see the root
+# `Cargo.toml`), so it cannot see the workspace's `[lints]` table.
 [workspace]
+
+# The real Cargo target is the generated Rust, per ADR 0009 layout (b):
+# `outou build` writes `src/.generated/crate-root.rs` from `src/main.rsx`
+# (and one file per module under it), and Cargo builds that file directly
+# — no build script. `src/.generated/` is gitignored for applications
+# (CONTRIBUTING.md); run `outou build` before `cargo build` (see README.md).
+[[bin]]
+name = "phase0-app"
+path = "src/.generated/crate-root.rs"
 
 [dependencies]
 outou = { path = "../../crates/outou" }

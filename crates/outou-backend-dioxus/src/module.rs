@@ -1,12 +1,13 @@
 //! Lowering an [`ast::Module`] declaration or definition.
 //!
 //! See `crates/outou-modules/README.md` for the generated-path convention
-//! this follows: a file-based module (`mod name;`) whose name appears in
-//! [`GenerateOptions::module_paths`] gets its `#[path]` rewritten to point
-//! at the generated file; codegen does not resolve the module graph
-//! itself, it only applies a mapping the caller already computed.
+//! this follows: a file-based module (`mod name;`) whose
+//! [`module_paths_key`] appears in [`GenerateOptions::module_paths`] gets
+//! its `#[path]` rewritten to point at the generated file; codegen does
+//! not resolve the module graph itself, it only applies a mapping the
+//! caller already computed.
 
-use outou_codegen::{GenerateOptions, Mode, Writer};
+use outou_codegen::{module_paths_key, GenerateOptions, Mode, Writer};
 use outou_sourcemap::{MappingKind, Span};
 use outou_syntax::ast as syntax_ast;
 
@@ -39,7 +40,13 @@ pub fn lower_module(
         return;
     }
 
-    match opts.module_paths.get(&module.name.name) {
+    let own_path_attribute = module
+        .attributes
+        .iter()
+        .find(|attribute| is_path_attribute(&attribute.text))
+        .map(|attribute| attribute.text.as_str());
+    let key = module_paths_key(&module.name.name, own_path_attribute);
+    match opts.module_paths.get(&key) {
         None => writer.verbatim(source, module.span, MappingKind::Expression, None),
         Some(path) => lower_file_module_with_new_path(writer, source, module, path),
     }

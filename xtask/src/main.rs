@@ -1,5 +1,7 @@
 //! `cargo xtask`: repository automation that does not belong in any crate.
 
+mod determinism;
+
 use std::process::ExitCode;
 
 use clap::{Parser, Subcommand};
@@ -43,7 +45,7 @@ fn main() -> ExitCode {
         Command::Corpus {
             command: Corpus::Test,
         } => not_implemented("corpus test", "Week 6"),
-        Command::Determinism => not_implemented("determinism", "Week 4 (Gate 2)"),
+        Command::Determinism => determinism::run(),
         Command::Dist => not_implemented("dist", "after Phase 0"),
     };
     match result {

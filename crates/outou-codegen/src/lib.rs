@@ -43,11 +43,11 @@ pub struct GenerateOptions {
     pub generated_uri: Uri,
     /// URI of the `.rsx` source being lowered.
     pub source_uri: Uri,
-    /// Module name → path string to emit in `#[path = "…"]` for that
-    /// module's declaration (`mod name;`). A module absent from this map
-    /// has its declaration emitted verbatim, unchanged — the common case
-    /// for an inline module, or when the caller has not resolved the
-    /// module graph yet.
+    /// Lookup key ([`module_paths_key`]) → path string to emit in
+    /// `#[path = "…"]` for that module's declaration (`mod name;`). A
+    /// module whose key is absent from this map has its declaration
+    /// emitted verbatim, unchanged — the common case for an inline
+    /// module, or when the caller has not resolved the module graph yet.
     pub module_paths: BTreeMap<String, String>,
 }
 
@@ -61,7 +61,14 @@ impl GenerateOptions {
         }
     }
 
-    /// Returns options with one more `module_paths` entry.
+    /// Returns options with one more `module_paths` entry, keyed by the
+    /// bare module name (no original `#[path]` attribute to disambiguate
+    /// — see [`module_paths_key`]). Every caller that has not resolved a
+    /// full module graph (every existing test in this repository) uses
+    /// this; a real module-graph caller (`outou-cli`'s build pipeline)
+    /// computes the key itself with [`module_paths_key`] so that the
+    /// `cfg`-exclusive `mod imp;` idiom (two sibling declarations sharing
+    /// one name, each with its own explicit `#[path]`) is disambiguated.
     pub fn with_module_path(
         mut self,
         module_name: impl Into<String>,
@@ -69,6 +76,39 @@ impl GenerateOptions {
     ) -> Self {
         self.module_paths.insert(module_name.into(), path.into());
         self
+    }
+}
+
+/// Computes the [`GenerateOptions::module_paths`] lookup key for one `mod`
+/// declaration.
+///
+/// The common case — no other sibling shares this module's name — uses
+/// the bare module name: this is what every plain `mod name;` or
+/// `#[path = "…"]`-pinned `mod name;` declaration looks up, and what
+/// every existing test in this repository builds with
+/// [`GenerateOptions::with_module_path`].
+///
+/// A `BTreeMap<String, String>` cannot hold two different values under
+/// one key, yet two `mod` declarations *can* legally share a name in one
+/// scope: the `cfg`-exclusive idiom (`crates/outou-modules/README.md`),
+/// e.g. `#[cfg(unix)] #[path = "unix.rs"] mod imp;` next to
+/// `#[cfg(windows)] #[path = "windows.rs"] mod imp;`. Only one of the two
+/// is ever compiled (`rustc` strips the other by `#[cfg]`), but codegen
+/// still has to know *which* generated file each one's own `#[path]`
+/// should point to. Since this idiom is only reachable with an *explicit*
+/// `#[path]` on every occurrence (an implicit `mod imp;` searches for one
+/// fixed candidate file and cannot express "a different file per `cfg`
+/// branch" at all), the declaration's own original `#[path]` attribute
+/// text — verbatim, before rewriting — is a distinguishing value already
+/// available wherever this key is computed, on both the caller
+/// (`outou-cli`'s planner, from `ModuleNode::attributes`) and the backend
+/// (`outou-backend-dioxus`, from `ast::Module::attributes`) side, so
+/// appending it disambiguates the idiom without changing
+/// [`GenerateOptions::module_paths`]'s type.
+pub fn module_paths_key(name: &str, own_path_attribute: Option<&str>) -> String {
+    match own_path_attribute {
+        Some(attribute) => format!("{name}\u{0}{attribute}"),
+        None => name.to_string(),
     }
 }
 

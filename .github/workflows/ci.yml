@@ -71,10 +71,28 @@ jobs:
   determinism:
     name: determinism check
     runs-on: ubuntu-latest
-    # Becomes a required check at Gate 2, when `cargo xtask determinism` is implemented.
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo xtask determinism
+
+  example-app:
+    name: example app builds with cargo build alone
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # `.generated/` is gitignored for applications (CONTRIBUTING.md);
+      # `outou build` is the one step before `cargo build` needs nothing
+      # else (Gate 2's success criterion, docs/phase0.md Step 4).
+      - run: cargo run -p outou-cli -- build --manifest-dir examples/phase0-app
+      - run: cargo build
+        working-directory: examples/phase0-app
+      - run: cargo test
+        working-directory: examples/phase0-app
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: examples/phase0-app
