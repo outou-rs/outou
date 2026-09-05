@@ -46,4 +46,7 @@ fn load_user() -> Option<components::User> {
 
 fn main() {
     let _ = App;
+    let _ = components::initial(&components::User {
+        name: "Outou".to_string(),
+    });
 }

@@ -12,6 +12,42 @@ use std::process::ExitCode;
 
 use outou_syntax::Severity;
 
+/// Result of running Outou's own syntax-diagnostic layer over one file's
+/// source, in-process: the exact rendered text `outou check` prints for
+/// it (empty when the file has no diagnostics at all) and whether any
+/// diagnostic in it is error-severity.
+///
+/// This is the function the UI test harness
+/// (`crates/outou-cli/tests/ui.rs`, issue #11) calls directly instead of
+/// spawning the `outou` binary — "there is one compiler" (`AGENTS.md`):
+/// [`run`] and the harness must go through the exact same code path, only
+/// the caller differs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckReport {
+    /// `outou check`'s rendered output for this one file (may be empty).
+    pub rendered: String,
+    /// Whether any diagnostic in [`CheckReport::rendered`] is
+    /// error-severity — the flag `run()` uses to decide its exit code.
+    pub had_error: bool,
+}
+
+/// Parses `source` and renders Outou's own syntax diagnostics for it,
+/// exactly as `outou check` would for a file whose `--> ` line reads
+/// `file_name`. Never panics and never fails: a syntax error is a
+/// [`CheckReport`] with `had_error: true`, not an `Err`.
+pub fn check_source(file_name: &str, source: &str) -> CheckReport {
+    let parsed = outou_syntax::parse(source);
+    let had_error = parsed
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == Severity::Error);
+    let rendered = parsed.render_diagnostics(file_name);
+    CheckReport {
+        rendered,
+        had_error,
+    }
+}
+
 /// Runs `outou check`. Exit code `1` if any file has an error diagnostic,
 /// `0` otherwise (a file with only warnings still exits `0`).
 pub fn run() -> ExitCode {
@@ -35,16 +71,12 @@ pub fn run() -> ExitCode {
             }
         };
 
-        let parsed = outou_syntax::parse(&source);
-        if parsed
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.severity == Severity::Error)
-        {
+        let report = check_source(&path.display().to_string(), &source);
+        if report.had_error {
             had_errors = true;
         }
-        if !parsed.diagnostics.is_empty() {
-            println!("{}", parsed.render_diagnostics(&path.display().to_string()));
+        if !report.rendered.is_empty() {
+            println!("{}", report.rendered);
         }
     }
 
@@ -105,6 +137,20 @@ fn is_dot_directory(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_source_reports_no_error_and_empty_output_for_clean_input() {
+        let report = check_source("clean.rsx", "fn f() { <div></div>; }");
+        assert!(!report.had_error);
+        assert_eq!(report.rendered, "");
+    }
+
+    #[test]
+    fn check_source_renders_a_syntax_error_at_the_given_file_name() {
+        let report = check_source("broken.rsx", "fn f() { <div cl");
+        assert!(report.had_error);
+        assert!(report.rendered.contains("broken.rsx"));
+    }
 
     #[test]
     fn missing_src_directory_is_not_an_error() {

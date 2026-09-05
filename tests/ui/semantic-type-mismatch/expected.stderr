@@ -1,0 +1,2 @@
+error: mismatched types
+ --> $DIR/input.rsx:9:21

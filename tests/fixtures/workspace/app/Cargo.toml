@@ -1,0 +1,19 @@
+[package]
+name = "app"
+version = "0.0.0"
+edition = "2021"
+# An application never publishes: ADR 0008's pre-generated-artifact
+# contract is for libraries. `[package] publish = false` here is what
+# lets `ui-kit`'s own `cargo publish --dry-run` (which needs publishing
+# allowed) sit in the same workspace as an unpublishable binary.
+publish = false
+
+# Applications never commit `src/.generated/` (see the repository root
+# `.gitignore`); `outou build` regenerates it before `cargo build`.
+[[bin]]
+name = "app"
+path = "src/.generated/crate-root.rs"
+
+[dependencies]
+outou = { path = "../../../../crates/outou" }
+ui-kit = { path = "../ui-kit" }

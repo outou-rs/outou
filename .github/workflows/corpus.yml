@@ -12,8 +12,13 @@ jobs:
   corpus:
     name: parser corpus test
     runs-on: ubuntu-latest
-    # Becomes a real signal once the parser exists (Gate 1) and `cargo xtask corpus` is implemented.
-    continue-on-error: true
+    # Issue #12: `cargo xtask corpus` is implemented and this is now a
+    # real signal. `corpus test` runs non-strict here (its default): a
+    # panic or a per-file timeout fails the job; false positives (Outou
+    # diagnostics on plain Rust) and splice round-trip mismatches are
+    # reported in the job's own summary and in `.corpus/report.json`
+    # without failing it — see that report for counts (Gate 4 tracks
+    # them, not this nightly job).
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

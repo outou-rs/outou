@@ -104,3 +104,21 @@ jobs:
       # module's file child) ship with every other check green.
       - run: cargo test -p outou-cli --test build_compile -- --ignored
       - run: cargo test -p outou-backend-dioxus -- --ignored
+
+  cargo-matrix:
+    name: cargo build/check/test/clippy/package/publish matrix (issue #10)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      # `crates/outou-cli/tests/matrix.rs`'s own `#[ignore]`d tests: the
+      # full Cargo command matrix (`build`/`check`/`test`/`clippy`/
+      # `package`/`publish --dry-run`) run against `examples/phase0-app`
+      # and against `tests/fixtures/workspace` (a library written in
+      # `.rsx` plus an application depending on it), each test driving
+      # its own `outou build` directly through the `outou_cli::build`
+      # library — no separate `outou build` step needed here.
+      - run: cargo test -p outou-cli --test matrix -- --ignored

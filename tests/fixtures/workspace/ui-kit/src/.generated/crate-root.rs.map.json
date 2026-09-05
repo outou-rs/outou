@@ -1,0 +1,1175 @@
+{
+  "version": 1,
+  "generated": "file:///Users/kiyoshi/Documents/projects/outou-rs/outou/tests/fixtures/workspace/ui-kit/src/.generated/crate-root.rs",
+  "sources": [
+    "file:///Users/kiyoshi/Documents/projects/outou-rs/outou/tests/fixtures/workspace/ui-kit/src/lib.rsx"
+  ],
+  "mappings": [
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 1,
+          "character": 0
+        },
+        "end": {
+          "line": 1,
+          "character": 22
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 0,
+            "character": 0
+          },
+          "end": {
+            "line": 0,
+            "character": 22
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 1,
+          "character": 22
+        },
+        "end": {
+          "line": 3,
+          "character": 0
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 0,
+            "character": 22
+          },
+          "end": {
+            "line": 2,
+            "character": 0
+          }
+        }
+      ]
+    },
+    {
+      "kind": "identifier",
+      "generated": {
+        "start": {
+          "line": 4,
+          "character": 4
+        },
+        "end": {
+          "line": 4,
+          "character": 11
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 2,
+            "character": 4
+          },
+          "end": {
+            "line": 2,
+            "character": 11
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 4,
+          "character": 12
+        },
+        "end": {
+          "line": 5,
+          "character": 0
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 2,
+            "character": 12
+          },
+          "end": {
+            "line": 3,
+            "character": 0
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 5,
+          "character": 0
+        },
+        "end": {
+          "line": 5,
+          "character": 25
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 3,
+            "character": 0
+          },
+          "end": {
+            "line": 3,
+            "character": 25
+          }
+        }
+      ]
+    },
+    {
+      "kind": "identifier",
+      "generated": {
+        "start": {
+          "line": 7,
+          "character": 4
+        },
+        "end": {
+          "line": 7,
+          "character": 9
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 4,
+            "character": 4
+          },
+          "end": {
+            "line": 4,
+            "character": 9
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 7,
+          "character": 10
+        },
+        "end": {
+          "line": 8,
+          "character": 0
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 4,
+            "character": 10
+          },
+          "end": {
+            "line": 5,
+            "character": 0
+          }
+        }
+      ]
+    },
+    {
+      "kind": "identifier",
+      "generated": {
+        "start": {
+          "line": 9,
+          "character": 4
+        },
+        "end": {
+          "line": 9,
+          "character": 10
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 6,
+            "character": 4
+          },
+          "end": {
+            "line": 6,
+            "character": 10
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 9,
+          "character": 11
+        },
+        "end": {
+          "line": 10,
+          "character": 0
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 6,
+            "character": 11
+          },
+          "end": {
+            "line": 7,
+            "character": 0
+          }
+        }
+      ]
+    },
+    {
+      "kind": "identifier",
+      "generated": {
+        "start": {
+          "line": 11,
+          "character": 4
+        },
+        "end": {
+          "line": 11,
+          "character": 8
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 7,
+            "character": 4
+          },
+          "end": {
+            "line": 7,
+            "character": 8
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 11,
+          "character": 9
+        },
+        "end": {
+          "line": 14,
+          "character": 24
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 7,
+            "character": 9
+          },
+          "end": {
+            "line": 10,
+            "character": 24
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 14,
+          "character": 24
+        },
+        "end": {
+          "line": 26,
+          "character": 4
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 10,
+            "character": 24
+          },
+          "end": {
+            "line": 22,
+            "character": 4
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 26,
+          "character": 4
+        },
+        "end": {
+          "line": 26,
+          "character": 30
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 22,
+            "character": 4
+          },
+          "end": {
+            "line": 22,
+            "character": 30
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 26,
+          "character": 30
+        },
+        "end": {
+          "line": 26,
+          "character": 31
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 22,
+            "character": 30
+          },
+          "end": {
+            "line": 22,
+            "character": 31
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 26,
+          "character": 31
+        },
+        "end": {
+          "line": 28,
+          "character": 0
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 22,
+            "character": 31
+          },
+          "end": {
+            "line": 24,
+            "character": 0
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 28,
+          "character": 0
+        },
+        "end": {
+          "line": 28,
+          "character": 1
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 24,
+            "character": 0
+          },
+          "end": {
+            "line": 24,
+            "character": 1
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 28,
+          "character": 1
+        },
+        "end": {
+          "line": 34,
+          "character": 4
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 24,
+            "character": 1
+          },
+          "end": {
+            "line": 30,
+            "character": 4
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 34,
+          "character": 4
+        },
+        "end": {
+          "line": 34,
+          "character": 38
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 30,
+            "character": 4
+          },
+          "end": {
+            "line": 30,
+            "character": 38
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 34,
+          "character": 38
+        },
+        "end": {
+          "line": 34,
+          "character": 39
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 30,
+            "character": 38
+          },
+          "end": {
+            "line": 30,
+            "character": 39
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 34,
+          "character": 39
+        },
+        "end": {
+          "line": 35,
+          "character": 4
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 30,
+            "character": 39
+          },
+          "end": {
+            "line": 31,
+            "character": 4
+          }
+        }
+      ]
+    },
+    {
+      "kind": "other",
+      "generated": {
+        "start": {
+          "line": 35,
+          "character": 4
+        },
+        "end": {
+          "line": 35,
+          "character": 31
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 31,
+            "character": 4
+          },
+          "end": {
+            "line": 35,
+            "character": 10
+          }
+        }
+      ]
+    },
+    {
+      "kind": "identifier",
+      "generated": {
+        "start": {
+          "line": 35,
+          "character": 31
+        },
+        "end": {
+          "line": 35,
+          "character": 34
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 31,
+            "character": 5
+          },
+          "end": {
+            "line": 31,
+            "character": 8
+          }
+        },
+        {
+          "file": 0,
+          "start": {
+            "line": 35,
+            "character": 6
+          },
+          "end": {
+            "line": 35,
+            "character": 9
+          }
+        }
+      ]
+    },
+    {
+      "kind": "attribute",
+      "generated": {
+        "start": {
+          "line": 35,
+          "character": 37
+        },
+        "end": {
+          "line": 35,
+          "character": 42
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 31,
+            "character": 9
+          },
+          "end": {
+            "line": 31,
+            "character": 14
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 35,
+          "character": 44
+        },
+        "end": {
+          "line": 35,
+          "character": 50
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 31,
+            "character": 15
+          },
+          "end": {
+            "line": 31,
+            "character": 21
+          }
+        }
+      ]
+    },
+    {
+      "kind": "identifier",
+      "generated": {
+        "start": {
+          "line": 35,
+          "character": 52
+        },
+        "end": {
+          "line": 35,
+          "character": 54
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 32,
+            "character": 9
+          },
+          "end": {
+            "line": 32,
+            "character": 11
+          }
+        },
+        {
+          "file": 0,
+          "start": {
+            "line": 32,
+            "character": 21
+          },
+          "end": {
+            "line": 32,
+            "character": 23
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 35,
+          "character": 58
+        },
+        "end": {
+          "line": 35,
+          "character": 63
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 32,
+            "character": 13
+          },
+          "end": {
+            "line": 32,
+            "character": 18
+          }
+        }
+      ]
+    },
+    {
+      "kind": "identifier",
+      "generated": {
+        "start": {
+          "line": 35,
+          "character": 69
+        },
+        "end": {
+          "line": 35,
+          "character": 75
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 33,
+            "character": 9
+          },
+          "end": {
+            "line": 33,
+            "character": 15
+          }
+        }
+      ]
+    },
+    {
+      "kind": "attribute",
+      "generated": {
+        "start": {
+          "line": 35,
+          "character": 78
+        },
+        "end": {
+          "line": 35,
+          "character": 84
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 33,
+            "character": 16
+          },
+          "end": {
+            "line": 33,
+            "character": 22
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 35,
+          "character": 86
+        },
+        "end": {
+          "line": 35,
+          "character": 108
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 33,
+            "character": 24
+          },
+          "end": {
+            "line": 33,
+            "character": 46
+          }
+        }
+      ]
+    },
+    {
+      "kind": "identifier",
+      "generated": {
+        "start": {
+          "line": 35,
+          "character": 113
+        },
+        "end": {
+          "line": 35,
+          "character": 119
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 34,
+            "character": 9
+          },
+          "end": {
+            "line": 34,
+            "character": 15
+          }
+        }
+      ]
+    },
+    {
+      "kind": "attribute",
+      "generated": {
+        "start": {
+          "line": 35,
+          "character": 122
+        },
+        "end": {
+          "line": 35,
+          "character": 127
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 34,
+            "character": 16
+          },
+          "end": {
+            "line": 34,
+            "character": 21
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 35,
+          "character": 129
+        },
+        "end": {
+          "line": 35,
+          "character": 133
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 34,
+            "character": 22
+          },
+          "end": {
+            "line": 34,
+            "character": 26
+          }
+        }
+      ]
+    },
+    {
+      "kind": "other",
+      "generated": {
+        "start": {
+          "line": 35,
+          "character": 139
+        },
+        "end": {
+          "line": 35,
+          "character": 141
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 31,
+            "character": 4
+          },
+          "end": {
+            "line": 35,
+            "character": 10
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 35,
+          "character": 141
+        },
+        "end": {
+          "line": 36,
+          "character": 0
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 35,
+            "character": 10
+          },
+          "end": {
+            "line": 36,
+            "character": 0
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 36,
+          "character": 0
+        },
+        "end": {
+          "line": 36,
+          "character": 1
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 36,
+            "character": 0
+          },
+          "end": {
+            "line": 36,
+            "character": 1
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 36,
+          "character": 1
+        },
+        "end": {
+          "line": 39,
+          "character": 11
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 36,
+            "character": 1
+          },
+          "end": {
+            "line": 39,
+            "character": 11
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 39,
+          "character": 11
+        },
+        "end": {
+          "line": 41,
+          "character": 4
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 39,
+            "character": 11
+          },
+          "end": {
+            "line": 41,
+            "character": 4
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 41,
+          "character": 4
+        },
+        "end": {
+          "line": 41,
+          "character": 55
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 41,
+            "character": 4
+          },
+          "end": {
+            "line": 41,
+            "character": 55
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 41,
+          "character": 55
+        },
+        "end": {
+          "line": 41,
+          "character": 56
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 41,
+            "character": 55
+          },
+          "end": {
+            "line": 41,
+            "character": 56
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 41,
+          "character": 56
+        },
+        "end": {
+          "line": 43,
+          "character": 4
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 41,
+            "character": 56
+          },
+          "end": {
+            "line": 43,
+            "character": 4
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 43,
+          "character": 4
+        },
+        "end": {
+          "line": 43,
+          "character": 5
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 43,
+            "character": 4
+          },
+          "end": {
+            "line": 43,
+            "character": 5
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 43,
+          "character": 5
+        },
+        "end": {
+          "line": 44,
+          "character": 0
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 43,
+            "character": 5
+          },
+          "end": {
+            "line": 44,
+            "character": 0
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 44,
+          "character": 0
+        },
+        "end": {
+          "line": 44,
+          "character": 1
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 44,
+            "character": 0
+          },
+          "end": {
+            "line": 44,
+            "character": 1
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 44,
+          "character": 1
+        },
+        "end": {
+          "line": 45,
+          "character": 0
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 44,
+            "character": 1
+          },
+          "end": {
+            "line": 45,
+            "character": 0
+          }
+        }
+      ]
+    }
+  ]
+}

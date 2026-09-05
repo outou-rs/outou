@@ -1,0 +1,39 @@
+[package]
+name = "ui-kit"
+version = "0.0.1"
+edition = "2021"
+description = "Outou Phase 0 workspace-fixture library, written in `.rsx` (issue #10)."
+license = "MIT OR Apache-2.0"
+
+# A library: ADR 0008 says published crates ship pre-generated Rust, so
+# `src/.generated/` is committed (see the repository root `.gitignore`'s
+# negation for this path) instead of ignored the way an application's is.
+[lib]
+path = "src/.generated/crate-root.rs"
+
+# `TODO(phase0)`, genuine finding (issue #10, `crates/outou-cli/README.md`):
+# `cargo package`/`cargo publish` unconditionally drop every dot-prefixed
+# path component (`src/.generated/` here) from the packaged file set —
+# confirmed by listing `src/.generated/crate-root.rs` explicitly, by full
+# literal path, in `include` below, and it is still absent from `cargo
+# package --list -p ui-kit`'s output. This is Cargo's own behavior, not
+# an Outou bug, and no `[package]` setting was found that overrides it.
+# ADR 0008 (published crates ship pre-generated Rust) and ADR 0009
+# (that Rust lives under `src/.generated/`) are consequently in tension
+# for the publish path specifically: a real Outou library cannot publish
+# through `cargo publish` while its generated Rust lives under a
+# dot-directory. Left as `include` (rather than removed) so the
+# assertion is visible and re-checked if a future Cargo version changes
+# this.
+include = ["src/**/*.rs", "src/**/*.rsx", "src/.generated/**/*"]
+
+[dependencies]
+# `version` alongside `path`, exactly like the repository root
+# `Cargo.toml`'s own `[workspace.dependencies]`: `cargo publish` refuses
+# to package a crate whose path dependency has no version requirement
+# (the published crate cannot embed a `path` that only exists on this
+# machine).
+outou = { path = "../../../../crates/outou", version = "0.0.1" }
+
+[features]
+extra = []

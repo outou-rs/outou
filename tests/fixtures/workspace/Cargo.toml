@@ -1,0 +1,7 @@
+[workspace]
+resolver = "2"
+members = ["ui-kit", "app"]
+
+# Standalone Cargo project, like `examples/phase0-app` and
+# `spikes/rust-analyzer/fixture`: not part of the repository's own
+# workspace (see the root `Cargo.toml`'s `members`/`exclude`).

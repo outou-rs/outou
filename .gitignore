@@ -15,5 +15,6 @@ node_modules/
 # Rust commit their `.generated/` directories; see CONTRIBUTING.md.
 **/.generated/
 !spikes/rust-analyzer/fixture/src/.generated/
+!tests/fixtures/workspace/ui-kit/src/.generated/
 
 .DS_Store

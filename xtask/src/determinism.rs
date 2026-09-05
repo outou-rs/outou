@@ -58,6 +58,15 @@ pub fn run() -> Result<(), String> {
         ));
     }
     targets.push(("phase0-app".to_string(), root.join("examples/phase0-app")));
+    // issue #10: the workspace fixture's library member. Only `ui-kit`
+    // is added (not the fixture's `app` member, and not the fixture's
+    // own workspace root, which `check_target` cannot build directly —
+    // it calls `build()` on one crate directory at a time, matching
+    // every other target in this list).
+    targets.push((
+        "workspace-fixture-ui-kit".to_string(),
+        root.join("tests/fixtures/workspace/ui-kit"),
+    ));
 
     let mut failures = Vec::new();
     for (name, dir) in &targets {

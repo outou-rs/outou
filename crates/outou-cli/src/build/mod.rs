@@ -5,21 +5,25 @@
 //! xtask determinism` and this crate's own tests can call it directly —
 //! "there is one compiler" (`AGENTS.md`).
 //!
-//! Split into three small modules with one job each:
+//! Split into small modules with one job each:
 //! [`plan`] turns a resolved module graph into concrete output paths and
 //! `#[path]` rewrites (no I/O beyond resolution itself); [`emit`]
 //! generates and atomically writes each unit; [`clean`] removes stale
-//! managed files [`emit`] did not just (re)write.
+//! managed files [`emit`] did not just (re)write; [`workspace`] reads a
+//! workspace root's `[workspace] members` so [`build`] can recurse into
+//! each one (issue #10 deliverable 3).
 
 pub mod clean;
 pub mod emit;
 pub mod plan;
+pub mod workspace;
 
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub use emit::EmitError;
 pub use plan::{CrateRoot, Plan, PlanError, PlannedUnit};
+pub use workspace::WorkspaceError;
 
 /// Options for one [`build`] run.
 ///
@@ -79,20 +83,55 @@ pub enum BuildError {
         #[source]
         source: std::io::Error,
     },
+    /// Reading `[workspace] members` out of a workspace root manifest
+    /// failed.
+    #[error(transparent)]
+    Workspace(#[from] WorkspaceError),
 }
 
-/// Runs `outou build` for the crate at `opts.manifest_dir`.
+/// Runs `outou build` for the crate (or workspace) at `opts.manifest_dir`.
+///
+/// When `manifest_dir/Cargo.toml` has a `[workspace]` table, every member
+/// is built in turn ([`build_workspace`]) and the reports are merged;
+/// otherwise `manifest_dir` is built as a single crate ([`build_crate`]).
 ///
 /// Returns `Ok(Report { built: false, .. })`, doing nothing else, when the
 /// crate has no `.rsx` crate root — a plain `.rs` crate is not a failure.
+/// For a workspace, `built` is `true` if *any* member built something.
 pub fn build(opts: &BuildOptions) -> Result<Report, BuildError> {
     let manifest_dir = plan::canonical_manifest_dir(&opts.manifest_dir)?;
-    let root = match plan::find_crate_root(&manifest_dir)? {
+
+    match workspace::workspace_members(&manifest_dir)? {
+        Some(members) => build_workspace(&members),
+        None => build_crate(&manifest_dir),
+    }
+}
+
+/// Builds every workspace member in turn, merging their [`Report`]s in
+/// member order. A member that is itself a workspace root would recurse
+/// through [`build`] again; Phase 0's own fixtures never nest workspaces,
+/// so this is untested but not specifically guarded against.
+fn build_workspace(members: &[PathBuf]) -> Result<Report, BuildError> {
+    let mut aggregate = Report::default();
+    for member in members {
+        let report = build(&BuildOptions::new(member))?;
+        aggregate.built |= report.built;
+        aggregate.generated_files.extend(report.generated_files);
+        aggregate.map_files.extend(report.map_files);
+        aggregate.removed_files.extend(report.removed_files);
+    }
+    Ok(aggregate)
+}
+
+/// Builds one ordinary crate directory (already resolved past any
+/// `[workspace] members` indirection).
+fn build_crate(manifest_dir: &Path) -> Result<Report, BuildError> {
+    let root = match plan::find_crate_root(manifest_dir)? {
         CrateRoot::NoRsxRoot => return Ok(Report::default()),
         CrateRoot::Rsx(root) => root,
     };
 
-    let planned = plan::plan(&manifest_dir, &root)?;
+    let planned = plan::plan(manifest_dir, &root)?;
     let output = emit::emit(&planned)?;
 
     let produced: HashSet<PathBuf> = output

@@ -1,0 +1,2 @@
+error: the backend rejected this element; see the generated code
+ --> $DIR/input.rsx:5:10

@@ -4,69 +4,22 @@
 //! `AGENTS.md`: "Backend vocabulary (`rsx! macro`, `PropsBuilder`,
 //! `dioxus_rsx`, `GeneratedNode`, and similar) in any user-facing
 //! diagnostic is a Phase 0 failure. Translate or hide it." This module is
-//! the translation table `docs/backend-leakage.md` row 24 documents, and
-//! is deliberately small: known messages get a specific rewrite, anything
-//! else that still mentions a backend marker gets a generic message. The
-//! original text is never preserved anywhere in the outbound payload
-//! (see [`translate_diagnostic`]'s doc comment for why `data` doesn't
-//! either).
+//! the translation table `docs/backend-leakage.md` row 24 documents.
+//!
+//! The table itself (`BACKEND_MARKERS`, `contains_backend_marker`,
+//! `translate_message`) moved to `outou_syntax::vocabulary` (issue #11)
+//! so `outou-cli`'s UI/leak test harness can reuse the exact same
+//! translations instead of duplicating them; this module re-exports them
+//! under their original names so every existing call site here keeps
+//! compiling unchanged. It is deliberately small: known messages get a
+//! specific rewrite, anything else that still mentions a backend marker
+//! gets a generic message. The original text is never preserved anywhere
+//! in the outbound payload (see [`translate_diagnostic`]'s doc comment
+//! for why `data` doesn't either).
 
 use lsp_types::Diagnostic;
 
-/// Substrings that mark a message as containing backend vocabulary. Kept
-/// in one place so `docs/backend-leakage.md` and this module stay in
-/// sync.
-const BACKEND_MARKERS: &[&str] = &[
-    "rsx!",
-    "PropsBuilder",
-    "dioxus_rsx",
-    "GeneratedNode",
-    "IntoDynNode",
-    "dioxus_core",
-    "dioxus_elements",
-    "dioxus_signals",
-    "dioxus_html",
-    "dioxus::",
-    " dioxus ",
-    "VNode",
-    "RenderError",
-    "Properties",
-    "__template",
-    "_completions",
-    "typed_builder",
-    "::outou::__private::",
-    // Issue #9 Gate 3 review, H2: an HTML element's rustdoc routinely
-    // carries a "## Usage in rsx" section with a `ChildComponent {}`
-    // example in backend brace syntax; neither substring was covered by
-    // any marker above, so a hover whose *only* other content was the
-    // element's bare module path (already stripped as a path prefix,
-    // never a whole-line marker on its own) survived sanitization intact
-    // for some elements (`<p>`) while an unrelated element (`<main>`)
-    // happened to have no such section and was already suppressed.
-    "Usage in rsx",
-    "ChildComponent",
-];
-
-/// Whether `text` contains any [`BACKEND_MARKERS`] substring. Shared by
-/// every outbound payload this server sanitizes — diagnostics
-/// (`translate_message`), completion items
-/// (`crate::response::map_completion_response`) and hover contents
-/// (`crate::response::sanitize_hover`) — so a marker added here protects
-/// all three at once (issue #9 Gate 3 review, M4/HIGH-9).
-///
-/// Deliberately does *not* also flag a `__`-prefixed or `…Props`-suffixed
-/// name: that shape-based guess is cheap but not reliable — an ordinary
-/// user type coincidentally named `MyProps` is not backend vocabulary at
-/// all (issue #9 Gate 3 review, H3, confirmed live: hovering a `MyProps`
-/// parameter returned nothing, every type line stripped). See
-/// [`looks_like_generated_name`] (safe only for a completion label, where
-/// a false positive costs one dropped suggestion) and
-/// [`contains_component_props_marker`] (safe for hover text too, since it
-/// is anchored to names this plan's own `#[component]` functions actually
-/// generate a `Props`/`PropsBuilder` type for).
-pub fn contains_backend_marker(text: &str) -> bool {
-    BACKEND_MARKERS.iter().any(|marker| text.contains(marker))
-}
+pub use outou_syntax::vocabulary::{contains_backend_marker, translate_message};
 
 /// A cheap, shape-based guess that `text` names something this backend
 /// generated: a `__`-prefixed internal, or a name ending in `Props` (the
@@ -93,36 +46,6 @@ pub fn contains_component_props_marker(text: &str, component_names: &[String]) -
         .any(|name| text.contains(&format!("{name}Props")))
 }
 
-/// One specific, known rewrite: a substring to look for and the
-/// Outou-vocabulary replacement text to use instead of the generic
-/// fallback.
-const KNOWN_REWRITES: &[(&str, &str)] = &[
-    (
-        "PropsBuilder",
-        "this component is missing a required property",
-    ),
-    (
-        "IntoDynNode",
-        "this value cannot be used as element content here",
-    ),
-];
-
-/// Rewrites `message` if it contains backend vocabulary, per the table
-/// above. Returns the message unchanged when no marker is present — the
-/// overwhelming majority of rust-analyzer/rustc diagnostics for ordinary
-/// Rust code, which need no translation.
-pub fn translate_message(message: &str) -> String {
-    if !contains_backend_marker(message) {
-        return message.to_string();
-    }
-    for (marker, replacement) in KNOWN_REWRITES {
-        if message.contains(marker) {
-            return (*replacement).to_string();
-        }
-    }
-    "the backend rejected this element; see the generated code".to_string()
-}
-
 /// Applies [`translate_message`] to one diagnostic, preserving its
 /// `range`, `severity` and `code` (the architecture note: "Every mapped
 /// diagnostic must keep its severity and code").
@@ -145,32 +68,6 @@ pub fn translate_diagnostic(mut diagnostic: Diagnostic) -> Diagnostic {
 mod tests {
     use super::*;
     use lsp_types::{DiagnosticSeverity, NumberOrString, Position, Range};
-
-    #[test]
-    fn a_plain_rustc_message_is_untouched() {
-        assert_eq!(
-            translate_message("mismatched types: expected `String`, found `u32`"),
-            "mismatched types: expected `String`, found `u32`"
-        );
-    }
-
-    #[test]
-    fn a_props_builder_message_gets_the_specific_rewrite() {
-        let msg = "no method named `build` found for struct `GreetingPropsBuilder`";
-        assert_eq!(
-            translate_message(msg),
-            "this component is missing a required property"
-        );
-    }
-
-    #[test]
-    fn an_unknown_backend_marker_gets_the_generic_message() {
-        let msg = "this error originates in the derive macro `Props`, dioxus_core::internals";
-        assert_eq!(
-            translate_message(msg),
-            "the backend rejected this element; see the generated code"
-        );
-    }
 
     #[test]
     fn translate_diagnostic_keeps_severity_and_code_and_drops_data() {
@@ -204,17 +101,6 @@ mod tests {
         assert!(translated.data.is_none());
     }
 
-    /// H2: a hover's "Usage in rsx" section (with its `ChildComponent {}`
-    /// brace-syntax example) must be recognized as backend vocabulary even
-    /// though it names no `dioxus_*` path directly.
-    #[test]
-    fn contains_backend_marker_flags_the_usage_in_rsx_section() {
-        assert!(contains_backend_marker("## Usage in rsx"));
-        assert!(contains_backend_marker(
-            "main { ChildComponent {} {raw_expression} }"
-        ));
-    }
-
     /// H3: the bare shape-based heuristic still flags a `…Props`-suffixed
     /// or `__`-prefixed name (used only for completion labels).
     #[test]
@@ -226,16 +112,6 @@ mod tests {
             !looks_like_generated_name("Props"),
             "must be longer than the bare suffix itself"
         );
-    }
-
-    /// H3: `contains_backend_marker` itself must no longer flag an
-    /// ordinary user type just because its name ends in `Props` — that
-    /// heuristic broke hover for `MyProps` (a plain user struct, not
-    /// anything this backend generated).
-    #[test]
-    fn contains_backend_marker_no_longer_flags_a_bare_props_suffixed_name() {
-        assert!(!contains_backend_marker("MyProps"));
-        assert!(!contains_backend_marker("__user_private_helper"));
     }
 
     /// H3: the component-aware marker only flags a name derived from a

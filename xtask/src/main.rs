@@ -1,5 +1,6 @@
 //! `cargo xtask`: repository automation that does not belong in any crate.
 
+mod corpus;
 mod determinism;
 
 use std::process::ExitCode;
@@ -30,10 +31,18 @@ enum Command {
 
 #[derive(Debug, Subcommand)]
 enum Corpus {
-    /// Clone every corpus at its pinned commit into `.corpus/`.
+    /// Clone every corpus at its pinned tag or commit into `.corpus/`.
     Fetch,
     /// Run the parser over every fetched corpus and report failures.
-    Test,
+    Test {
+        /// Also fail on false positives (Outou diagnostics on plain
+        /// Rust) and splice round-trip mismatches. Without this flag
+        /// only panics and timeouts fail the run; false positives and
+        /// mismatches are still reported, at full detail in
+        /// `.corpus/report.json`.
+        #[arg(long)]
+        strict: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -41,10 +50,10 @@ fn main() -> ExitCode {
     let result = match cli.command {
         Command::Corpus {
             command: Corpus::Fetch,
-        } => not_implemented("corpus fetch", "Week 6"),
+        } => corpus::fetch(),
         Command::Corpus {
-            command: Corpus::Test,
-        } => not_implemented("corpus test", "Week 6"),
+            command: Corpus::Test { strict },
+        } => corpus::test(strict),
         Command::Determinism => determinism::run(),
         Command::Dist => not_implemented("dist", "after Phase 0"),
     };

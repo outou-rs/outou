@@ -1,0 +1,2 @@
+error: closing tag `</span>` does not match opening tag `<div>`
+ --> $DIR/input.rsx:6:5

@@ -1,9 +1,15 @@
-# Corpora used by the nightly parser robustness job. Nothing here is vendored
-# into the repository; `cargo xtask corpus fetch` clones each entry at the
-# pinned commit into `.corpus/`.
+# Corpora used by the nightly parser robustness job. Nothing here is
+# vendored into the repository; `cargo xtask corpus fetch` clones each
+# entry at the pinned tag (or, if given, commit) into `.corpus/`.
+#
+# `rust-ui-tests` is pinned to tag `1.98.1`, the release matching the
+# `rustc`/`cargo` toolchain installed when this pin was chosen (issue
+# #12: pin to a stable rust-lang/rust tag instead of a moving commit,
+# preferring the tag matching the installed toolchain when it exists on
+# GitHub). Its tagged commit is `48a229ceaefd4985c50990b14116b6d856af0985`.
 
 [[corpus]]
 name = "rust-ui-tests"
 repo = "https://github.com/rust-lang/rust.git"
 path = "tests/ui"
-commit = "0ed41eb4142dda2df61eb1145a312c1a9d62eb56"
+tag = "1.98.1"

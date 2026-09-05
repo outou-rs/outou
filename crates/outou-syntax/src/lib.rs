@@ -17,6 +17,7 @@ mod escape;
 pub mod lexer;
 pub mod parser;
 pub mod render;
+pub mod vocabulary;
 pub mod whitespace;
 
 pub use outou_sourcemap::Span;

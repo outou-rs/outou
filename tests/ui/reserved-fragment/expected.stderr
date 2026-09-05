@@ -1,0 +1,2 @@
+error: fragments are not supported in Phase 0
+ --> $DIR/input.rsx:4:5
