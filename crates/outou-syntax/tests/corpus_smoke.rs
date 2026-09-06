@@ -8,8 +8,6 @@
 //! needs `cargo xtask corpus fetch` first and is exercised by the
 //! nightly job instead).
 
-use outou_syntax::ast;
-
 /// (label, source). Every source is plain Rust with no JSX in it; a
 /// diagnostic or a detected JSX element on any of these is a Outou
 /// false-positive detection bug, not a fixture-authoring mistake.
@@ -94,6 +92,35 @@ const SNIPPETS: &[(&str, &str)] = &[
         "generic-fn-with-where-and-comparison-body",
         "fn f<T: PartialOrd>(a: T, b: T) -> bool where T: Copy { a < b }",
     ),
+    // F1 (issue #12 corpus review, CRITICAL): item-level (brace depth 0)
+    // whitespace before `<` used to be committed to JSX. These are the
+    // exact shapes that made up 40 of the 61 real-corpus false positives;
+    // `crates/outou-syntax/tests/item_level_less_than.rs` carries the full
+    // end-to-end regression suite (through the real `outou_syntax::parse`
+    // driver, per F11) — these snippets are kept here too so the fixed
+    // shapes stay covered by the same in-repo "small corpus" this file
+    // otherwise is, and so a regression here fails the ordinary `cargo
+    // test --workspace` suite, not only the dedicated test file.
+    (
+        "item-level-impl-with-space-before-generic-param",
+        "struct Foo<T>(T);\nimpl <T> Foo<T> {}",
+    ),
+    (
+        "item-level-struct-with-space-before-generic-param",
+        "struct X <T> {}",
+    ),
+    (
+        "item-level-trait-with-space-before-generic-param",
+        "trait Tr <T> {}",
+    ),
+    (
+        "item-level-const-comparison-with-space-before-lt",
+        "const X: i32 = 1;\nconst Y: i32 = 2;\nconst C: bool = X < Y;",
+    ),
+    (
+        "item-level-type-alias-wrapped-across-lines-before-lt",
+        "struct S<T>(T);\ntype S = S<S<S\n<u8>>>;",
+    ),
 ];
 
 #[test]
@@ -110,69 +137,16 @@ fn no_snippet_produces_diagnostics_or_detects_jsx() {
             "{label}: expected no diagnostics, got {:?}",
             parsed.diagnostics
         );
-        let elements = collect_jsx_elements(&parsed.file);
+        // F19 (issue #12 corpus review): this traversal used to be a
+        // verbatim copy of `xtask/src/corpus/splice.rs`'s own
+        // `collect_jsx_elements`; both now call the one canonical
+        // implementation, `outou_syntax::ast::File::jsx_elements`.
+        let elements = parsed.file.jsx_elements();
         assert!(
             elements.is_empty(),
             "{label}: expected no JSX elements, found {} (first span: {:?})",
             elements.len(),
             elements[0].span
         );
-    }
-}
-
-fn collect_jsx_elements(file: &ast::File) -> Vec<&ast::JsxElement> {
-    let mut out = Vec::new();
-    for item in &file.items {
-        collect_in_item(item, &mut out);
-    }
-    out
-}
-
-fn collect_in_item<'a>(item: &'a ast::Item, out: &mut Vec<&'a ast::JsxElement>) {
-    match item {
-        ast::Item::Function(f) => {
-            for expr in f.body.statements.iter().chain(f.body.tail.as_deref()) {
-                collect_in_expr(expr, out);
-            }
-        }
-        ast::Item::Module(m) => {
-            for inner in m.items.iter().flatten() {
-                collect_in_item(inner, out);
-            }
-        }
-        ast::Item::Rust(r) => {
-            for part in &r.parts {
-                collect_in_expr(part, out);
-            }
-        }
-        ast::Item::Error(_) => {}
-    }
-}
-
-fn collect_in_expr<'a>(expr: &'a ast::Expr, out: &mut Vec<&'a ast::JsxElement>) {
-    if let ast::Expr::Jsx(element) = expr {
-        collect_in_element(element, out);
-    }
-}
-
-fn collect_in_element<'a>(element: &'a ast::JsxElement, out: &mut Vec<&'a ast::JsxElement>) {
-    out.push(element);
-    for attr in &element.attributes {
-        if let Some(ast::JsxAttributeValue::Expression(island)) = &attr.value {
-            for part in &island.parts {
-                collect_in_expr(part, out);
-            }
-        }
-    }
-    for child in &element.children {
-        match child {
-            ast::JsxChild::Expression(island) => {
-                for part in &island.parts {
-                    collect_in_expr(part, out);
-                }
-            }
-            ast::JsxChild::Element(nested) => collect_in_element(nested, out),
-            ast::JsxChild::Text(_) | ast::JsxChild::Error(_) => {}
-        }
     }
 }

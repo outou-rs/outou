@@ -79,6 +79,55 @@ fn workspace_fixture_dir() -> PathBuf {
     repo_root().join("tests/fixtures/workspace")
 }
 
+/// Turns a `copy_to_temp`d directory into a git working tree whose
+/// ignore rules mirror this repository's own root `.gitignore` for
+/// `**/.generated/` (plus any negations in `generated_negations`, paths
+/// relative to `dir`, one per line as they'd appear in a `.gitignore`).
+///
+/// This matters because `cargo package`'s default packaged-file list is
+/// git-aware (tracked files, honoring `.gitignore`) *only* when the
+/// crate sits inside an actual git repository; outside one, `cargo
+/// package` (cargo 1.98.1) falls back to a separate "no VCS found" file
+/// listing that drops every dot-prefixed path (`src/.generated/`
+/// included) regardless of an explicit `[package] include`. A bare
+/// `copy_dir` into a fresh temp directory has no `.git` at all, so
+/// running `cargo package`/`cargo publish` there exercises that
+/// fallback path — not the one a real `cargo publish` from this
+/// repository (or a real consumer's checkout) ever goes through. This
+/// is what produced the false "`cargo package` unconditionally drops
+/// dot-prefixed paths" finding this comment replaces (see
+/// `crates/outou-cli/README.md` and `tests/fixtures/workspace/ui-kit/Cargo.toml`).
+fn make_git_working_tree(dir: &Path, generated_negations: &[&str]) {
+    let mut gitignore = String::from("**/.generated/\n");
+    for negation in generated_negations {
+        gitignore.push_str(&format!("!{negation}\n"));
+    }
+    fs::write(dir.join(".gitignore"), gitignore)
+        .unwrap_or_else(|e| panic!("writing {}/.gitignore: {e}", dir.display()));
+
+    let init = git(dir, &["init", "-q"]);
+    assert!(
+        init.status.success(),
+        "git init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+    let add = git(dir, &["add", "-A"]);
+    assert!(
+        add.status.success(),
+        "git add -A failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+}
+
+/// Runs `git <args>` in `dir`.
+fn git(dir: &Path, args: &[&str]) -> Output {
+    Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap_or_else(|e| panic!("running `git {}` in {}: {e}", args.join(" "), dir.display()))
+}
+
 /// Runs `cargo <args>` in `dir`, sharing this repository's own `target/`
 /// directory across every matrix test (like `build_compile.rs`) so a cold
 /// `dioxus` build only ever happens once per `cargo test` invocation, not
@@ -138,6 +187,13 @@ fn fix_up_copied_app_manifest(dir: &Path) {
 #[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
 fn example_app_cargo_matrix() {
     let dir = copy_to_temp(&repo_root().join("examples/phase0-app"), "matrix-app");
+    // A real git working tree, mirroring the root `.gitignore`'s
+    // `**/.generated/` rule (no negation here — applications never
+    // commit generated output), so `cargo package --list` below
+    // exercises the same code path a real `cargo publish` would, not
+    // Cargo's separate "no VCS found" fallback (see
+    // `make_git_working_tree`'s doc comment).
+    make_git_working_tree(&dir, &[]);
     fix_up_copied_app_manifest(&dir);
 
     let report = build(&BuildOptions::new(&dir)).expect("outou build succeeds on phase0-app");
@@ -162,7 +218,11 @@ fn example_app_cargo_matrix() {
     // ADR 0008 / `ui_kit`'s own finding below: `cargo package --list`
     // shows what a `cargo publish` would ship. An application is never
     // published (`publish = false`), so this is the useful check here,
-    // not `cargo publish --dry-run`.
+    // not `cargo publish --dry-run`. Re-add: `outou build` just created
+    // `src/.generated/` fresh; it is gitignored, so this is a no-op for
+    // it, but it keeps the working tree's index current for everything
+    // else `cargo package`'s git-aware file list looks at.
+    git(&dir, &["add", "-A"]);
     let package_output = cargo(&dir, &["package", "--list", "--allow-dirty"]);
     assert_success(&package_output, "cargo package --list");
     let packaged = String::from_utf8_lossy(&package_output.stdout);
@@ -337,6 +397,13 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 #[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
 fn workspace_fixture_cargo_matrix() {
     let dir = copy_to_temp(&workspace_fixture_dir(), "matrix-workspace");
+    // A real git working tree, with the same `**/.generated/` rule (and
+    // `ui-kit`'s negation) as the repository root `.gitignore`, so the
+    // packaging checks below exercise the code path a real `cargo
+    // publish` from this repository actually uses, not Cargo's separate
+    // "no VCS found" fallback file listing (see `make_git_working_tree`'s
+    // doc comment).
+    make_git_working_tree(&dir, &["ui-kit/src/.generated/"]);
     fix_up_workspace_fixture_manifest(&dir, "ui-kit");
     fix_up_workspace_fixture_manifest(&dir, "app");
 
@@ -381,6 +448,12 @@ fn workspace_fixture_cargo_matrix() {
         "cargo build -p ui-kit --features extra",
     );
 
+    // Re-add: `outou build` just (re)generated both members' generated
+    // Rust. `app`'s is gitignored (untracked, no-op here); `ui-kit`'s is
+    // already tracked (committed fixture, negated in `.gitignore`), so
+    // this just refreshes its content in the index.
+    git(&dir, &["add", "-A"]);
+
     // `app` never publishes (`publish = false`); its `.rsx` sources ship,
     // its `src/.generated/` does not (application layout, ADR 0008).
     let app_package = cargo(&dir, &["package", "--list", "--allow-dirty", "-p", "app"]);
@@ -390,14 +463,18 @@ fn workspace_fixture_cargo_matrix() {
     assert!(!app_packaged.contains(".generated"), "{app_packaged}");
 
     // `ui-kit` is a library (ADR 0008: published crates ship
-    // pre-generated Rust) and explicitly `include`s `src/.generated/**/*`
-    // — and yet, per the genuine Phase 0 finding recorded in its own
-    // `Cargo.toml` and in `crates/outou-cli/README.md`, Cargo's package
-    // builder unconditionally drops every dot-prefixed path component
-    // from the packaged file set, `include` notwithstanding. The `.rsx`
-    // sources still ship; `src/.generated/crate-root.rs` does not, so
-    // `cargo publish --dry-run` fails outright (asserted below) rather
-    // than merely warning.
+    // pre-generated Rust). No `[package] include` is needed: this crate
+    // sits inside a real git working tree (`make_git_working_tree`
+    // above, mirroring the repository root `.gitignore`'s negation for
+    // this exact path), so Cargo's default, git-aware packaged-file list
+    // ships `src/.generated/` like any other tracked source. An earlier
+    // version of this assertion expected the opposite — that Cargo drops
+    // dot-prefixed paths regardless of `include` — which was only true
+    // because this test used to copy the fixture into a bare directory
+    // with no `.git` at all, putting `cargo package` on a different,
+    // "no VCS found" fallback file-listing path (see
+    // `crates/outou-cli/README.md` and
+    // `tests/fixtures/workspace/ui-kit/Cargo.toml`).
     let lib_package = cargo(
         &dir,
         &["package", "--list", "--allow-dirty", "-p", "ui-kit"],
@@ -407,12 +484,18 @@ fn workspace_fixture_cargo_matrix() {
     assert!(lib_packaged.contains("src/lib.rsx"), "{lib_packaged}");
     assert!(lib_packaged.contains("src/widgets.rsx"), "{lib_packaged}");
     assert!(
-        !lib_packaged.contains(".generated"),
-        "genuine Phase 0 finding (crates/outou-cli/README.md): Cargo drops dot-prefixed \
-         paths from a package regardless of `include`, so `src/.generated/` never ships \
-         even for a library that asks for it:\n{lib_packaged}"
+        lib_packaged.contains("src/.generated/crate-root.rs"),
+        "a library's `src/.generated/` must ship (ADR 0008/0009; issue #10):\n{lib_packaged}"
     );
 
+    // Genuine Phase 0 publish limitation (issue #10 deliverable 1,
+    // `crates/outou-cli/README.md`): `cargo publish --dry-run` fails not
+    // because of `src/.generated/` (which packages fine, asserted
+    // above), but because `ui-kit` depends on `outou` via a local `path`
+    // dependency and `outou` itself has never been published to
+    // crates.io. ADR 0008 says a *consumer* of an Outou library needs
+    // only `outou`; it says nothing about the library's own publish
+    // requiring `outou` to already exist on the registry, and it does.
     let publish_output = cargo(
         &dir,
         &["publish", "--dry-run", "--allow-dirty", "-p", "ui-kit"],
@@ -424,9 +507,10 @@ fn workspace_fixture_cargo_matrix() {
          {publish_stderr}"
     );
     assert!(
-        publish_stderr.contains("no targets specified in the manifest"),
-        "expected Cargo's own missing-lib-target message, since `src/.generated/crate-root.rs` \
-         (the `[lib] path`) never made it into the package:\n{publish_stderr}"
+        publish_stderr.contains("no matching package named `outou` found")
+            && publish_stderr.contains("crates.io index"),
+        "expected `cargo publish --dry-run` to fail only because `outou` is unpublished, \
+         not because `src/.generated/` failed to package:\n{publish_stderr}"
     );
 
     fs::remove_dir_all(&dir).ok();

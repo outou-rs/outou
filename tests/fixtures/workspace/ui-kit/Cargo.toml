@@ -11,21 +11,42 @@ license = "MIT OR Apache-2.0"
 [lib]
 path = "src/.generated/crate-root.rs"
 
-# `TODO(phase0)`, genuine finding (issue #10, `crates/outou-cli/README.md`):
-# `cargo package`/`cargo publish` unconditionally drop every dot-prefixed
-# path component (`src/.generated/` here) from the packaged file set —
-# confirmed by listing `src/.generated/crate-root.rs` explicitly, by full
-# literal path, in `include` below, and it is still absent from `cargo
-# package --list -p ui-kit`'s output. This is Cargo's own behavior, not
-# an Outou bug, and no `[package]` setting was found that overrides it.
-# ADR 0008 (published crates ship pre-generated Rust) and ADR 0009
-# (that Rust lives under `src/.generated/`) are consequently in tension
-# for the publish path specifically: a real Outou library cannot publish
-# through `cargo publish` while its generated Rust lives under a
-# dot-directory. Left as `include` (rather than removed) so the
-# assertion is visible and re-checked if a future Cargo version changes
-# this.
-include = ["src/**/*.rs", "src/**/*.rsx", "src/.generated/**/*"]
+# No `[package] include`: `cargo package --list -p ui-kit` already ships
+# `src/.generated/` without one. Cargo's default file list for a crate
+# inside a git repository is VCS-aware (tracked files, honoring
+# `.gitignore`), and the repository root `.gitignore`'s negation for this
+# exact path (`!tests/fixtures/workspace/ui-kit/src/.generated/`) makes
+# these files tracked like any other, so no `include` override is needed
+# — confirmed with `cargo package --list -p ui-kit`, which lists
+# `src/.generated/crate-root.rs` and friends (`crates/outou-cli/tests/matrix.rs`).
+#
+# An earlier version of this comment (and `crates/outou-cli/README.md`,
+# `docs/phase0/issues/10-cargo-matrix.md`) claimed Cargo unconditionally
+# drops dot-prefixed paths even with an explicit `include`. That was
+# false, and specific to how `crates/outou-cli/tests/matrix.rs` used to
+# exercise this fixture: its `copy_to_temp`/`copy_dir` helper made a
+# plain filesystem copy with no `.git` directory at all, so
+# `cargo package --list` ran there under Cargo's separate "no VCS found"
+# fallback file listing, which — in cargo 1.98.1 — does drop
+# dot-prefixed paths regardless of `include`. That fallback path is not
+# what a real `cargo publish` from this repository (or from a real
+# consumer's checkout) ever goes through, since a published crate's
+# source lives in a git repository. `matrix.rs` now makes its temp copy
+# a git working tree with the same ignore rules as this repository
+# before packaging, so the check exercises the real code path.
+#
+# The genuine Phase 0 publish limitation is different: `cargo publish
+# --dry-run --allow-dirty -p ui-kit` fails with "no matching package
+# named `outou` found ... location searched: crates.io index", because
+# `ui-kit` depends on `outou` via a local `path` dependency and `outou`
+# itself has not been published to crates.io. ADR 0008 says a consumer
+# of an Outou library needs only `outou` (no build dependency, no
+# Outou toolchain) — but `outou` still has to actually exist as a
+# published dependency for that library's own `cargo publish` to work.
+# `outou package` (currently `todo!()`) will need to either require
+# `outou` to already be published before packaging a dependent library,
+# or otherwise resolve/vendor that dependency at publish time; this is
+# an ordinary Cargo constraint, not a dot-directory or JSX-specific one.
 
 [dependencies]
 # `version` alongside `path`, exactly like the repository root

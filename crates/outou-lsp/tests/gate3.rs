@@ -318,6 +318,40 @@ fn save_gzipped(root: &Path, probe: &str, json: &serde_json::Value) {
         .unwrap_or_else(|e| panic!("moving {} to {}: {e}", gz_tmp.display(), dest.display()));
 }
 
+/// Finds the (0-based line, 0-based UTF-16 `character`) of the start of the
+/// `occurrence`-th (0-indexed) match of `needle` in `text`, scanning line by
+/// line and counting matches across the whole text — mirroring
+/// `outou-lsp-client.mjs`'s own `positionOf` helper (same semantics: a
+/// global occurrence count, not per-line).
+///
+/// Every hard-coded expected line/column in [`check_probe`] used to be a
+/// literal computed once, by hand, against a specific revision of
+/// `examples/phase0-app`; any later edit to that fixture (e.g. issue #10's
+/// doc comment and `TagList`/`Field`/`MyProps`/`Card2` additions) silently
+/// shifted every line after the edit and broke this gate for a reason
+/// that had nothing to do with the LSP behavior under test. Deriving the
+/// expected position from the fixture text itself, at test time, makes the
+/// assertion track the fixture instead of a stale snapshot of it.
+///
+/// `character` is in UTF-16 code units (the LSP default position encoding,
+/// and what `outou-lsp-client.mjs` assumes too), not bytes or Unicode
+/// scalar values — the needles this test uses are all ASCII, so the three
+/// encodings agree here, but computing it correctly costs nothing and
+/// avoids a subtle trap for a future, non-ASCII needle.
+fn position_of(text: &str, needle: &str, occurrence: usize) -> (i64, i64) {
+    let mut seen = 0usize;
+    for (line_no, line) in text.split('\n').enumerate() {
+        for (byte_idx, _) in line.match_indices(needle) {
+            if seen == occurrence {
+                let utf16_col = line[..byte_idx].encode_utf16().count();
+                return (line_no as i64, utf16_col as i64);
+            }
+            seen += 1;
+        }
+    }
+    panic!("position_of: {needle:?} (occurrence {occurrence}) not found in text");
+}
+
 /// Recursively asserts that no string anywhere in `value` contains a
 /// [`LEAKAGE_MARKERS`] substring (issue #9 Gate 3 review, M4/M8(iv)):
 /// applied to every probe's *entire* JSON result, not just the field the
@@ -369,6 +403,16 @@ fn gate3_probes_pass_through_the_real_parser_and_pipeline() {
     let root = repo_root();
     let outou_lsp = PathBuf::from(env!("CARGO_BIN_EXE_outou-lsp"));
 
+    // The canonical, unmodified fixture text — never a probe's own temp
+    // copy, which some probes deliberately corrupt or rewrite on disk
+    // before `check_probe` runs — that every hard-coded expected
+    // line/column in `check_probe` is derived from via [`position_of`].
+    let main_rsx_text = std::fs::read_to_string(root.join("examples/phase0-app/src/main.rsx"))
+        .expect("reading examples/phase0-app/src/main.rsx");
+    let components_rsx_text =
+        std::fs::read_to_string(root.join("examples/phase0-app/src/components.rsx"))
+            .expect("reading examples/phase0-app/src/components.rsx");
+
     let mut summary = String::new();
     let mut failures: Vec<String> = Vec::new();
     let mut temp_dirs: Vec<PathBuf> = Vec::new();
@@ -390,7 +434,14 @@ fn gate3_probes_pass_through_the_real_parser_and_pipeline() {
         save_gzipped(&root, probe, &result);
         assert_no_leakage(probe, &result);
 
-        if let Err(message) = check_probe(probe, &result, &crate_dir, before_bytes.as_deref()) {
+        if let Err(message) = check_probe(
+            probe,
+            &result,
+            &crate_dir,
+            before_bytes.as_deref(),
+            &main_rsx_text,
+            &components_rsx_text,
+        ) {
             failures.push(format!("{probe}: {message}"));
         }
 
@@ -438,6 +489,8 @@ fn check_probe(
     result: &serde_json::Value,
     crate_dir: &Path,
     generated_root_before: Option<&[u8]>,
+    main_rsx_text: &str,
+    components_rsx_text: &str,
 ) -> Result<(), String> {
     match probe {
         "hover-user" => {
@@ -449,7 +502,8 @@ fn check_probe(
                 return Err(format!("hover did not mention `Option`: {value}"));
             }
             let range = result.pointer("/hover/range").ok_or("no hover range")?;
-            require_range_on_line(range, 20)
+            let (line, _) = position_of(main_rsx_text, "let user = load_user();", 0);
+            require_range_on_line(range, line)
         }
         "hover-nonascii" => {
             let value = result
@@ -506,7 +560,13 @@ fn check_probe(
             let range = result
                 .pointer("/hover/range")
                 .ok_or("no hover range for the `MyProps`-named-type probe")?;
-            require_range_matches(range, 40, 13, 40, 19)
+            // The hovered position sits inside the `config` parameter name
+            // (`outou-lsp-client.mjs`'s own probe hovers one character into
+            // it); the range rust-analyzer returns is that parameter
+            // identifier's own span, not the `MyProps` type it names.
+            let (line, start) = position_of(components_rsx_text, "config: MyProps", 0);
+            let end = start + "config".len() as i64;
+            require_range_matches(range, line, start, line, end)
         }
         "definition-load-user" => {
             let uri = result
@@ -519,7 +579,8 @@ fn check_probe(
             let range = result
                 .pointer("/definition/0/range")
                 .ok_or("no definition range")?;
-            require_range_on_line(range, 42)
+            let (line, _) = position_of(main_rsx_text, "fn load_user(", 0);
+            require_range_on_line(range, line)
         }
         "definition-user-card" => {
             let uri = result
@@ -534,7 +595,8 @@ fn check_probe(
             let range = result
                 .pointer("/definition/0/range")
                 .ok_or("no cross-file definition range")?;
-            require_range_on_line(range, 8)
+            let (line, _) = position_of(components_rsx_text, "pub fn UserCard(", 0);
+            require_range_on_line(range, line)
         }
         "completion-member" => {
             let item = find_completion_item(result, "unwrap").ok_or("no `unwrap` item")?;
@@ -553,14 +615,19 @@ fn check_probe(
             // `</p>` tag offers HTML element names starting with "p"
             // (`p`, `pre`), and — the actual regression this probe
             // guards — the edit range sits on the *closing* tag's own
-            // "p" (line 30, columns 28..29), never the opening tag's
-            // position the old reverse-mapping bug always produced.
+            // "p" (derived from `</p>`'s position below), never the
+            // opening tag's position the old reverse-mapping bug always
+            // produced.
             let item = find_completion_item(result, "p")
                 .ok_or("no `p` item for the closing tag completion")?;
             let range = item
                 .pointer("/textEdit/range")
                 .ok_or_else(|| format!("item has no textEdit.range: {item}"))?;
-            require_range_matches(range, 30, 28, 30, 29)
+            // `</p>`'s own "p": two characters in from the needle's start
+            // (past `</`), one character wide.
+            let (line, tag_start) = position_of(main_rsx_text, "</p>", 0);
+            let start = tag_start + 2;
+            require_range_matches(range, line, start, line, start + 1)
         }
         "completion-prop-name" => {
             let item = find_completion_item(result, "user").ok_or("no `user` item")?;
@@ -628,7 +695,8 @@ fn check_probe(
             let range = diag
                 .get("range")
                 .ok_or("missing-prop diagnostic has no range")?;
-            require_range_on_line(range, 28)
+            let (line, _) = position_of(main_rsx_text, "<UserCard user={user.unwrap()} />", 0);
+            require_range_on_line(range, line)
         }
         "stale-diagnostics-cleared" => {
             let introduced = result

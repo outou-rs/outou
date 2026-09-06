@@ -93,7 +93,13 @@ impl<'s> Parser<'s> {
             // 3).
             let tok = rust_token::next_token(self.bytes, pos);
             if matches!(tok.kind, RtKind::LineComment | RtKind::BlockComment) {
-                prev = Some(tok);
+                // `prev` is deliberately left untouched here too (issue
+                // #12 corpus review, addendum: "comment absorbs prev"; see
+                // `parser::item`'s identical fix for the item-level half of
+                // this same bug): overwriting it with the comment token
+                // made `position::from_prev` fall through to its
+                // permissive `Expr` default right after a plain
+                // identifier, since every comment kind maps there.
                 pos = tok.end;
                 continue;
             }

@@ -111,7 +111,17 @@ impl<'s> Parser<'s> {
             };
             let is_comment = matches!(peek.kind, RtKind::LineComment | RtKind::BlockComment);
             if is_comment && (depth > 0 || !is_doc_comment) {
-                prev = Some(peek);
+                // `prev` is deliberately left untouched (issue #12 corpus
+                // review, addendum: "comment absorbs prev"): a comment
+                // carries no significant token, so overwriting `prev` with
+                // the comment itself made `position::from_prev` fall
+                // through to its permissive `Expr` default (every comment
+                // token maps there) right after a plain identifier —
+                // exactly like the whitespace-only bug this file's guard
+                // below used to have. `dyn Bar // …\n<Assoc=()>` is the
+                // observed corpus case: without this, the `<` after the
+                // comment was mis-detected as JSX because `Bar`'s own
+                // `Operand` context was discarded.
                 pos = peek.end;
                 continue;
             }
@@ -149,7 +159,7 @@ impl<'s> Parser<'s> {
                     prev = None;
                     continue;
                 }
-                if after_attrs > pos {
+                if !attrs.is_empty() {
                     // Attributes and/or doc comments were collected but did
                     // not precede a `fn`/`mod` item: jump straight past all
                     // of them in one step instead of falling through to the
@@ -157,6 +167,24 @@ impl<'s> Parser<'s> {
                     // same `scan_leading_attributes` call — and its
                     // `next_significant` head lookahead — at every token in
                     // the run (HIGH-3).
+                    //
+                    // This must be gated on `attrs` actually being
+                    // non-empty, not merely on `after_attrs > pos` (issue
+                    // #12 corpus review, F1/CRITICAL, confirmed and
+                    // sharpened by the addendum): `scan_leading_attributes`
+                    // also advances `pos` past *plain whitespace* between
+                    // two ordinary tokens even when it finds no attribute
+                    // at all, so the old `after_attrs > pos` guard fired on
+                    // brace-depth-0 whitespace alone and reset `prev` to
+                    // `None` right before the next `<` — `position::from_prev(None)`
+                    // is the permissive start-of-file `Expr` default, so
+                    // `impl <T> Foo<T> {}`, `struct X <T> {}`, a top-level
+                    // `const C: bool = A < B;`, and every other
+                    // keyword/identifier-then-space-then-`<` shape at item
+                    // level was misdetected as JSX. `attrs.is_empty()` only
+                    // resets `prev` when an attribute or doc comment was
+                    // genuinely consumed, matching this branch's own
+                    // comment and every other guard's intent.
                     pos = after_attrs;
                     prev = None;
                     continue;

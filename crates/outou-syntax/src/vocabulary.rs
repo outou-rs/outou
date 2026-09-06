@@ -66,6 +66,39 @@ pub fn contains_backend_marker(text: &str) -> bool {
     BACKEND_MARKERS.iter().any(|marker| text.contains(marker))
 }
 
+/// [`BACKEND_MARKERS`] entries excluded from [`translate_message`]'s
+/// stronger guarantee (issue #12 corpus review, F12/MEDIUM): each is an
+/// ordinary English word or a name a real user could plausibly give their
+/// own type, so a message that only happens to contain one of these three
+/// must be left untouched rather than silently replaced by "the backend
+/// rejected this element" — which would destroy an unrelated, legitimate
+/// diagnostic (F12's own example: a user's own type named `ChildComponent`
+/// failing to type-check for a reason that has nothing to do with this
+/// backend).
+///
+/// [`contains_backend_marker`] (built from the full, broader
+/// `BACKEND_MARKERS`) is unchanged and still uses all of these: dropping
+/// one ambiguous completion candidate, or blanking a hover that happens to
+/// mention one of these three words, is an acceptable trade-off in the
+/// LSP's suppression-only paths (`outou-lsp/src/response.rs`'s
+/// completion/hover filtering — `outou-lsp/src/translate.rs`'s own H3 doc
+/// comment already draws exactly this "safe to over-suppress a
+/// completion/hover, never safe to destroy a diagnostic message" line).
+/// Only [`translate_message`]'s full-message replacement is narrowed.
+pub const AMBIGUOUS_MARKERS: &[&str] = &["Properties", "ChildComponent", "Usage in rsx"];
+
+/// Whether `text` contains a [`BACKEND_MARKERS`] substring reliable enough
+/// to justify [`translate_message`] replacing the whole message: every
+/// marker except [`AMBIGUOUS_MARKERS`], computed from `BACKEND_MARKERS`
+/// itself (rather than kept as a second, hand-maintained list) so the two
+/// tables cannot drift apart.
+fn contains_reliable_marker(text: &str) -> bool {
+    BACKEND_MARKERS
+        .iter()
+        .filter(|marker| !AMBIGUOUS_MARKERS.contains(marker))
+        .any(|marker| text.contains(marker))
+}
+
 /// One specific, known rewrite: a substring to look for and the
 /// Outou-vocabulary replacement text to use instead of the generic
 /// fallback.
@@ -80,12 +113,15 @@ const KNOWN_REWRITES: &[(&str, &str)] = &[
     ),
 ];
 
-/// Rewrites `message` if it contains backend vocabulary, per the table
-/// above. Returns the message unchanged when no marker is present — the
-/// overwhelming majority of rustc/rust-analyzer diagnostics for ordinary
-/// Rust code, which need no translation.
+/// Rewrites `message` if it contains backend vocabulary reliable enough to
+/// act on ([`contains_reliable_marker`], not the broader
+/// [`contains_backend_marker`] — F12), per the table above. Returns the
+/// message unchanged when no
+/// reliable marker is present — the overwhelming majority of
+/// rustc/rust-analyzer diagnostics for ordinary Rust code, which need no
+/// translation, plus the deliberately excluded ambiguous-marker case.
 pub fn translate_message(message: &str) -> String {
-    if !contains_backend_marker(message) {
+    if !contains_reliable_marker(message) {
         return message.to_string();
     }
     for (marker, replacement) in KNOWN_REWRITES {
@@ -149,5 +185,46 @@ mod tests {
         // named `MyProps` is not backend vocabulary.
         assert!(!contains_backend_marker("MyProps"));
         assert!(!contains_backend_marker("__user_private_helper"));
+    }
+
+    /// F12 (issue #12 corpus review, MEDIUM): a message whose only backend
+    /// marker is one of the three ambiguous, English-word-shaped ones
+    /// (`Properties`, `ChildComponent`, `Usage in rsx`) must be left
+    /// completely untouched by `translate_message`, not silently replaced
+    /// by the generic fallback — that would destroy an unrelated
+    /// legitimate diagnostic (a user's own type happens to be named
+    /// `ChildComponent`, or a message happens to use the ordinary English
+    /// word "properties"/"Properties").
+    #[test]
+    fn an_ambiguous_marker_alone_is_left_completely_untouched() {
+        let msg = "mismatched types: expected `Properties`, found `u32`";
+        assert_eq!(translate_message(msg), msg);
+        let msg = "cannot find type `ChildComponent` in this scope";
+        assert_eq!(translate_message(msg), msg);
+        let msg = "## Usage in rsx";
+        assert_eq!(translate_message(msg), msg);
+    }
+
+    /// The same three ambiguous markers still count for
+    /// `contains_backend_marker` (`BACKEND_MARKERS` is the broader,
+    /// suppression-only list — `outou-lsp/src/response.rs`'s
+    /// completion/hover filtering still needs them), even though they are
+    /// excluded from `translate_message`'s stronger guarantee above.
+    #[test]
+    fn contains_backend_marker_still_flags_the_three_ambiguous_markers() {
+        assert!(contains_backend_marker("Properties"));
+        assert!(contains_backend_marker("ChildComponent"));
+        assert!(contains_backend_marker("Usage in rsx"));
+    }
+
+    /// An ambiguous marker alongside a reliable one still gets translated
+    /// (the reliable marker alone is enough to justify it).
+    #[test]
+    fn an_ambiguous_marker_alongside_a_reliable_one_still_translates() {
+        let msg = "the trait bound `GreetingProps: dioxus_core::Properties` is not satisfied";
+        assert_eq!(
+            translate_message(msg),
+            "the backend rejected this element; see the generated code"
+        );
     }
 }

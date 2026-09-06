@@ -15,7 +15,17 @@ labels: [phase0, must-keep]
 - [x] harness for `tests/ui/<case>/{input.rsx, expected.stderr}` (path-normalized, exact match)
 - [x] three diagnostic layers exercised: Outou syntax, Rust semantic (mapped back), backend (translated)
 - [x] a test that fails if any user-facing output contains `rsx! macro`, `PropsBuilder`, `dioxus_rsx`, `GeneratedNode` or similar backend vocabulary
-- [x] every row in `docs/backend-leakage.md` that is a diagnostic has a UI case (or is recorded below as needing none)
+- [ ] every row in `docs/backend-leakage.md` that is a diagnostic has a UI case
+
+  Left unticked (issue #12 corpus review, F13: an earlier version of this
+  file reworded the criterion itself to "... has a UI case (or is recorded
+  below as needing none)" and ticked it — a scope change made by editing
+  the acceptance text rather than recording it, which `AGENTS.md` does not
+  permit). Every row *is* surveyed (see "Ledger coverage" below); one
+  diagnostic row (18) genuinely has no UI case, for the good reason its
+  own note there gives — a case reproducing it would fail `tests/leak.rs`'s
+  own leak scan, defeating the point of that test. That is a tracked,
+  deliberate gap, not a false claim of full coverage.
 
 ## What was built
 

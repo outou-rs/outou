@@ -1,4 +1,2 @@
 warning: this component is missing a required property
  --> $DIR/input.rsx:10:5
-error: this method takes 1 argument but 0 arguments were supplied
- --> $DIR/input.rsx:10:5

@@ -41,7 +41,7 @@ use std::process::Command;
 
 use outou_backend_dioxus::DioxusBackend;
 use outou_codegen::{Backend, GenerateOptions, Mode};
-use outou_sourcemap::{SourceMap, Span, Uri};
+use outou_sourcemap::{NarrowOutcome, SourceMap, Span, Uri};
 use outou_syntax::{vocabulary, Diagnostic, Severity};
 
 /// Marker file (empty) that flags a case directory as needing a real
@@ -84,8 +84,14 @@ fn case_dirs() -> Vec<PathBuf> {
 
 /// Whether `BLESS=1` was set: write `expected.stderr` instead of
 /// asserting equality (`tests/ui/README.md`'s blessing workflow).
+///
+/// F17 (issue #12 corpus review, LOW): checks the value is exactly `"1"`,
+/// not merely present — `var_os(..).is_some()` also blessed on `BLESS=0`
+/// and even `BLESS=` (empty string), either of which is far more likely
+/// to be a leftover shell variable than a deliberate request to overwrite
+/// every checked-in `expected.stderr`.
 fn bless_requested() -> bool {
-    std::env::var_os("BLESS").is_some()
+    std::env::var("BLESS").as_deref() == Ok("1")
 }
 
 /// Replaces every occurrence of `case_dir`'s absolute path with `$DIR`,
@@ -251,6 +257,15 @@ fn write_and_check_build_crate(cases: &[BuildCase]) -> Vec<RustcMessage> {
     let outou_path = root.join("crates/outou");
     let temp_dir = root.join("target/outou-ui-build-check");
     let src_dir = temp_dir.join("src");
+    // F18 (issue #12 corpus review, LOW): this directory is reused across
+    // runs (it shares `target/` so a cold `dioxus` build only happens
+    // once), but was never cleaned — a case renamed or removed since the
+    // last run left its stale `src/<ident>.rs` behind forever, still
+    // compiled (and still `mod`-declared only if `lib.rs`, rewritten
+    // below, happens to reference it) or worse, silently unreferenced and
+    // never even failing loudly. Removing `src/` before writing means
+    // every run's throwaway crate contains exactly this run's cases.
+    fs::remove_dir_all(&src_dir).ok();
     fs::create_dir_all(&src_dir).expect("creating temp crate src dir");
 
     let manifest = format!(
@@ -346,29 +361,38 @@ fn parse_rustc_messages(stdout: &[u8]) -> Vec<RustcMessage> {
 }
 
 /// Maps a byte span in generated Rust back to its `.rsx` source span, in
-/// three steps mirroring `outou-lsp`'s `mapping.rs` (reimplemented here
-/// directly against a bare [`SourceMap`], since this harness has no
-/// `Workspace`/`Registry` to call into):
+/// up to three steps. This harness has no `Workspace`/`Registry` to call
+/// into, so it calls the shared span-mapping primitives directly against a
+/// bare [`SourceMap`] instead:
 ///
-/// 1. [`narrow_single_source`]: the containing mapping has exactly one
+/// 1. [`SourceMap::narrow`]: the containing mapping has exactly one
 ///    source, same-length as its generated span (the common case,
 ///    `Writer::verbatim`) — scale the query proportionally within it.
 ///    Necessary because one mapping frequently covers a whole spliced
 ///    Rust run (every plain-Rust statement between two JSX elements in a
 ///    component body is one mapping): without this step, every
 ///    diagnostic inside such a run would land at the run's very first
-///    byte, regardless of which statement in it actually erred.
+///    byte, regardless of which statement in it actually erred. A
+///    [`NarrowOutcome::LengthMismatch`] (a transformed mapping, e.g. an
+///    escaped string literal) is treated as unmapped here too, exactly
+///    like `outou-lsp`'s own caller (`mapping::generated_location_to_source`)
+///    — this harness used to fall through to step 2's coarser answer
+///    instead for that case, which let a `tests/ui/*/expected.stderr`
+///    encode a position the editor would never actually show for the same
+///    input (issue #12 corpus review, F4/HIGH). Both callers now share one
+///    `SourceMap::narrow` and one `LengthMismatch` decision — "there is
+///    one compiler" (`AGENTS.md`) extends to "there is one narrowing".
 /// 2. [`SourceMap::map_range`]'s coarser whole-span answer, when step 1
-///    does not apply (several sources, or a transformed/differently
-///    sized mapping).
+///    does not apply (several sources, or no containing mapping at all).
 /// 3. The nearest mapped position, when the span is unmapped altogether
 ///    (synthesized code, e.g. inside the `rsx!` macro's own expansion
 ///    scaffolding) — the same "never drop a hard error just because its
 ///    span has no direct mapping" rule
 ///    `outou-lsp`'s `mapping::nearest_source_position` uses.
 fn map_generated_span_to_source(source_map: &SourceMap, generated_span: Span) -> Span {
-    if let Some(span) = narrow_single_source(source_map, generated_span) {
-        return span;
+    match source_map.narrow(generated_span) {
+        NarrowOutcome::Exact { span, .. } => return span,
+        NarrowOutcome::LengthMismatch | NarrowOutcome::NotApplicable => {}
     }
     let mapped = source_map.map_range(generated_span);
     if let Some(first) = mapped.sources.first() {
@@ -383,53 +407,6 @@ fn map_generated_span_to_source(source_map: &SourceMap, generated_span: Span) ->
         .unwrap_or(Span::new(0, 0))
 }
 
-/// Step 1 of [`map_generated_span_to_source`]: proportionally narrows
-/// `generated_span` to a sub-range of the one `.rsx` source span of the
-/// mapping that contains it, when that mapping has exactly one source and
-/// is the same length as its generated span. `None` for anything else
-/// (several sources, no containing mapping, or a length mismatch, e.g. an
-/// escaped string literal) — the caller falls back to a coarser answer
-/// rather than a proportional guess S1 (`outou-lsp`'s own review note)
-/// found confidently wrong for a transformed mapping.
-fn narrow_single_source(source_map: &SourceMap, generated_span: Span) -> Option<Span> {
-    let mapping = source_map
-        .mappings
-        .iter()
-        .find(|m| m.generated.contains(generated_span))?;
-    let [source] = mapping.sources.as_slice() else {
-        return None;
-    };
-    if span_len(mapping.generated) != span_len(source.span) {
-        return None;
-    }
-    let start = scale_offset(generated_span.start, mapping.generated, source.span);
-    let end = if generated_span.start == generated_span.end {
-        start
-    } else {
-        scale_offset(generated_span.end, mapping.generated, source.span).max(start)
-    };
-    Some(Span::new(start, end))
-}
-
-fn span_len(span: Span) -> u32 {
-    span.end - span.start
-}
-
-/// Translates `offset` (known to fall inside `from`) into the
-/// corresponding offset inside `to`, proportionally to how far through
-/// `from` it is. Exact when the two spans are the same length; always
-/// clamped to `to`.
-fn scale_offset(offset: u32, from: Span, to: Span) -> u32 {
-    let delta = offset.saturating_sub(from.start);
-    let from_len = from.end - from.start;
-    let to_len = to.end - to.start;
-    if from_len == 0 || to_len == 0 {
-        return to.start;
-    }
-    let scaled = (u64::from(delta) * u64::from(to_len)) / u64::from(from_len);
-    to.start + (scaled as u32).min(to_len)
-}
-
 /// Byte distance between two spans: `0` when they overlap or touch,
 /// otherwise the gap between the closer pair of endpoints.
 fn generated_distance(a: Span, b: Span) -> u32 {
@@ -440,6 +417,39 @@ fn generated_distance(a: Span, b: Span) -> u32 {
     } else {
         0
     }
+}
+
+/// F21 (issue #12 corpus review, `docs/backend-leakage.md` row 27): a
+/// missing required prop produces *two* rustc diagnostics for one `.rsx`
+/// mistake — the already-translated deprecated-`build`-method warning,
+/// and a second, distinct, untranslated error (`` this method takes 1
+/// argument but 0 arguments were supplied ``) at the exact same mapped
+/// span, naming no `BACKEND_MARKERS` substring at all so
+/// `translate_message` leaves it untouched. A user who writes
+/// `<UserCard />` would see that second, backend-shaped-in-substance
+/// message as the thing that actually fails their build.
+///
+/// Rather than a general "smarter than substring" classifier (out of
+/// scope, per row 27's own note), this drops any *untranslated*
+/// diagnostic whose mapped span exactly matches a diagnostic that *was*
+/// translated: the translated one already explains the mistake in Outou
+/// vocabulary, so the untranslated second message at the same position
+/// adds nothing but confusion. A translated diagnostic, and any
+/// untranslated diagnostic at a span no translated one shares, are always
+/// kept.
+fn suppress_untranslated_duplicates(candidates: Vec<(Diagnostic, bool)>) -> Vec<Diagnostic> {
+    let translated_spans: std::collections::HashSet<Span> = candidates
+        .iter()
+        .filter(|(_, was_translated)| *was_translated)
+        .map(|(diagnostic, _)| diagnostic.span)
+        .collect();
+    candidates
+        .into_iter()
+        .filter(|(diagnostic, was_translated)| {
+            *was_translated || !translated_spans.contains(&diagnostic.span)
+        })
+        .map(|(diagnostic, _)| diagnostic)
+        .collect()
 }
 
 /// The "Rust semantic (mapped back)" and "backend (translated)"
@@ -457,6 +467,18 @@ fn ui_build_cases_match_expected_stderr() {
     assert!(!cases.is_empty(), "expected at least one build UI case");
 
     let messages = write_and_check_build_crate(&cases);
+    // F17 (issue #12 corpus review, LOW): if the throwaway crate failed to
+    // build for a reason unrelated to any individual case (a toolchain
+    // problem, a broken shared dependency), `cargo check`'s own JSON
+    // stream can come back with zero compiler-message entries even though
+    // every case's `input.rsx` is fine. Without this guard, a `BLESS=1`
+    // run would then silently overwrite every build case's
+    // `expected.stderr` with empty output and report success.
+    assert!(
+        !messages.is_empty(),
+        "expected at least one rustc message from the throwaway build crate; \
+         `cargo check` may have failed for an unrelated reason (see stderr above)"
+    );
 
     let mut failures = Vec::new();
     for case in &cases {
@@ -464,19 +486,28 @@ fn ui_build_cases_match_expected_stderr() {
         let input_path = case.case_dir.join("input.rsx");
         let file_name = input_path.display().to_string();
 
-        let diagnostics: Vec<Diagnostic> = messages
-            .iter()
-            .filter(|m| m.file_name == generated_file_name)
-            .map(|m| Diagnostic {
-                span: map_generated_span_to_source(&case.source_map, m.span),
-                message: vocabulary::translate_message(&m.message),
-                severity: if m.level == "error" {
-                    Severity::Error
-                } else {
-                    Severity::Warning
-                },
-            })
-            .collect();
+        let diagnostics: Vec<Diagnostic> = suppress_untranslated_duplicates(
+            messages
+                .iter()
+                .filter(|m| m.file_name == generated_file_name)
+                .map(|m| {
+                    let translated_message = vocabulary::translate_message(&m.message);
+                    let was_translated = translated_message != m.message;
+                    (
+                        Diagnostic {
+                            span: map_generated_span_to_source(&case.source_map, m.span),
+                            message: translated_message,
+                            severity: if m.level == "error" {
+                                Severity::Error
+                            } else {
+                                Severity::Warning
+                            },
+                        },
+                        was_translated,
+                    )
+                })
+                .collect(),
+        );
 
         let rendered =
             outou_syntax::render::render_diagnostics(&diagnostics, &case.rsx_source, &file_name);

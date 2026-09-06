@@ -45,11 +45,36 @@ pub fn run(root: &Path, entries: &[CorpusEntry]) -> Result<(), String> {
         clone_sparse(entry, &dest)?;
         let elapsed = start.elapsed();
 
-        fs::write(dest.join(REVISION_MARKER), entry.revision.marker())
+        // F8 (issue #12 corpus review, MEDIUM): `corpus.lock:9`'s pinned
+        // commit used to live only in a comment, never actually checked —
+        // a retagged upstream would silently change the corpus, exactly
+        // the thing a `.lock` file exists to prevent. Verify the freshly
+        // cloned tag's resolved commit against `entry.verified_commit`
+        // (when set) and fail loudly on a mismatch, before this checkout
+        // is accepted as fetched.
+        let resolved_commit = rev_parse_head(&dest)?;
+        if let Some(expected) = &entry.verified_commit {
+            if &resolved_commit != expected {
+                return Err(format!(
+                    "corpus fetch: {} ({}) resolved to commit {resolved_commit}, but corpus.lock's \
+                     verified_commit says {expected} — upstream may have retagged; if this is a \
+                     deliberate pin move, update corpus.lock's `tag` and `verified_commit` together",
+                    entry.name, entry.revision
+                ));
+            }
+        }
+
+        // The marker records both the pinned revision (compared by
+        // `is_up_to_date` to decide whether a repeat fetch can skip this
+        // checkout) and the commit it actually resolved to, so a later
+        // `corpus test` run can report it as provenance (F9) without
+        // needing to invoke `git` again.
+        let marker = format!("{}\n{resolved_commit}\n", entry.revision.marker());
+        fs::write(dest.join(REVISION_MARKER), marker)
             .map_err(|e| format!("writing revision marker for {}: {e}", entry.name))?;
 
         println!(
-            "corpus fetch: {} fetched at {} in {:.1}s",
+            "corpus fetch: {} fetched at {} (commit {resolved_commit}) in {:.1}s",
             entry.name,
             entry.revision,
             elapsed.as_secs_f64()
@@ -68,9 +93,39 @@ pub fn run(root: &Path, entries: &[CorpusEntry]) -> Result<(), String> {
     Ok(())
 }
 
+/// Runs `git rev-parse HEAD` in `dir`, returning the resolved commit SHA.
+fn rev_parse_head(dir: &Path) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(dir)
+        .output()
+        .map_err(|e| format!("running `git rev-parse HEAD` in {}: {e}", dir.display()))?;
+    if !output.status.success() {
+        return Err(format!(
+            "`git rev-parse HEAD` in {} exited with {}: {}",
+            dir.display(),
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Reads the resolved commit `corpus fetch` recorded for `entry` (F8/F9),
+/// if the checkout has a marker with one. `None` for a checkout that
+/// predates this field, or that has not been fetched at all — callers
+/// that need provenance should treat that the same as "unknown".
+pub fn resolved_commit(root: &Path, entry: &CorpusEntry) -> Option<String> {
+    let dest = root.join(".corpus").join(&entry.name);
+    let content = fs::read_to_string(dest.join(REVISION_MARKER)).ok()?;
+    content.lines().nth(1).map(str::to_string)
+}
+
 fn is_up_to_date(dest: &Path, entry: &CorpusEntry) -> bool {
     match fs::read_to_string(dest.join(REVISION_MARKER)) {
-        Ok(content) => content.trim() == entry.revision.marker(),
+        // The marker's first line is the pinned revision (F8: a second
+        // line, the resolved commit, may follow — irrelevant here).
+        Ok(content) => content.lines().next() == Some(entry.revision.marker().as_str()),
         Err(_) => false,
     }
 }

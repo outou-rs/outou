@@ -35,26 +35,30 @@ use outou_syntax::vocabulary;
 
 /// Substrings that must never appear in a user-facing Outou diagnostic
 /// (`AGENTS.md`, `docs/phase0/issues/11-diagnostics-ui-tests.md`'s
-/// checklist). A superset of `outou_syntax::vocabulary::BACKEND_MARKERS`:
-/// that table is what `translate_message` looks for to decide *whether*
-/// to rewrite a message; this list is the harder, independent check on
-/// the *rendered output* itself, and also covers two markers the
-/// translation table has no need to know about (`rsx! macro`, the exact
-/// phrase `AGENTS.md` uses, and `.generated/`, a path fragment rather
-/// than a message substring).
-const FORBIDDEN: &[&str] = &[
-    "rsx!",
-    "rsx! macro",
-    "PropsBuilder",
-    "dioxus",
-    "dioxus_rsx",
-    "GeneratedNode",
-    "IntoDynNode",
-    "VNode",
-    "RenderError",
-    "__private",
-    ".generated/",
-];
+/// checklist), a *literal* list rather than `BACKEND_MARKERS` itself
+/// (see [`forbidden`]): two entries here have no message-substring
+/// equivalent at all (`rsx! macro`, the exact phrase `AGENTS.md` uses, and
+/// `.generated/`, a path fragment rather than a message substring).
+const EXTRA_FORBIDDEN: &[&str] = &["rsx! macro", "dioxus", ".generated/"];
+
+/// The full forbidden-substring list this test scans rendered output
+/// for: every entry in [`EXTRA_FORBIDDEN`] plus every entry in
+/// `outou_syntax::vocabulary::BACKEND_MARKERS`.
+///
+/// This module doc used to claim a hand-maintained `FORBIDDEN` constant
+/// was "a superset of `BACKEND_MARKERS`" without actually deriving it from
+/// that table — six markers (`Properties`, `__template`, `_completions`,
+/// `typed_builder`, `Usage in rsx`, `ChildComponent`) were added to
+/// `BACKEND_MARKERS` over time and never mirrored here, so a rendered
+/// diagnostic leaking one of them would have passed this scan undetected
+/// (F5, issue #12 corpus review). Deriving the list directly, rather than
+/// re-asserting the superset property as a separate check, makes that
+/// drift structurally impossible.
+fn forbidden() -> Vec<&'static str> {
+    let mut markers: Vec<&'static str> = EXTRA_FORBIDDEN.to_vec();
+    markers.extend(vocabulary::BACKEND_MARKERS.iter().copied());
+    markers
+}
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -67,7 +71,7 @@ fn repo_root() -> PathBuf {
 /// per hit onto `failures` rather than panicking immediately — so one
 /// run reports every leak found, not just the first.
 fn scan(label: &str, text: &str, failures: &mut Vec<String>) {
-    for marker in FORBIDDEN {
+    for marker in forbidden() {
         if text.contains(marker) {
             failures.push(format!(
                 "{label}: rendered output contains forbidden backend vocabulary {marker:?}:\n{text}"
@@ -158,7 +162,8 @@ fn fixture_diagnostics_never_leak_backend_vocabulary() {
 }
 
 /// Deliverable 3's "unit test on the translation table itself": every
-/// substring in `outou_syntax::vocabulary::BACKEND_MARKERS` is swept
+/// *reliable* substring in `outou_syntax::vocabulary::BACKEND_MARKERS`
+/// (every entry except `vocabulary::AMBIGUOUS_MARKERS`, F12) is swept
 /// through a synthetic message, and the translated result must contain
 /// none of them — whether it got a specific rewrite or fell back to the
 /// generic message. This is the comprehensive form of the guarantee;
@@ -167,14 +172,31 @@ fn fixture_diagnostics_never_leak_backend_vocabulary() {
 /// `rustc` produce for generated code (docs/backend-leakage.md rows 12,
 /// 19, 20).
 #[test]
-fn every_backend_marker_translates_to_a_marker_free_message() {
+fn every_reliable_backend_marker_translates_to_a_marker_free_message() {
     for marker in vocabulary::BACKEND_MARKERS {
+        if vocabulary::AMBIGUOUS_MARKERS.contains(marker) {
+            continue;
+        }
         let synthetic = format!("a rustc diagnostic mentioning {marker} somewhere in its text");
         let translated = vocabulary::translate_message(&synthetic);
         assert!(
             !vocabulary::contains_backend_marker(&translated),
             "translating a message containing marker {marker:?} left backend vocabulary behind: {translated:?}"
         );
+    }
+}
+
+/// F12's other half: a message whose *only* marker is one of
+/// `vocabulary::AMBIGUOUS_MARKERS` must be left completely unchanged by
+/// `translate_message` rather than replaced (see
+/// `outou_syntax::vocabulary`'s own tests for the same guarantee at the
+/// unit level; this pins it from `outou-cli`'s side of the shared table
+/// too).
+#[test]
+fn every_ambiguous_marker_alone_is_left_untouched_by_translate_message() {
+    for marker in vocabulary::AMBIGUOUS_MARKERS {
+        let synthetic = format!("a rustc diagnostic mentioning {marker} somewhere in its text");
+        assert_eq!(vocabulary::translate_message(&synthetic), synthetic);
     }
 }
 

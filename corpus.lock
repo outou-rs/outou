@@ -6,10 +6,19 @@
 # `rustc`/`cargo` toolchain installed when this pin was chosen (issue
 # #12: pin to a stable rust-lang/rust tag instead of a moving commit,
 # preferring the tag matching the installed toolchain when it exists on
-# GitHub). Its tagged commit is `48a229ceaefd4985c50990b14116b6d856af0985`.
+# GitHub).
+#
+# `verified_commit` (issue #12 corpus review, F8) is the commit this tag
+# resolved to when the pin was chosen. `cargo xtask corpus fetch` checks
+# the freshly cloned tag's `git rev-parse HEAD` against it and fails
+# loudly on a mismatch — a tag is a mutable ref, and this is the one thing
+# a `.lock` file exists to prevent an upstream retag from silently
+# defeating. Update this field deliberately (alongside `tag`, if it also
+# changes) if the pin is intentionally moved.
 
 [[corpus]]
 name = "rust-ui-tests"
 repo = "https://github.com/rust-lang/rust.git"
 path = "tests/ui"
 tag = "1.98.1"
+verified_commit = "48a229ceaefd4985c50990b14116b6d856af0985"

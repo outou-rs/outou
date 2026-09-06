@@ -276,3 +276,91 @@ pub struct IncompleteTag {
     /// What was missing.
     pub missing: MissingToken,
 }
+
+impl File {
+    /// Every [`JsxElement`] anywhere in this file, in a depth-first,
+    /// source-order-ish traversal (top-level items in order, then each
+    /// element's attributes before its children).
+    ///
+    /// This one traversal used to be copied verbatim in two places outside
+    /// this crate — `xtask/src/corpus/splice.rs` and
+    /// `crates/outou-syntax/tests/corpus_smoke.rs` (F19, issue #12 review)
+    /// — both walking the same `Item`/`Expr`/`JsxElement` shapes to answer
+    /// the same question ("does this file contain any JSX at all, and
+    /// where"). Kept here once so a new `Item`/`Expr` variant only needs
+    /// updating in one place.
+    pub fn jsx_elements(&self) -> Vec<&JsxElement> {
+        let mut out = Vec::new();
+        for item in &self.items {
+            collect_in_item(item, &mut out);
+        }
+        out
+    }
+}
+
+fn collect_in_item<'a>(item: &'a Item, out: &mut Vec<&'a JsxElement>) {
+    match item {
+        Item::Function(f) => {
+            for expr in f.body.statements.iter().chain(f.body.tail.as_deref()) {
+                collect_in_expr(expr, out);
+            }
+        }
+        Item::Module(m) => {
+            for inner in m.items.iter().flatten() {
+                collect_in_item(inner, out);
+            }
+        }
+        Item::Rust(r) => {
+            for part in &r.parts {
+                collect_in_expr(part, out);
+            }
+        }
+        Item::Error(_) => {}
+    }
+}
+
+fn collect_in_expr<'a>(expr: &'a Expr, out: &mut Vec<&'a JsxElement>) {
+    if let Expr::Jsx(element) = expr {
+        collect_in_element(element, out);
+    }
+}
+
+fn collect_in_element<'a>(element: &'a JsxElement, out: &mut Vec<&'a JsxElement>) {
+    out.push(element);
+    for attr in &element.attributes {
+        if let Some(JsxAttributeValue::Expression(island)) = &attr.value {
+            for part in &island.parts {
+                collect_in_expr(part, out);
+            }
+        }
+    }
+    for child in &element.children {
+        match child {
+            JsxChild::Expression(island) => {
+                for part in &island.parts {
+                    collect_in_expr(part, out);
+                }
+            }
+            JsxChild::Element(nested) => collect_in_element(nested, out),
+            JsxChild::Text(_) | JsxChild::Error(_) => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod jsx_elements_tests {
+    #[test]
+    fn finds_a_top_level_const_initializer_element_and_a_nested_child() {
+        let source = "const VIEW: Element = <div><span>{1}</span></div>;";
+        let parsed = crate::parse(source);
+        let elements = parsed.file.jsx_elements();
+        assert_eq!(elements.len(), 2, "{elements:#?}");
+    }
+
+    #[test]
+    fn finds_nothing_in_plain_rust() {
+        let source = "fn f(a: i32, b: i32) -> bool { a < b }";
+        let parsed = crate::parse(source);
+        assert!(parsed.file.jsx_elements().is_empty());
+    }
+}

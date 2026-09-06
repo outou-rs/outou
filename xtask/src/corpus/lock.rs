@@ -1,9 +1,22 @@
 //! A hand-rolled parser for `corpus.lock`'s minimal TOML subset: `#` line
 //! comments, blank lines, `[[corpus]]` table headers, and `key = "value"`
-//! string assignments naming `name`, `repo`, `path`, and either `commit`
-//! or `tag`. This crate does not otherwise need a TOML dependency, so a
-//! short hand parser is used instead of pulling one in for four fields
-//! (issue #12).
+//! string assignments naming `name`, `repo`, `path`, `verified_commit`,
+//! and either `commit` or `tag`. This crate does not otherwise need a
+//! TOML dependency, so a short hand parser is used instead of pulling one
+//! in for five fields (issue #12).
+//!
+//! **`TODO(phase0)`** (issue #12 corpus review, F15/LOW): `toml` is now a
+//! workspace dependency (`crates/outou-cli/src/build/workspace.rs` reads
+//! `[workspace] members`/`exclude` with it) and already sits in
+//! `Cargo.lock`, so the "this crate does not otherwise need a TOML
+//! dependency" justification above no longer holds, and this ~285-line
+//! hand parser (plus its own hand-rolled tests) could become a ~15-line
+//! `#[derive(Deserialize)]` struct. It also has a real, if narrow,
+//! divergence from actual TOML: [`parse_assignment`] rejects a trailing
+//! `# comment` on a value line, since it requires the entire remainder of
+//! the line to be a quoted string. Not fixed here — a clean win, but not
+//! on any Gate's path; do it opportunistically the next time this file is
+//! touched for another reason.
 
 use std::fmt;
 
@@ -19,6 +32,16 @@ pub struct CorpusEntry {
     pub path: String,
     /// The pinned tag or commit.
     pub revision: Revision,
+    /// For a `tag`-pinned entry, the commit that tag resolved to when the
+    /// pin was chosen (issue #12 corpus review, F8/MEDIUM). A tag is a
+    /// mutable ref — an upstream retag would silently change the corpus
+    /// out from under a pin meant to prevent exactly that — so `corpus
+    /// fetch` verifies the freshly cloned tag's `git rev-parse HEAD`
+    /// against this field and fails loudly on a mismatch instead of
+    /// silently accepting whatever the tag now points to. `None` for a
+    /// `commit`-pinned entry (already an exact SHA, nothing to verify
+    /// against) or for a `tag`-pinned entry that predates this field.
+    pub verified_commit: Option<String>,
 }
 
 /// The pinned revision of a [`CorpusEntry`]. `Tag` is preferred (issue
@@ -86,6 +109,7 @@ pub fn parse(text: &str) -> Result<Vec<CorpusEntry>, String> {
             "path" => partial.path = Some(value),
             "tag" => partial.tag = Some(value),
             "commit" => partial.commit = Some(value),
+            "verified_commit" => partial.verified_commit = Some(value),
             other => return Err(format!("corpus.lock:{line_number}: unknown key `{other}`")),
         }
     }
@@ -105,6 +129,7 @@ struct PartialEntry {
     path: Option<String>,
     tag: Option<String>,
     commit: Option<String>,
+    verified_commit: Option<String>,
 }
 
 impl PartialEntry {
@@ -137,6 +162,7 @@ impl PartialEntry {
             repo,
             path,
             revision,
+            verified_commit: self.verified_commit,
         })
     }
 }
@@ -280,6 +306,44 @@ branch = "main"
                 "entry `{}` should be pinned to a tag, not a moving commit (issue #12)",
                 entry.name
             );
+            assert!(
+                entry.verified_commit.is_some(),
+                "entry `{}` should carry `verified_commit` (issue #12 corpus review, F8)",
+                entry.name
+            );
         }
+    }
+
+    /// F8: `verified_commit` is an optional field, parsed like any other.
+    #[test]
+    fn parses_a_tag_pinned_entry_with_a_verified_commit() {
+        let text = r#"
+[[corpus]]
+name = "rust-ui-tests"
+repo = "https://github.com/rust-lang/rust.git"
+path = "tests/ui"
+tag = "1.98.1"
+verified_commit = "48a229ceaefd4985c50990b14116b6d856af0985"
+"#;
+        let entries = parse(text).expect("valid lock file");
+        assert_eq!(
+            entries[0].verified_commit.as_deref(),
+            Some("48a229ceaefd4985c50990b14116b6d856af0985")
+        );
+    }
+
+    /// An entry with no `verified_commit` (a `commit`-pinned entry, or a
+    /// `tag`-pinned one predating this field) still parses.
+    #[test]
+    fn verified_commit_is_optional() {
+        let text = r#"
+[[corpus]]
+name = "example"
+repo = "https://example.invalid/repo.git"
+path = "src"
+commit = "abc123"
+"#;
+        let entries = parse(text).expect("valid lock file");
+        assert_eq!(entries[0].verified_commit, None);
     }
 }

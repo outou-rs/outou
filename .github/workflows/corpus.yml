@@ -15,10 +15,16 @@ jobs:
     # Issue #12: `cargo xtask corpus` is implemented and this is now a
     # real signal. `corpus test` runs non-strict here (its default): a
     # panic or a per-file timeout fails the job; false positives (Outou
-    # diagnostics on plain Rust) and splice round-trip mismatches are
-    # reported in the job's own summary and in `.corpus/report.json`
+    # diagnostics on plain Rust) and JSX mis-detections/splice mismatches
+    # are reported in the job's own summary and in `.corpus/report.json`
     # without failing it — see that report for counts (Gate 4 tracks
     # them, not this nightly job).
+    #
+    # F9 (issue #12 corpus review): the previous version of this job
+    # claimed results were "reported in the job's own summary", but
+    # nothing actually wrote `$GITHUB_STEP_SUMMARY`, and `report.json`
+    # itself was never uploaded — a nightly run's detail was lost as soon
+    # as its log rotated out. Both are now real.
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -28,4 +34,23 @@ jobs:
           path: .corpus
           key: corpus-${{ hashFiles('corpus.lock') }}
       - run: cargo xtask corpus fetch
-      - run: cargo xtask corpus test
+      - run: cargo xtask corpus test | tee corpus-test-output.txt
+      - name: Write job summary
+        if: always()
+        run: |
+          if [ -f .corpus/report.json ]; then
+            {
+              echo '```json'
+              cat .corpus/report.json
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            grep -A 1000 "^# Corpus test summary" corpus-test-output.txt >> "$GITHUB_STEP_SUMMARY" || true
+          fi
+      - name: Upload corpus report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: corpus-report
+          path: .corpus/report.json
+          if-no-files-found: warn

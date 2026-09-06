@@ -217,6 +217,97 @@ const fn overlaps_strict(a: Span, b: Span) -> bool {
     a.start < b.end && b.start < a.end
 }
 
+/// Result of [`SourceMap::narrow`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NarrowOutcome {
+    /// Narrowed to an exact sub-range of one source.
+    Exact {
+        /// Which source file the narrowed span belongs to.
+        source: SourceId,
+        /// The narrowed span within it.
+        span: Span,
+    },
+    /// The one containing mapping has exactly one source, but its
+    /// generated span and that source's span differ in length — a
+    /// transformed mapping (e.g. an escaped string literal, or
+    /// `key={tag.clone()}` lowering to `key: "{tag.clone()}"` with quotes
+    /// added), where a proportional guess would be confidently *wrong*
+    /// rather than merely coarse. The caller must report this as
+    /// unmapped, never fall back to a coarser answer.
+    LengthMismatch,
+    /// Zero or several sources, or no containing mapping at all: the
+    /// caller should fall back to a coarser answer (e.g.
+    /// [`SourceMap::map_range`], or the nearest mapped position).
+    NotApplicable,
+}
+
+impl SourceMap {
+    /// Proportionally narrows a generated query span to the exact
+    /// sub-range of the one `.rsx` source it came from, when the
+    /// containing mapping has exactly one source — the unambiguous case.
+    /// See [`NarrowOutcome`].
+    ///
+    /// This one implementation used to be copied, near-verbatim, in both
+    /// `outou-lsp` (`crates/outou-lsp/src/mapping.rs`'s own
+    /// `narrow_single_source`) and `outou-cli`'s UI test harness
+    /// (`crates/outou-cli/tests/ui.rs`'s own `narrow_single_source`) — with
+    /// one behavioral divergence between the two copies (issue #12 corpus
+    /// review, F4/HIGH): the LSP treated a length mismatch as
+    /// [`NarrowOutcome::LengthMismatch`] and reported it to *its* caller as
+    /// unmapped, deliberately, rather than risk a confidently wrong
+    /// proportional guess (S1, issue #9 Gate 3 review); the harness's copy
+    /// simply returned `None` for the same case, and its caller fell
+    /// through to a coarser whole-span answer instead — so a
+    /// `tests/ui/*/expected.stderr` could encode a position the editor
+    /// would never actually show for the identical input. Both callers now
+    /// share this one function and its one `LengthMismatch` decision;
+    /// "there is one compiler" (`AGENTS.md`) extends to "there is one
+    /// narrowing".
+    pub fn narrow(&self, query: Span) -> NarrowOutcome {
+        let Some(mapping) = self.mappings.iter().find(|m| m.generated.contains(query)) else {
+            return NarrowOutcome::NotApplicable;
+        };
+        let [source] = mapping.sources.as_slice() else {
+            return NarrowOutcome::NotApplicable;
+        };
+        if span_len(mapping.generated) != span_len(source.span) {
+            return NarrowOutcome::LengthMismatch;
+        }
+        let start = scale_offset(query.start, mapping.generated, source.span);
+        let end = if query.start == query.end {
+            start
+        } else {
+            scale_offset(query.end, mapping.generated, source.span).max(start)
+        };
+        NarrowOutcome::Exact {
+            source: source.source,
+            span: Span::new(start, end),
+        }
+    }
+}
+
+/// The length of `span`, in bytes.
+fn span_len(span: Span) -> u32 {
+    span.end - span.start
+}
+
+/// Translates `offset` (known to fall inside `from`) into the
+/// corresponding offset inside `to`, proportionally to how far through
+/// `from` it is. Exact when the two spans are the same length (the common
+/// case: `Writer::verbatim` copies Rust byte for byte); otherwise scaled,
+/// and always clamped to `to`. Symmetric: usable both source-to-generated
+/// and generated-to-source (the direction [`SourceMap::narrow`] uses).
+pub fn scale_offset(offset: u32, from: Span, to: Span) -> u32 {
+    let delta = offset.saturating_sub(from.start);
+    let from_len = from.end - from.start;
+    let to_len = to.end - to.start;
+    if from_len == 0 || to_len == 0 {
+        return to.start;
+    }
+    let scaled = (u64::from(delta) * u64::from(to_len)) / u64::from(from_len);
+    to.start + (scaled as u32).min(to_len)
+}
+
 /// Dedup key for [`SourceMap::map_range`]: sources are the same if they
 /// resolve to the same URI (or, failing that, the same [`SourceId`]) and
 /// cover the same span.
@@ -405,5 +496,61 @@ mod tests {
         let mapped = map.map_range(Span::new(1, 2));
         assert!(!mapped.unmapped);
         assert!(mapped.sources.is_empty());
+    }
+
+    // --- `SourceMap::narrow` (issue #12 corpus review, F4): the one
+    // implementation shared by `outou-lsp` and `outou-cli`'s UI harness.
+
+    #[test]
+    fn narrow_scales_a_query_proportionally_within_a_same_length_mapping() {
+        let map = SourceMap::new(Uri::new("file:///g.rs"), vec![rsx()]).with_mapping(Mapping::new(
+            Span::new(30, 34),
+            vec![SourceSpan::new(SourceId(0), Span::new(4, 8))],
+            MappingKind::Identifier,
+        ));
+        // One byte into the generated span (31) must land one byte into
+        // the source span (5), not at the source span's start — the exact
+        // regression `outou-lsp`'s own test suite already pinned for its
+        // copy of this function.
+        match map.narrow(Span::new(31, 31)) {
+            NarrowOutcome::Exact { source, span } => {
+                assert_eq!(source, SourceId(0));
+                assert_eq!(span, Span::new(5, 5));
+            }
+            other => panic!("expected Exact, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn narrow_reports_a_length_mismatch_rather_than_a_wrong_guess() {
+        let map = SourceMap::new(Uri::new("file:///g.rs"), vec![rsx()]).with_mapping(Mapping::new(
+            Span::new(30, 36),                                   // 6 bytes generated
+            vec![SourceSpan::new(SourceId(0), Span::new(4, 8))], // 4 bytes source
+            MappingKind::Expression,
+        ));
+        assert_eq!(map.narrow(Span::new(31, 32)), NarrowOutcome::LengthMismatch);
+    }
+
+    #[test]
+    fn narrow_is_not_applicable_with_several_sources_or_no_containing_mapping() {
+        let several_sources =
+            SourceMap::new(Uri::new("file:///g.rs"), vec![rsx()]).with_mapping(Mapping::new(
+                Span::new(0, 8),
+                vec![
+                    SourceSpan::new(SourceId(0), Span::new(1, 9)),
+                    SourceSpan::new(SourceId(0), Span::new(18, 26)),
+                ],
+                MappingKind::Identifier,
+            ));
+        assert_eq!(
+            several_sources.narrow(Span::new(1, 2)),
+            NarrowOutcome::NotApplicable
+        );
+
+        let no_mapping = SourceMap::new(Uri::new("file:///g.rs"), vec![rsx()]);
+        assert_eq!(
+            no_mapping.narrow(Span::new(1, 2)),
+            NarrowOutcome::NotApplicable
+        );
     }
 }

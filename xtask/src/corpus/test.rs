@@ -10,10 +10,12 @@ use std::panic;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use super::lock::CorpusEntry;
-use super::report::{EntrySummary, FalsePositive, PanicRecord, RoundTripMismatch, Summary};
+use super::report::{
+    EntrySummary, FalsePositive, JsxMisdetection, PanicRecord, SpliceMismatch, Summary,
+};
 use super::{fetch, splice, walk};
 
 /// How long one file's parse is allowed to run before it is reported as
@@ -44,7 +46,17 @@ const UI_TEST_DIRECTORY_CATEGORIES: &[(&str, &[&str])] = &[
 ];
 
 pub fn run(root: &Path, entries: &[CorpusEntry], strict: bool) -> Result<(), String> {
-    let mut summary = Summary::default();
+    let mut summary = Summary {
+        // F9: provenance recorded up front so it reflects when this scan
+        // ran (and with which budget), independent of how long the scan
+        // itself takes.
+        generated_at_unix: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+        per_file_budget_secs: PER_FILE_BUDGET.as_secs(),
+        ..Summary::default()
+    };
 
     // Suppress the default panic hook's stderr backtrace for the whole
     // scan: every panic here is expected to be *possible* (that is what
@@ -76,7 +88,13 @@ pub fn run(root: &Path, entries: &[CorpusEntry], strict: bool) -> Result<(), Str
     let panics = summary.panics.len();
     let timeouts = summary.timeouts.len();
     let false_positives = summary.false_positives.len();
-    let round_trip_mismatches = summary.round_trip_mismatches.len();
+    // `--strict` (issue #12 corpus review, F7): a JSX mis-detection and a
+    // genuine splice-partitioning bug are different failure modes,
+    // reported as separate fields (`Summary::jsx_misdetections`,
+    // `Summary::splice_mismatches`) rather than one folded
+    // "round_trip_mismatches" bucket — both still fail `--strict`, since
+    // either one is a real signal on plain Rust input.
+    let round_trip_mismatches = summary.jsx_misdetections.len() + summary.splice_mismatches.len();
 
     if panics > 0 || timeouts > 0 {
         return Err(format!(
@@ -86,7 +104,7 @@ pub fn run(root: &Path, entries: &[CorpusEntry], strict: bool) -> Result<(), Str
     }
     if strict && (false_positives > 0 || round_trip_mismatches > 0) {
         return Err(format!(
-            "corpus test --strict: {false_positives} false positive(s), {round_trip_mismatches} round-trip mismatch(es) — see {}",
+            "corpus test --strict: {false_positives} false positive(s), {round_trip_mismatches} round-trip mismatch(es) (jsx mis-detections + splice mismatches) — see {}",
             report_path.display()
         ));
     }
@@ -118,10 +136,11 @@ fn scan_all(root: &Path, entries: &[CorpusEntry], summary: &mut Summary) -> Resu
         let mut invalid_count = 0usize;
         let mut raw_string_count = 0usize;
         for file in &files {
-            if file.with_extension("stderr").is_file() {
+            let has_stderr_companion = file.with_extension("stderr").is_file();
+            if has_stderr_companion {
                 invalid_count += 1;
             }
-            if scan_file(root, file, summary) {
+            if scan_file(root, file, !has_stderr_companion, summary) {
                 raw_string_count += 1;
             }
         }
@@ -140,17 +159,21 @@ fn scan_all(root: &Path, entries: &[CorpusEntry], summary: &mut Summary) -> Resu
             name: entry.name.clone(),
             files_scanned,
             category_counts,
+            revision: entry.revision.to_string(),
+            resolved_commit: fetch::resolved_commit(root, entry),
         });
     }
     Ok(())
 }
 
 /// Scans one file: parses it, records any panic/timeout/false
-/// positive/round-trip mismatch onto `summary`, and returns whether its
-/// source contains raw-string syntax (`r"..."` or `r#"..."#`, including
-/// the `b`/`c` prefixed forms), for the entry's "raw strings" category
-/// count.
-fn scan_file(root: &Path, file: &Path, summary: &mut Summary) -> bool {
+/// positive/JSX-mis-detection/splice-mismatch onto `summary`, and returns
+/// whether its source contains raw-string syntax (`r"..."` or
+/// `r#"..."#`, including the `b`/`c` prefixed forms), for the entry's
+/// "raw strings" category count. `on_valid_rust` records whether this
+/// file has no sibling `.stderr` (F6: rustc accepts it outright), for a
+/// false positive's own `on_valid_rust` field.
+fn scan_file(root: &Path, file: &Path, on_valid_rust: bool, summary: &mut Summary) -> bool {
     let relative = file
         .strip_prefix(root)
         .unwrap_or(file)
@@ -182,13 +205,22 @@ fn scan_file(root: &Path, file: &Path, summary: &mut Summary) -> bool {
                     file: relative.clone(),
                     diagnostic_count: parsed.diagnostics.len(),
                     first_message: parsed.diagnostics[0].message.clone(),
+                    first_severity: parsed.diagnostics[0].severity,
+                    on_valid_rust,
                 });
             }
 
+            // F7 (issue #12 corpus review): a JSX mis-detection and a
+            // genuine splice-partitioning bug are two different failure
+            // modes on plain Rust input, reported as two separate
+            // `Summary` fields rather than folded into one bucket — see
+            // `report::JsxMisdetection`/`report::SpliceMismatch`'s own
+            // doc comments for why that distinction matters for a Gate 4
+            // number.
             let elements = splice::collect_jsx_elements(&parsed.file);
             if let Some(first) = elements.first() {
                 let (line, col) = splice::line_col(&source, first.span.start);
-                summary.round_trip_mismatches.push(RoundTripMismatch {
+                summary.jsx_misdetections.push(JsxMisdetection {
                     file: relative,
                     description: format!(
                         "JSX element detected at {line}:{col} (mis-detection: this corpus is plain Rust)"
@@ -197,7 +229,7 @@ fn scan_file(root: &Path, file: &Path, summary: &mut Summary) -> bool {
             } else {
                 let rebuilt = splice::rebuild_source(&parsed.file, &source);
                 if rebuilt != source {
-                    summary.round_trip_mismatches.push(RoundTripMismatch {
+                    summary.splice_mismatches.push(SpliceMismatch {
                         file: relative,
                         description: "splice round trip did not reproduce the source".to_string(),
                     });
@@ -240,7 +272,17 @@ fn parse_with_budget(source: String, budget: Duration) -> FileOutcome {
     match rx.recv_timeout(budget) {
         Ok(Ok(parsed)) => FileOutcome::Parsed(parsed),
         Ok(Err(payload)) => FileOutcome::Panic(panic_message(payload)),
-        Err(_) => FileOutcome::Timeout,
+        // F14 (issue #12 corpus review, LOW): `RecvTimeoutError::Disconnected`
+        // means the worker thread's `Sender` was dropped without ever
+        // sending — the thread died (aborted, or a panic whose unwind
+        // itself failed to reach `catch_unwind`) *before* the budget
+        // elapsed, not after. Reporting that as a 2-second timeout would
+        // be wrong on both the "how long" and "why" axes; it is a panic
+        // this thread never got a chance to catch a message for.
+        Err(mpsc::RecvTimeoutError::Timeout) => FileOutcome::Timeout,
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            FileOutcome::Panic("worker thread disconnected without sending a result".to_string())
+        }
     }
 }
 

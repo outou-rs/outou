@@ -113,7 +113,7 @@ pub fn rsx_position_to_generated(
     if span_len(source_span) != span_len(generated_span) {
         return None;
     }
-    let generated_offset = scale_offset(offset, source_span, generated_span);
+    let generated_offset = outou_sourcemap::scale_offset(offset, source_span, generated_span);
     let generated_position = unit.line_index.offset_to_position(generated_offset);
 
     Some(GeneratedPosition {
@@ -122,26 +122,13 @@ pub fn rsx_position_to_generated(
     })
 }
 
-/// Translates `offset` (known to fall inside `from`) into the
-/// corresponding offset inside `to`, proportionally to how far through
-/// `from` it is. Exact when the two spans are the same length (the common
-/// case: `Writer::verbatim` copies Rust byte for byte); otherwise scaled,
-/// and always clamped to `to`. Symmetric: used both source-to-generated
-/// ([`rsx_position_to_generated`]) and generated-to-source
-/// ([`narrow_single_source`]).
+/// The length of `span`, in bytes. Used only for this file's own
+/// same-length check above; the proportional scaling itself is
+/// `outou_sourcemap::scale_offset`, shared with
+/// `outou_sourcemap::SourceMap::narrow` (issue #12 corpus review, F4) —
+/// see [`narrow_single_source`] below.
 fn span_len(span: Span) -> u32 {
     span.end - span.start
-}
-
-fn scale_offset(offset: u32, from: Span, to: Span) -> u32 {
-    let delta = offset.saturating_sub(from.start);
-    let from_len = from.end - from.start;
-    let to_len = to.end - to.start;
-    if from_len == 0 || to_len == 0 {
-        return to.start;
-    }
-    let scaled = (u64::from(delta) * u64::from(to_len)) / u64::from(from_len);
-    to.start + (scaled as u32).min(to_len)
 }
 
 /// A location mapped back from generated Rust to its `.rsx` source, or
@@ -258,37 +245,33 @@ enum NarrowOutcome {
 /// Narrows a generated query span to the exact sub-range of the one
 /// `.rsx` source it came from, when the containing mapping has exactly
 /// one source span — the unambiguous case. See [`NarrowOutcome`].
+///
+/// A thin LSP-specific wrapper (URI/range translation, and the
+/// `Workspace`-only "no text for this source" case) around the shared
+/// `outou_sourcemap::SourceMap::narrow`, which owns the actual proportional
+/// narrowing and the `LengthMismatch` decision (issue #12 corpus review,
+/// F4) — `outou-cli`'s UI test harness calls the same function directly.
 fn narrow_single_source(
     workspace: &Workspace,
     map: &outou_sourcemap::SourceMap,
     query: Span,
 ) -> NarrowOutcome {
-    let Some(mapping) = map.mappings.iter().find(|m| m.generated.contains(query)) else {
-        return NarrowOutcome::NotApplicable;
-    };
-    let [source] = mapping.sources.as_slice() else {
-        return NarrowOutcome::NotApplicable;
-    };
-    if span_len(mapping.generated) != span_len(source.span) {
-        return NarrowOutcome::LengthMismatch;
-    }
-    let Some(source_uri) = map.source_uri(source.source) else {
-        return NarrowOutcome::NotApplicable;
-    };
-    let Some(doc) = workspace.rsx.get(source_uri.as_str()) else {
-        return NarrowOutcome::NotApplicable;
-    };
-
-    let start = scale_offset(query.start, mapping.generated, source.span);
-    let end = if query.start == query.end {
-        start
-    } else {
-        scale_offset(query.end, mapping.generated, source.span).max(start)
-    };
-    let range = doc.line_index.span_to_range(Span::new(start, end));
-    NarrowOutcome::Exact {
-        uri: uri::to_lsp(source_uri),
-        range: to_lsp_range(range),
+    match map.narrow(query) {
+        outou_sourcemap::NarrowOutcome::NotApplicable => NarrowOutcome::NotApplicable,
+        outou_sourcemap::NarrowOutcome::LengthMismatch => NarrowOutcome::LengthMismatch,
+        outou_sourcemap::NarrowOutcome::Exact { source, span } => {
+            let Some(source_uri) = map.source_uri(source) else {
+                return NarrowOutcome::NotApplicable;
+            };
+            let Some(doc) = workspace.rsx.get(source_uri.as_str()) else {
+                return NarrowOutcome::NotApplicable;
+            };
+            let range = doc.line_index.span_to_range(span);
+            NarrowOutcome::Exact {
+                uri: uri::to_lsp(source_uri),
+                range: to_lsp_range(range),
+            }
+        }
     }
 }
 

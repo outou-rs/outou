@@ -76,66 +76,19 @@ fn slice(source: &str, span: Span) -> &str {
     &source[span.start as usize..span.end as usize]
 }
 
-/// Every JSX element found anywhere in `file`, in a depth-first,
-/// source-order-ish traversal (top-level items in order, then each
-/// element's attributes before its children). On plain Rust input, any
+/// Every JSX element found anywhere in `file`. On plain Rust input, any
 /// element found here is by definition a mis-detection: `corpus test`
 /// reports the first one's span as the offending location.
+///
+/// A thin re-export of the one canonical traversal,
+/// `outou_syntax::ast::File::jsx_elements` (F19, issue #12 corpus review):
+/// this function and `crates/outou-syntax/tests/corpus_smoke.rs` used to
+/// each carry a byte-identical copy of the same `Item`/`Expr`/`JsxElement`
+/// walk. Kept as a function here (rather than inlining `file.jsx_elements()`
+/// at both call sites below) so this module's own doc and tests keep their
+/// existing shape.
 pub fn collect_jsx_elements(file: &ast::File) -> Vec<&ast::JsxElement> {
-    let mut out = Vec::new();
-    for item in &file.items {
-        collect_in_item(item, &mut out);
-    }
-    out
-}
-
-fn collect_in_item<'a>(item: &'a ast::Item, out: &mut Vec<&'a ast::JsxElement>) {
-    match item {
-        ast::Item::Function(f) => {
-            for expr in f.body.statements.iter().chain(f.body.tail.as_deref()) {
-                collect_in_expr(expr, out);
-            }
-        }
-        ast::Item::Module(m) => {
-            for inner in m.items.iter().flatten() {
-                collect_in_item(inner, out);
-            }
-        }
-        ast::Item::Rust(r) => {
-            for part in &r.parts {
-                collect_in_expr(part, out);
-            }
-        }
-        ast::Item::Error(_) => {}
-    }
-}
-
-fn collect_in_expr<'a>(expr: &'a ast::Expr, out: &mut Vec<&'a ast::JsxElement>) {
-    if let ast::Expr::Jsx(element) = expr {
-        collect_in_element(element, out);
-    }
-}
-
-fn collect_in_element<'a>(element: &'a ast::JsxElement, out: &mut Vec<&'a ast::JsxElement>) {
-    out.push(element);
-    for attr in &element.attributes {
-        if let Some(ast::JsxAttributeValue::Expression(island)) = &attr.value {
-            for part in &island.parts {
-                collect_in_expr(part, out);
-            }
-        }
-    }
-    for child in &element.children {
-        match child {
-            ast::JsxChild::Expression(island) => {
-                for part in &island.parts {
-                    collect_in_expr(part, out);
-                }
-            }
-            ast::JsxChild::Element(nested) => collect_in_element(nested, out),
-            ast::JsxChild::Text(_) | ast::JsxChild::Error(_) => {}
-        }
-    }
+    file.jsx_elements()
 }
 
 /// Converts a byte offset into `source` to a 1-based `(line, column)`

@@ -104,6 +104,7 @@ jobs:
       # module's file child) ship with every other check green.
       - run: cargo test -p outou-cli --test build_compile -- --ignored
       - run: cargo test -p outou-backend-dioxus -- --ignored
+      - run: cargo test -p outou-cli --test ui -- --ignored
 
   cargo-matrix:
     name: cargo build/check/test/clippy/package/publish matrix (issue #10)
