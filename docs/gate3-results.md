@@ -139,7 +139,7 @@ below is drawn from.
 | Completion at an HTML attribute-value position never corrupts the buffer | yes (fixed; was **no**, and was the worst defect found) | **M3/M4/HIGH-8.** `<div class=` previously returned `dioxus_core::`/`dioxus_elements::`/`dioxus_signals::` as completion *labels*, with a **zero-width edit at the wrong column** (character 8, ten columns from the actual cursor at 19) — accepting any item would have corrupted the buffer. `gate3-completion-attr-value.json.gz`: `completion: null`. `crate::response::map_completion_response` now drops any item whose mapped primary edit range does not contain the request's cursor, generically fixing this class of defect regardless of position; here nothing survived the filter. |
 | Completion at a prop *value* position (`user={us}`) | yes | `gate3-completion-prop-value.json.gz` (renamed from the previous revision's `completion-prop`, same shape): 129 items including `user`, `self::`, `crate::`, `components::User`, `tags` — ordinary Rust completion in scope, `assert_no_leakage` passes. |
 | Rust type errors reported at the right position in the `.rsx` file | yes, via `didSave` + flycheck | `gate3-diagnostic-type-error.json.gz`: `let user: u32 = load_user();` + `didSave` produces `mismatched types` (severity 1) plus a cascading `E0599` (`is_some`), both at the right positions, `latencyMs.didSaveToDiagnostics` 4871 ms with a warm shared build cache (see "Measured latency"). |
-| A missing required prop (a compile error synthesized entirely inside generated code, no direct `.rsx` span) is never dropped or downgraded | yes (fixed; was **no**, silently downgraded) | **M5, confirmed and fixed — more serious than the review's own description.** Before the fix: a hard `E0061` compile error (`argument #1 of type UserCardPropsBuilder_Error_Missing_required_field_user is missing`) had no direct source span (it points inside the synthesized `rsx!` expansion), so the mapper reported it as `severity: 4` (**HINT**) — a compile error shown to the user as a barely-visible hint. `gate3-diagnostic-missing-prop.json.gz`: `<UserCard />` (missing `user`) now publishes `severity: 1` (ERROR), message `this component is missing a required property` (cleanly translated, no `PropsBuilder` text), at `main.rsx:28:16-28` — `crate::mapping::nearest_source_position` supplies an approximate but present position for any `ERROR`-severity diagnostic with no direct mapping, rather than dropping it. `relatedInformation` is correctly reverse-mapped to `components.rsx:7:0-12`. |
+| A missing required prop (a compile error synthesized entirely inside generated code, no direct `.rsx` span) is never dropped or downgraded | yes (fixed; was **no**, silently downgraded) | **M5, confirmed and fixed — more serious than the review's own description.** Before the fix: a hard `E0061` compile error (`argument #1 of type UserCardPropsBuilder_Error_Missing_required_field_user is missing`) had no direct source span (it points inside the synthesized `rsx!` expansion), so the mapper reported it as `severity: 4` (**HINT**) — a compile error shown to the user as a barely-visible hint. `gate3-diagnostic-missing-prop.json.gz`: `<UserCard />` (missing `user`) now publishes `severity: 1` (ERROR), message `this component is missing a required property` (cleanly translated, no `PropsBuilder` text), at `main.rsx:28:16-28` — `crate::mapping::nearest_source_position` supplies an approximate but present position for any `ERROR`-severity diagnostic with no direct mapping, rather than dropping it. `relatedInformation` is correctly reverse-mapped to `components.rsx:28:0-12` — the `#[component]` attribute starting `UserCard`'s own declaration (re-checked against a fresh `gate3-diagnostic-missing-prop.json.gz`, issue #9 Gate 3 review Step 7: this row previously cited `components.rsx:7:0-12`, stale after issue #10's fixture edits shifted `UserCard` down the file; `components.rsx:7` is now itself a doc comment, unrelated to this diagnostic). |
 | Outou syntax errors reported by Outou itself, at the right position | yes | `gate3-diagnostic-syntax-error.json.gz`: truncating `<h1>Hello {name}</h1>` to `<div cl` produces `unexpected '}' inside tag '<div>', expected an attribute or '>'` (`source: "outou"`), event-timed at 102 ms (`didChangeToDiagnostics`) — no `cargo check` round trip needed. |
 | Completion/definition keep working elsewhere in the file after an unrelated syntax error | yes | Same run: `definitionDespiteSyntaxError` still resolves `load_user()` to `main.rsx:42:3-12`, unaffected by the broken `<div cl` earlier in the file (a different function, `Greeting`). |
 | A stale rust-analyzer diagnostic does not survive an edit that fixes it | yes (fixed; was **no**) | **M6/HIGH-4, confirmed and fixed.** Before the fix, reverting a type-error buffer via `didChange` (no save) kept republishing the same stale `mismatched types` diagnostics for 3+ seconds, clearing only on an unrelated later edit — `Workspace::regenerate` never cleared the cached rust-analyzer diagnostics it re-merges on every publish. `gate3-stale-diagnostics-cleared.json.gz`: after the type error is confirmed published (`typeErrorIntroduced`, `E0308`, 4062 ms) and the buffer is reverted, `diagnosticsAfterRevert` is an **empty array** — zero stale diagnostics, immediately, not eventually. |
@@ -181,77 +181,170 @@ node spikes/rust-analyzer/client/gate3-latency-table.mjs
 ```
 
 This run (`cargo test -p outou-lsp --test gate3 -- --ignored --nocapture`,
-finished in 63.97s for all 20 probes, three of them new — `hover-closing-tag`,
-`hover-props-named-type`, `completion-closing-tag`, added for H1/H2/H3
-below):
+finished in 134.45s for all 20 probes — `progress-before-hover` is new,
+Step 7's S6/L12 fix; the other 19 are unchanged from the second review):
 
 <!-- BEGIN GENERATED: node spikes/rust-analyzer/client/gate3-latency-table.mjs -->
 
 | Request | Latency (ms) |
 |---|---|
-| `initialize` (client <-> outou-lsp) | 39-740 (per-probe) |
-| hover (`user`) | 6273 |
-| hover (non-ASCII prefix) | 4879 |
-| hover (element tag, sanitized to `null`) | 2 |
+| `initialize` (client <-> outou-lsp) | 43-564 (per-probe) |
+| hover, after a `$/progress` `end` was forwarded (S6/L12) | 9243 |
+| hover (`user`) | 13122 |
+| hover (non-ASCII prefix) | 8840 |
+| hover (element tag, sanitized to `null`) | 1 |
 | hover (closing tag, sanitized to `null`) | 2 |
-| hover (`…Props`-named user type) | 4067 |
-| definition (`load_user`, same file) | 809 |
-| definition (`UserCard`, cross-file) | 5689 |
-| completion (member, `user.`) | 4637 |
-| completion (tag, component) | 3 |
-| completion (tag, element) | 3 |
-| completion (closing tag) | 2 |
-| completion (attribute name) | 3 |
-| completion (attribute value, sanitized to empty) | 3 |
-| completion (prop value, `user={us}`) | 4241 |
-| `didSave` -> mismatched-types diagnostic | 4561 |
+| hover (`…Props`-named user type) | 10280 |
+| definition (`load_user`, same file) | 5465 |
+| definition (`UserCard`, cross-file) | 9709 |
+| completion (member, `user.`) | 9911 |
+| completion (tag, component) | 4 |
+| completion (tag, element) | 4 |
+| completion (closing tag) | 3 |
+| completion (attribute name) | 4 |
+| completion (attribute value, sanitized to empty) | 5 |
+| completion (prop value, `user={us}`) | 26246 |
+| `didSave` -> mismatched-types diagnostic | 8929 |
 | `didChange` -> Outou syntax diagnostic | 101 |
-| definition after an unrelated syntax error | 806 |
-| `didSave` -> missing-required-prop diagnostic (M5) | 4460 |
-| type error introduced -> published, before the M6 revert | 4572 |
-| `didSave` -> Outou diagnostic, syntax error (M1 save probe) | 101 |
-| startup -> Outou diagnostic, broken source at launch (M1) | 101 |
+| definition after an unrelated syntax error | 1277 |
+| `didSave` -> missing-required-prop diagnostic (M5) | 7107 |
+| type error introduced -> published, before the M6 revert | 4680 |
+| `didSave` -> Outou diagnostic, syntax error (M1 save probe) | 102 |
+| startup -> Outou diagnostic, broken source at launch (M1) | 102 |
 
 <!-- END GENERATED -->
 
 Every "forwarded" row (hover on `user`, both definitions, member/prop-value
 completion, the diagnostic rows) reflects this run's client correctly
 waiting for rust-analyzer to finish indexing a cold crate rather than
-accepting its first (possibly still-indexing) answer — a few seconds, not
-milliseconds, is expected and is not a regression in this server's own
-proxy overhead. Every row this pass answers **locally** (both tag-name
-completions, the closing-tag completion, attribute-name completion, and
-both element/closing-tag hovers) is 1-3 ms: in-process classification, no
-rust-analyzer round trip at all.
+accepting its first (possibly still-indexing) answer — this run's machine
+was under heavier load than the previous revision's (the numbers above run
+5-10s, not 4-6s, for the same forwarded shapes; `completion (prop value,
+user={us})` in particular caught a slow moment, 26s), which is exactly why
+S8 below measures *overhead* (a same-session difference) rather than
+trusting either side's absolute latency on its own. Every row this pass
+answers **locally** (both tag-name completions, the closing-tag
+completion, attribute-name completion, and both element/closing-tag
+hovers) is 1-5 ms: in-process classification, no rust-analyzer round trip
+at all. `progress-before-hover` confirms the new S6/L12 forwarding is real
+end to end: `sawProgressEndBeforeFirstHover: true` in
+`gate3-progress-before-hover.json.gz` (the probe's own assertion, checked
+by `crates/outou-lsp/tests/gate3.rs`), meaning `outou-lsp` relayed at
+least one rust-analyzer `$/progress` `end` notification to the client
+before that client's first hover request went out — the readiness signal
+S6 was about, observed actually happening, not merely wired up in the
+source.
 
 Compared against `docs/phase0.md`'s provisional budget:
 
 - **"incremental `.rsx` -> generated Rust: perceived as instantaneous"** —
   unchanged from the previous revision: `regenerating_one_unit_is_fast`
   asserts well under 50 ms (in practice a small fraction of a millisecond).
-- **"extra proxy overhead on completion: not perceptible"** — for the four
-  positions this server now answers locally (tag name, tag name on an
-  element, a closing tag's own name (H1), attribute name), the overhead
-  is a few milliseconds of in-process classification, not a proxied
-  round trip at all — strictly better than "not perceptible": there is no
-  rust-analyzer round trip to perceive. For positions still forwarded
-  (member, prop value), this pass's numbers (~4s) are **not** a
-  regression in the underlying proxy cost; they reflect this run's client
-  correctly waiting for rust-analyzer to finish indexing a cold crate
-  rather than accepting its first (wrong) answer. **S8 (re-measuring
-  warm, steady-state overhead against a long-lived session) is still
-  open** — recorded as a known gap below, not silently dropped.
+- **"extra proxy overhead on completion: not perceptible"** — corrected
+  below (Step 7, S8): for the four positions this server answers locally
+  (tag name, tag name on an element, a closing tag's own name (H1),
+  attribute name), the overhead is a few milliseconds of in-process
+  classification, not a proxied round trip at all — strictly better than
+  "not perceptible". For positions still forwarded to rust-analyzer
+  (member access, prop value), a same-session measurement against
+  rust-analyzer directly (S8, below) found a real, small but perceptible
+  median overhead for completion specifically (roughly 10-25 ms across
+  repeated runs) — not "not perceptible" as this budget line previously,
+  unmeasured, claimed — while hover and definition overhead measured
+  within noise (a few ms either way, N=10). See "Proxy overhead (S8)"
+  below for the numbers and method.
 - **"a single-file edit never regenerates the whole crate"** — unchanged:
   verified at the unit level and exercised by every probe above.
 
+## Proxy overhead (S8)
+
+Per-request cost of going through `outou-lsp` instead of talking to
+rust-analyzer directly, measured honestly rather than asserted: two
+long-lived sessions (through `outou-lsp`, and directly against
+rust-analyzer opening the exact same generated `crate-root.rs` file
+`outou-lsp` itself opens as its overlay) are driven side by side, each
+warmed up first (indexing this cold crate takes several seconds — see
+"Measured latency" above), then issue N=10 identical hover/definition/
+completion requests, sequentially, with no retry. The *difference* between
+the two sessions' own median/p95 is the number that matters here — either
+session's absolute latency is dominated by machine load and indexing
+state, which a same-session comparison cancels out.
+[`spikes/rust-analyzer/client/gate3-overhead.mjs`](../spikes/rust-analyzer/client/gate3-overhead.mjs)
+is the reusable script this section's numbers come from (usage in its own
+header); re-run it against a freshly built temp copy of
+`examples/phase0-app` (`outou build --manifest-dir <copy>`, matching
+`crates/outou-lsp/tests/gate3.rs`'s own `fresh_copy`/`seed_build`) to
+reproduce or update these numbers:
+
+```sh
+node spikes/rust-analyzer/client/gate3-overhead.mjs \
+  --root <fresh copy of examples/phase0-app, already `outou build`-ed> \
+  --outou-lsp target/debug/outou-lsp --ra "$(command -v rust-analyzer)" --n 10
+```
+
+One representative run (`n=10`):
+
+| Operation | outou-lsp median (ms) | outou-lsp p95 (ms) | direct median (ms) | direct p95 (ms) | overhead, median (ms) | overhead, p95 (ms) |
+|---|---|---|---|---|---|---|
+| `hover` | 1 | 2 | 1 | 1 | 0.0 | 1.0 |
+| `definition` | 0 | 6 | 0.5 | 3 | -0.5 | 3.0 |
+| `completion` | 19 | 22 | 7 | 14 | 12.0 | 8.0 |
+
+Honest caveats, not smoothed over:
+
+- **N=10 is small.** Three repeated runs on this machine gave `completion`
+  median overhead of 23.5 ms, 12.0 ms and 11.0 ms respectively (a
+  consistent few-to-two-dozen-ms signal), but p95 swung from +68 ms to
+  +8 ms to **-54 ms** run to run — at 10 samples, p95 is close to the
+  sample maximum and one slow (or, on the direct side, one *slower than
+  outou-lsp's*) outlier dominates it. Treat the p95 column as "how noisy
+  this is at N=10", not as a stable claim; the median is the more
+  trustworthy number here.
+- **`hover`/`definition` overhead is within noise** (roughly -1 to +3 ms
+  across all three runs) — at millisecond scale for a single mapped
+  position and no completion-list sanitization, this is "not
+  perceptible" in the sense `docs/phase0.md`'s original budget line
+  meant, and the measurement now backs that claim instead of merely
+  repeating it.
+- **`completion` overhead is real and attributable, not noise.** At the
+  `user.` position (a `.` member-access site, forwarded to rust-analyzer
+  rather than answered locally — see M3 above), the fixed target program
+  returns 122 completion items; `crate::response::map_completion_response`
+  scans every one of them for backend-vocabulary leakage
+  (`is_backend_leak`) and reverse-maps every item with a `textEdit` back
+  through the registry (M4/HIGH-8, H1). That per-item work, not the
+  extra process hop itself (hover/definition also cross that same hop
+  with near-zero overhead), is the honest source of the 10-25 ms this
+  measured: proportional to candidate-list size, not a fixed proxy tax.
+  Still well under anything a human would notice as lag on a single
+  keystroke, but no longer asserted as "not perceptible" without having
+  measured it.
+
 ## Known blockers and limitations
 
-- **No `$/progress` forwarding (S6, open).** `outou-lsp` still does not relay
-  rust-analyzer's own indexing progress to the editor. This pass's test
-  client compensates with bounded request retries (`requestUntilReady`)
-  instead of a fixed sleep, which is more honest about latency but does not
-  fix the underlying gap for a real editor, which still has no readiness
-  signal beyond the answers themselves.
+- **`$/progress` forwarding (S6/L12, fixed in Step 7).** `outou-lsp` now
+  relays rust-analyzer's `$/progress` notifications to the editor verbatim
+  (`crate::dispatch::responses::handle_ra_notification`), gated on exactly
+  the same `client_supports_work_done_progress` flag that already gated
+  forwarding `window/workDoneProgress/create` (L12: the two can no longer
+  drift out of sync — a client that never gets asked to *create* a token
+  never gets `$/progress` for one it doesn't have either). No token
+  rewriting is needed: every token a `$/progress` notification carries was
+  itself allocated by the editor, in its own response to a forwarded
+  `create` request. `gate3-progress-before-hover.json.gz`
+  (`progress-before-hover`, new this pass): `sawProgressEndBeforeFirstHover:
+  true` — the probe client actually saw a `$/progress` `end` before
+  sending its first hover request, not just that forwarding is wired up in
+  the source. `outou-lsp-client.mjs` still uses bounded request retries
+  (`requestUntilReady`) for every other probe rather than watching
+  progress tokens directly (see that script's own module doc comment for
+  why), and two of its fixed "settle" sleeps (`stale-diagnostics-cleared`,
+  the revert-republish wait) were replaced with an actual readiness check
+  (`waitForRepublish`) rather than a guessed duration; one (`save-with-
+  syntax-error`) was left as is — there is no readiness signal available
+  for it (Strict generation fails before rust-analyzer is even told
+  about the save), so a fixed bounded wait remains the honest option
+  there.
 - **Semantic type errors require a save, not just a keystroke.** Unchanged
   from the previous revision — a rust-analyzer limitation (native
   diagnostics never report semantic errors, per the Week 1 spike), not this
@@ -368,22 +461,35 @@ Compared against `docs/phase0.md`'s provisional budget:
   not a confirmed leak. Fixed defensively: `crate::response::is_backend_leak`
   now scans `insertText` and `labelDetails.detail`/`.description` too;
   unit-tested (`is_backend_leak_scans_label_details_and_insert_text`).
-- **Latency numbers here are a single cold-then-warming run**, not a
-  long-lived warm editor session — see S8 above, still open.
+- **Latency numbers in "Measured latency" above are a single
+  cold-then-warming run**, not a long-lived warm editor session; that
+  gap is what "Proxy overhead (S8)" (fixed in Step 7) measures instead —
+  a same-session difference against rust-analyzer directly, which cancels
+  out the cold-indexing noise this bullet is about.
 
 ## Not applied as reviewed
 
 Per the fix list's own SKIP category and this pass's own scoping decisions,
 recorded rather than silently dropped:
 
-- **S4** (root fallback to `rootUri`/`rootPath`; deferring rust-analyzer
-  resolution until a planned workspace needs it) — `TODO(phase0)` at
-  `crate::server::resolve_root`. Not needed for Gate 3's own criteria; every
-  probe here uses `workspaceFolders`, which already works.
-- **S6** ($/progress forwarding) — `TODO(phase0)` at
-  `crate::dispatch::handle_ra_notification`. See "Known blockers" above.
-- **S8** (re-measuring proxy overhead against a genuinely warm session) —
-  not done this pass; recorded as open in "Measured latency" above.
+- **S4 — fixed in Step 7 (contingency pass).** `crate::server::resolve_root`
+  now falls back from `workspaceFolders[0]` to `rootUri` to `rootPath`
+  (raw JSON, not the typed, `#[deprecated]` `InitializeParams` fields —
+  `AGENTS.md` forbids `#[allow(deprecated)]`), unit-tested
+  (`resolve_root_prefers_workspace_folders_over_root_uri_and_root_path`,
+  `resolve_root_falls_back_to_root_uri_without_workspace_folders`,
+  `resolve_root_falls_back_to_root_path_as_a_last_resort`,
+  `resolve_root_is_none_when_nothing_is_given`), plus
+  `a_root_uri_only_client_plans_a_real_rsx_workspace` confirming a
+  `rootUri`-only `initialize` plans a real `.rsx` crate root rather than
+  landing in degraded mode. `main::resolve_rust_analyzer` is also no
+  longer a startup precondition: it is passed into `server::run` as a
+  closure and called at most once, only from `load_workspace`'s `Planned`
+  branch (`crate::server::load_workspace`) — a crate with no `.rsx` root,
+  or no workspace root at all, now starts `outou-lsp` syntax-only even
+  with no `rust-analyzer` binary anywhere on the machine.
+- **S6/L12 — fixed in Step 7.** See "Known blockers" above.
+- **S8 — fixed in Step 7.** See "Proxy overhead (S8)" above.
 - **LOW-16** (Windows/UNC file URIs) — `TODO(phase0)` at `crate::uri::to_path`.
   Not reachable on Phase 0's macOS/Linux platforms.
 - **MEDIUM-15's SKIP half** (a diagnostic with several source spans always
@@ -408,16 +514,20 @@ recorded rather than silently dropped:
   at `crate::complete`, deferred to a follow-up on issue #7. M3 and M4 make
   the *editor* behavior safe (an honest empty completion, never a
   corrupting edit) without fixing the underlying recovery shape.
-- **L12** (`$/progress` forwarded selectively while `window/workDoneProgress/create`
-  is not) — `TODO(phase0)` at `crate::dispatch::responses`. Real (11
-  forwarded creates, zero progress notifications observed live in the
-  second review) but not gate-relevant on its own; land S6 together with
-  this, or stop forwarding `create` until S6 lands.
-- **L14** (a save blocked by a broken sibling `.rsx` file gives no
-  editor-visible signal beyond that file's own Outou diagnostics) —
-  `TODO(phase0)` at `crate::dispatch::notifications::handle_rsx_save`.
-  Behavior is correct and transactional (M1); only the *notice* is
-  missing. A `window/showMessage` is the eventual fix.
+- **L12 — fixed in Step 7, together with S6 as this bullet itself
+  anticipated.** See "Known blockers" above.
+- **L14 — fixed in Step 7.** `crate::dispatch::notifications::handle_rsx_save`
+  now calls `notify_save_blocked_by_another_file` when
+  `outou_cli::build::EmitError::SyntaxErrors` blocks the write: if the
+  offending file is not the one just saved, the editor gets a
+  `window/showMessage` (Warning) naming it (Outou vocabulary, no backend
+  terms) — "outou: this save was not written because `<name>` has a
+  syntax error; fix it and save again". Saving the broken file itself
+  stays silent (its own Outou syntax diagnostic already says so, right
+  where the user is looking). Unit-tested:
+  `notify_save_blocked_by_another_file_warns_with_the_broken_files_name`,
+  `notify_save_blocked_by_another_file_is_silent_for_the_saved_file_itself`,
+  `notify_save_blocked_by_another_file_ignores_other_emit_error_variants`.
 - **L15** (code quality after the module split: `Workspace::load_unit`/
   `load_unit_with_text` near-duplicates, `sample_workspace()`/
   `test_workspace()` duplicated across test modules, `complete.rs`

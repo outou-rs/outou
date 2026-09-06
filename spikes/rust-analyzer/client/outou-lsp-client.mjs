@@ -15,16 +15,25 @@
 // edit landed, which is easier to keep correct as JavaScript than to
 // re-derive from raw line/column flags on every invocation.
 //
-// `outou-lsp` does not forward rust-analyzer's own `$/progress`
-// notifications to its client (issue #9 Gate 3 review, S6 — still a
-// TODO(phase0)), so this client has no readiness signal to watch besides
-// the requests it actually cares about. Rather than a single fixed
-// "settle" sleep before every request (the Week 1 spike's own
-// last-resort fallback, and what this script used to do
-// unconditionally), `requestUntilReady` below retries the *specific*
-// request with a short interval until it gets an answer that looks ready
-// or a bounded timeout elapses — usually much faster than a fixed sleep
-// once rust-analyzer is warm, and just as safe when it is not.
+// `outou-lsp` forwards rust-analyzer's own `$/progress` notifications to
+// this client now (issue #9 Gate 3 review, S6, fixed) — but only once this
+// client advertises `window.workDoneProgress` support, since that is also
+// what gates `outou-lsp` forwarding `window/workDoneProgress/create` in
+// the first place (L12: the two must stay consistent, never one without
+// the other). `progress-before-hover` below is the probe for it. Every
+// other probe still uses `requestUntilReady`/`waitForDiagnostic` (bounded
+// polling for the specific answer/diagnostic each one cares about) rather
+// than watching progress tokens directly: rust-analyzer emits several
+// independent, unlabeled progress sequences (indexing, build-script
+// evaluation, flycheck, ...), so "is *my* answer ready" is still a more
+// precise question than "has *some* progress token ended" for anything
+// other than the one probe that exists to test forwarding itself. Rather
+// than a single fixed "settle" sleep before every request (the Week 1
+// spike's own last-resort fallback, and what this script used to do
+// unconditionally), `requestUntilReady` retries the *specific* request
+// with a short interval until it gets an answer that looks ready or a
+// bounded timeout elapses — usually much faster than a fixed sleep once
+// rust-analyzer is warm, and just as safe when it is not.
 //
 // Usage: see usage() below, or run with --help.
 
@@ -50,6 +59,7 @@ function parseArgs(argv) {
 }
 
 const PROBES = [
+  "progress-before-hover",
   "hover-user",
   "hover-nonascii",
   "hover-element-tag",
@@ -158,6 +168,11 @@ function notify(method, params) {
 // reverts the buffer right after the first sighting can still race a
 // second, late publish for the *pre-revert* content.
 const lastDiagnosticsUpdate = {};
+// Every `$/progress` notification `outou-lsp` has forwarded (issue #9
+// Gate 3 review, S6), in arrival order: `{ token, kind, timestamp }`.
+// `progress-before-hover` is the probe that reads this; every other probe
+// ignores it.
+const progressEvents = [];
 function handle(message) {
   if (message.method === undefined && message.id !== undefined && pending.has(message.id)) {
     const { res, rej } = pending.get(message.id);
@@ -166,9 +181,19 @@ function handle(message) {
   } else if (message.method === "textDocument/publishDiagnostics") {
     diagnostics[message.params.uri] = message.params.diagnostics;
     lastDiagnosticsUpdate[message.params.uri] = Date.now();
+  } else if (message.method === "$/progress") {
+    progressEvents.push({
+      token: message.params?.token,
+      kind: message.params?.value?.kind,
+      timestamp: Date.now(),
+    });
   } else if (message.method !== undefined && message.id !== undefined) {
-    // A request from the server (there are none outou-lsp sends today,
-    // but answer generically rather than silently hanging it forever).
+    // A request from the server: `window/workDoneProgress/create`
+    // (forwarded only because this client advertises
+    // `window.workDoneProgress` support, for the S6/L12 probe below) and
+    // `client/registerCapability` (not advertised, so never forwarded)
+    // both accept a bare `null` result; answer everything else the same
+    // way rather than silently hanging it forever.
     send({ id: message.id, result: null });
   }
 }
@@ -199,6 +224,12 @@ const initResult = await request("initialize", {
       synchronization: { didSave: true },
     },
     workspace: {},
+    // S6/L12 (issue #9 Gate 3 review): advertising this is what makes
+    // `outou-lsp` forward rust-analyzer's `window/workDoneProgress/create`
+    // requests and `$/progress` notifications at all, both gated on the
+    // same flag so they can never drift out of sync — see
+    // `progress-before-hover` below.
+    window: { workDoneProgress: true },
   },
   workspaceFolders: [{ uri: pathToFileURL(root).href, name: "gate3" }],
   initializationOptions: {},
@@ -287,6 +318,35 @@ async function waitForQuiescence(uri, quietMs = 1500, timeoutMsLocal = 20000) {
   return false;
 }
 
+/// Waits (bounded) until `uri` has had a `publishDiagnostics` strictly
+/// after `afterTimestamp`, returning whether one arrived. Replaces a
+/// fixed "give the synchronous republish a moment" sleep (issue #9 Gate 3
+/// review, S6 pass's own cleanup) with an actual readiness signal — a
+/// republish either happened or it didn't, rather than guessing how long
+/// "a moment" needs to be.
+async function waitForRepublish(uri, afterTimestamp, timeoutMsLocal) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMsLocal) {
+    if ((lastDiagnosticsUpdate[uri] ?? 0) > afterTimestamp) return true;
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  return false;
+}
+
+/// Waits (bounded — never a fixed sleep) until at least one `$/progress`
+/// `end` notification has been forwarded by `outou-lsp` (S6/L12, issue #9
+/// Gate 3 review), returning whether one was actually seen. Used by
+/// `progress-before-hover` as the readiness signal itself, not just a
+/// thing that probe happens to also check for.
+async function waitForProgressEnd(timeoutMsLocal) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMsLocal) {
+    if (progressEvents.some((e) => e.kind === "end")) return true;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return false;
+}
+
 function positionOf(text, needle, occurrence = 0) {
   const lines = text.split("\n");
   let count = 0;
@@ -355,6 +415,26 @@ function hasCompletionItems(value) {
 
 async function runProbe(probe) {
   switch (probe) {
+    case "progress-before-hover": {
+      // S6/L12 (issue #9 Gate 3 review): with `window.workDoneProgress`
+      // advertised above, `outou-lsp` now forwards rust-analyzer's own
+      // `$/progress` notifications verbatim. This probe's whole point is
+      // to prove that forwarding is real: wait for at least one `end`
+      // event (the readiness signal S6 was about), *then* ask for the
+      // hover a real editor would only send once it saw the same signal
+      // — recording whether the ordering actually held, not just that
+      // both eventually happened.
+      const sawProgressEnd = await waitForProgressEnd(60000);
+      result.sawProgressEndBeforeFirstHover = sawProgressEnd;
+      const pos = positionOf(originalText, "let user = load_user();");
+      await requestUntilReady(
+        "hover",
+        "textDocument/hover",
+        { textDocument: { uri: mainUri }, position: { line: pos.line, character: pos.character + 6 } },
+        isUsefulHover,
+      );
+      break;
+    }
     case "hover-user": {
       const pos = positionOf(originalText, "let user = load_user();");
       await requestUntilReady(
@@ -653,13 +733,14 @@ async function runProbe(probe) {
       result.typeErrorIntroduced = introduced;
       await waitForQuiescence(mainUri, 2000, 180000);
 
+      const revertedAt = Date.now();
       change(3, originalText);
       // No new save: rust-analyzer's own native diagnostics never report
       // semantic errors (Week 1 spike finding), so nothing but this
-      // server's own `regenerate`-triggered republish is expected here;
-      // a short bounded wait is enough for that synchronous path to
-      // reach this client over the pipe.
-      await new Promise((r) => setTimeout(r, 1000));
+      // server's own `regenerate`-triggered republish is expected here.
+      // Waits for that actual republish (`waitForRepublish`) instead of a
+      // fixed sleep guessed to be "long enough" for it to cross the pipe.
+      await waitForRepublish(mainUri, revertedAt, 5000);
       result.diagnosticsAfterRevert = diagnostics[mainUri] ?? [];
       break;
     }

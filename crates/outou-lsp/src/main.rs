@@ -30,25 +30,20 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    match resolve_rust_analyzer() {
-        Ok(binary) => server::run(binary),
-        Err(message) => {
-            eprintln!("outou-lsp: {message}");
-            ExitCode::FAILURE
-        }
-    }
+    server::run(resolve_rust_analyzer)
 }
 
-/// Locates the rust-analyzer binary this server will spawn per workspace:
-/// `OUTOU_RUST_ANALYZER` if set, otherwise the first `rust-analyzer` (or,
-/// on Windows, `rust-analyzer.exe`) found on `PATH`.
+/// Locates the rust-analyzer binary this server will spawn for a planned
+/// `.rsx` workspace: `OUTOU_RUST_ANALYZER` if set, otherwise the first
+/// `rust-analyzer` (or, on Windows, `rust-analyzer.exe`) found on `PATH`.
 ///
-/// This is a startup precondition, independent of any particular crate:
-/// a crate with no `.rsx` root still runs in degraded mode without
-/// rust-analyzer (`crate::server`), but the server has no job at all if
-/// rust-analyzer cannot be found anywhere, so it fails fast here rather
-/// than starting the protocol handshake and only then discovering it can
-/// never make progress.
+/// Resolved lazily, only once `crate::server::load_workspace` finds a real
+/// `.rsx` crate root that actually needs rust-analyzer (issue #9 Gate 3
+/// review, S4): this used to run once, unconditionally, before
+/// `initialize` even started, so a machine with no `rust-analyzer` on
+/// `PATH` (and no `OUTOU_RUST_ANALYZER`) could never start `outou-lsp` at
+/// all — not even syntax-only, for a crate that turns out to have no
+/// `.rsx` root, or none open yet.
 fn resolve_rust_analyzer() -> Result<String, String> {
     if let Ok(path) = std::env::var("OUTOU_RUST_ANALYZER") {
         return if Path::new(&path).is_file() {

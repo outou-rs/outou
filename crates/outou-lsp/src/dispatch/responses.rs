@@ -169,25 +169,48 @@ fn map_pending_result(
     Ok(value)
 }
 
-/// TODO(phase0) (issue #9 Gate 3 review, S6, and L12's SKIP item): forward
-/// `$/progress` to the editor (rewriting the token so it does not
-/// collide with the editor's own) instead of dropping it here, so a real
-/// editor gets a readiness signal for rust-analyzer's indexing;
-/// `outou-lsp-client.mjs` currently works around the lack of one with
-/// bounded request retries (see its own module doc comment). L12: until
-/// this lands, `handle_ra_request`'s own
-/// `window/workDoneProgress/create` forwarding (`crate::dispatch::responses`,
-/// `forward_ra_request_to_client`) asks a real editor to *create*
-/// progress tokens that then never begin or end here — either land this
-/// together with that, or stop forwarding `create` until it does.
+/// Handles a notification from rust-analyzer: `publishDiagnostics` is
+/// merged and republished for the owning `.rsx` file
+/// (`diagnostics::handle_ra_publish`); `$/progress` is relayed to the
+/// editor verbatim, under its own token, so a real editor gets a
+/// readiness signal for rust-analyzer's indexing (issue #9 Gate 3 review,
+/// S6) — `outou-lsp-client.mjs` used to work around the lack of one with
+/// bounded request retries (see its own module doc comment; it now
+/// listens for `$/progress` `end` instead).
+///
+/// No token rewriting is needed: every token this server ever sees in a
+/// `$/progress` notification was itself allocated by the *editor*, in
+/// its response to the `window/workDoneProgress/create` request this
+/// server forwarded on rust-analyzer's behalf (`handle_ra_request` below)
+/// — never one this server or rust-analyzer invented independently — so
+/// there is nothing to collide with.
+///
+/// Forwarding is gated on the exact same condition as forwarding
+/// `create` itself (`state.client_supports_work_done_progress`, issue #9
+/// Gate 3 review, L12): a client that never advertised
+/// `window.workDoneProgress` never saw a `create` request either, so it
+/// has no token to match a forwarded `$/progress` against — sending one
+/// anyway would be a notification for a progress report the editor never
+/// agreed to track. Keeping both behind the same flag means the two can
+/// never drift out of sync the way L12 found them.
 fn handle_ra_notification(state: &mut State, connection: &Connection, notification: Notification) {
-    if notification.method == "textDocument/publishDiagnostics" {
-        if let Ok(params) = serde_json::from_value::<PublishDiagnosticsParams>(notification.params)
-        {
-            if let Some(workspace) = &mut state.workspace {
-                diagnostics::handle_ra_publish(connection, workspace, params);
+    match notification.method.as_str() {
+        "textDocument/publishDiagnostics" => {
+            if let Ok(params) =
+                serde_json::from_value::<PublishDiagnosticsParams>(notification.params)
+            {
+                if let Some(workspace) = &mut state.workspace {
+                    diagnostics::handle_ra_publish(connection, workspace, params);
+                }
             }
         }
+        "$/progress" if state.client_supports_work_done_progress => {
+            let _ = connection.sender.send(Message::Notification(Notification {
+                method: notification.method,
+                params: notification.params,
+            }));
+        }
+        _ => {}
     }
 }
 
@@ -266,6 +289,63 @@ mod tests {
             }
             other => panic!("expected a response, got {other:?}"),
         }
+    }
+
+    /// S6/L12: `$/progress` is forwarded to the editor verbatim when it
+    /// advertised `window.workDoneProgress` support (the same flag that
+    /// gates forwarding `window/workDoneProgress/create` in the first
+    /// place).
+    #[test]
+    fn handle_ra_notification_forwards_progress_when_the_client_supports_it() {
+        let mut state = State::new();
+        state.client_supports_work_done_progress = true;
+        let (connection, client) = Connection::memory();
+
+        handle_ra_notification(
+            &mut state,
+            &connection,
+            Notification::new(
+                "$/progress".to_string(),
+                json!({ "token": "rustAnalyzer/Indexing", "value": { "kind": "end" } }),
+            ),
+        );
+
+        let msg = client
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("the progress notification was forwarded");
+        match msg {
+            Message::Notification(note) => {
+                assert_eq!(note.method, "$/progress");
+                assert_eq!(note.params["token"], "rustAnalyzer/Indexing");
+            }
+            other => panic!("expected a notification, got {other:?}"),
+        }
+    }
+
+    /// L12: kept consistent with `create`'s own gating — a client that
+    /// never advertised `window.workDoneProgress` never gets `$/progress`
+    /// either, since it was never asked to create the token in the first
+    /// place.
+    #[test]
+    fn handle_ra_notification_drops_progress_when_the_client_does_not_support_it() {
+        let mut state = State::new();
+        assert!(!state.client_supports_work_done_progress);
+        let (connection, client) = Connection::memory();
+
+        handle_ra_notification(
+            &mut state,
+            &connection,
+            Notification::new(
+                "$/progress".to_string(),
+                json!({ "token": "rustAnalyzer/Indexing", "value": { "kind": "end" } }),
+            ),
+        );
+
+        assert!(
+            client.receiver.try_recv().is_err(),
+            "no $/progress should reach a client that never advertised support for it"
+        );
     }
 
     #[test]

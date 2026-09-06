@@ -139,6 +139,7 @@ since a manual invocation would need to reproduce the temp copy, the absolute
 
 | File | Probe |
 |---|---|
+| `gate3-progress-before-hover.json.gz` | `progress-before-hover` (S6/L12, issue #9 Gate 3 review Step 7: `$/progress` `end` forwarded before the first hover) |
 | `gate3-hover-user.json.gz` | `hover-user` |
 | `gate3-hover-nonascii.json.gz` | `hover-nonascii` (M7: a non-ASCII prefix must not shift the mapped position) |
 | `gate3-hover-element-tag.json.gz` | `hover-element-tag` (M4: must never leak `dioxus_html::…`) |

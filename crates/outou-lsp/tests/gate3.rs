@@ -50,6 +50,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// One probe per Gate 3 criterion, matching
 /// `outou-lsp-client.mjs`'s `--probe` names.
 const PROBES: &[&str] = &[
+    "progress-before-hover",
     "hover-user",
     "hover-nonascii",
     "hover-element-tag",
@@ -493,6 +494,31 @@ fn check_probe(
     components_rsx_text: &str,
 ) -> Result<(), String> {
     match probe {
+        "progress-before-hover" => {
+            // S6/L12 (issue #9 Gate 3 review): `outou-lsp` now forwards
+            // rust-analyzer's `$/progress` to a client that advertised
+            // `window.workDoneProgress` support; the probe client records
+            // whether it actually saw a `$/progress` `end` notification
+            // before its first hover request went out.
+            let saw_progress_end = result
+                .get("sawProgressEndBeforeFirstHover")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if !saw_progress_end {
+                return Err(
+                    "no $/progress `end` notification was forwarded before the first hover (S6/L12)"
+                        .to_string(),
+                );
+            }
+            let value = result
+                .pointer("/hover/contents/value")
+                .and_then(|v| v.as_str())
+                .ok_or("no hover contents")?;
+            if !value.contains("Option") {
+                return Err(format!("hover did not mention `Option`: {value}"));
+            }
+            Ok(())
+        }
         "hover-user" => {
             let value = result
                 .pointer("/hover/contents/value")

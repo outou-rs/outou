@@ -29,11 +29,19 @@ use crate::uri;
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Runs the language server: waits for `initialize`, sets up rust-analyzer
-/// (unless the crate is in degraded mode), and dispatches everything
-/// after that until `shutdown`/`exit` or the connection closes.
-pub fn run(ra_binary: String) -> ExitCode {
+/// (unless the crate is in degraded mode, or has no `.rsx` root open at
+/// all), and dispatches everything after that until `shutdown`/`exit` or
+/// the connection closes.
+///
+/// `resolve_ra_binary` is called at most once, and only if
+/// [`load_workspace`] finds a real `.rsx` crate root that needs
+/// rust-analyzer (issue #9 Gate 3 review, S4): a machine with no
+/// `rust-analyzer` on `PATH` must still be able to run `outou-lsp`
+/// syntax-only against a crate with no `.rsx` root (or none open yet),
+/// rather than failing before `initialize` even starts.
+pub fn run(resolve_ra_binary: impl Fn() -> Result<String, String>) -> ExitCode {
     let (connection, io_threads) = Connection::stdio();
-    let code = match main_loop(&connection, &ra_binary) {
+    let code = match main_loop(&connection, &resolve_ra_binary) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("outou-lsp: {e}");
@@ -53,15 +61,18 @@ enum ServerError {
     InitializeParams(serde_json::Error),
 }
 
-fn main_loop(connection: &Connection, ra_binary: &str) -> Result<(), ServerError> {
+fn main_loop(
+    connection: &Connection,
+    resolve_ra_binary: &impl Fn() -> Result<String, String>,
+) -> Result<(), ServerError> {
     let (initialize_id, params_value) = connection.initialize_start()?;
     let params: InitializeParams =
-        serde_json::from_value(params_value).map_err(ServerError::InitializeParams)?;
+        serde_json::from_value(params_value.clone()).map_err(ServerError::InitializeParams)?;
 
-    let root = resolve_root(&params);
+    let root = resolve_root(&params, &params_value);
     let mut state = State::new();
     apply_client_capabilities(&mut state, &params);
-    load_workspace(&mut state, &root, ra_binary, &params);
+    load_workspace(&mut state, &root, resolve_ra_binary, &params);
 
     connection.initialize_finish(
         initialize_id,
@@ -146,14 +157,21 @@ fn any_dynamic_registration(value: &Value) -> bool {
 /// Resolves the crate at `root` (if any) and, unless it is degraded,
 /// generates every unit and spawns/initializes rust-analyzer, filling in
 /// `state.workspace`/`state.ra`. Every failure degrades gracefully rather
-/// than aborting: a missing crate root, a planning error, or rust-analyzer
-/// failing to spawn all leave the server running with Outou syntax
-/// diagnostics only, per the architecture note ("if `src/main.rsx`/
-/// `lib.rsx` is absent, run in a degraded mode").
-fn load_workspace(
+/// than aborting: a missing crate root, a planning error, rust-analyzer
+/// not being found at all, or rust-analyzer failing to spawn, all leave
+/// the server running with Outou syntax diagnostics only, per the
+/// architecture note ("if `src/main.rsx`/`lib.rsx` is absent, run in a
+/// degraded mode").
+///
+/// `resolve_ra_binary` (`main::resolve_rust_analyzer`) is called only in
+/// the branch that actually found a `.rsx` crate root (issue #9 Gate 3
+/// review, S4): a crate with no `.rsx` root — or no workspace root at all
+/// — never needs rust-analyzer, so it must never be the reason `outou-lsp`
+/// cannot start syntax-only.
+fn load_workspace<F: Fn() -> Result<String, String>>(
     state: &mut State,
     root: &Option<std::path::PathBuf>,
-    ra_binary: &str,
+    resolve_ra_binary: &F,
     params: &InitializeParams,
 ) {
     let Some(root) = root else {
@@ -164,19 +182,26 @@ fn load_workspace(
         Ok(LoadOutcome::Planned(boxed_workspace)) => {
             let workspace = *boxed_workspace;
             write_missing_generated_files(&workspace);
-            match RaClient::spawn(ra_binary, &workspace.manifest_dir) {
-                Ok(mut ra) => {
-                    if setup_rust_analyzer(&mut ra, &workspace, params) {
-                        state.ra = Some(ra);
-                    } else {
-                        eprintln!(
-                            "outou-lsp: rust-analyzer setup did not complete; continuing with Outou syntax diagnostics only"
-                        );
-                        ra.shutdown();
+            match resolve_ra_binary() {
+                Ok(ra_binary) => match RaClient::spawn(&ra_binary, &workspace.manifest_dir) {
+                    Ok(mut ra) => {
+                        if setup_rust_analyzer(&mut ra, &workspace, params) {
+                            state.ra = Some(ra);
+                        } else {
+                            eprintln!(
+                                "outou-lsp: rust-analyzer setup did not complete; continuing with Outou syntax diagnostics only"
+                            );
+                            ra.shutdown();
+                        }
                     }
-                }
-                Err(e) => {
-                    eprintln!("outou-lsp: {e}; continuing with Outou syntax diagnostics only");
+                    Err(e) => {
+                        eprintln!("outou-lsp: {e}; continuing with Outou syntax diagnostics only");
+                    }
+                },
+                Err(message) => {
+                    eprintln!(
+                        "outou-lsp: {message}; continuing with Outou syntax diagnostics only"
+                    );
                 }
             }
             state.workspace = Some(workspace);
@@ -193,24 +218,42 @@ fn load_workspace(
     }
 }
 
-/// Resolves the workspace root from `initialize`'s `workspaceFolders`.
-/// `rootUri`/`rootPath` are both deprecated in favor of it (LSP 3.6+) and
-/// are not read here.
+/// Resolves the workspace root from `initialize`'s `workspaceFolders`
+/// first, then `rootUri`, then `rootPath` (issue #9 Gate 3 review, S4):
+/// the latter two are deprecated in favor of `workspaceFolders` (LSP
+/// 3.6+), but a client that only ever sends one of them is still legal
+/// per the LSP spec, and must not be treated the same as "no root at
+/// all" (which would run this server in degraded mode for a perfectly
+/// valid client).
 ///
-/// TODO(phase0) (issue #9 Gate 3 review, S4): fall back to `rootUri` and
-/// then `rootPath` for a client that only sends those (both still legal
-/// per the LSP spec, just deprecated), and defer resolving/spawning
-/// rust-analyzer until a planned `.rsx` workspace actually needs it, so
-/// degraded mode works even with no `rust-analyzer` binary on `PATH` at
-/// all — today `main.rs::resolve_rust_analyzer` runs before
-/// `initialize` even starts, so the server cannot start without one
-/// regardless of whether the crate turns out to need it.
-fn resolve_root(params: &InitializeParams) -> Option<std::path::PathBuf> {
-    params
+/// `raw` is `initialize`'s params as raw JSON, used only for `rootUri`/
+/// `rootPath`: both fields are `#[deprecated]` on [`InitializeParams`]
+/// itself, and reading them through the typed field would turn into a
+/// hard `-D warnings` failure (`AGENTS.md` forbids silencing that with
+/// `#[allow(deprecated)]`) the moment this server is compiled with a
+/// lint level that catches it. `workspaceFolders` is not deprecated, so
+/// it is still read from the typed `params`.
+fn resolve_root(params: &InitializeParams, raw: &Value) -> Option<std::path::PathBuf> {
+    if let Some(path) = params
         .workspace_folders
         .as_ref()
         .and_then(|folders| folders.first())
         .and_then(|folder| uri::to_path(&folder.uri))
+    {
+        return Some(path);
+    }
+    if let Some(path) = raw
+        .pointer("/rootUri")
+        .and_then(Value::as_str)
+        .and_then(uri::outou_uri_str_to_path)
+    {
+        return Some(path);
+    }
+    // `rootPath` (deprecated before `rootUri` even existed) is a plain
+    // filesystem path, not a URI.
+    raw.pointer("/rootPath")
+        .and_then(Value::as_str)
+        .map(std::path::PathBuf::from)
 }
 
 /// ADR 0009 layout (b) needs the generated `[[bin]]`/`[lib]` target to
@@ -511,6 +554,87 @@ mod tests {
             "workspace": {},
         });
         assert!(!any_dynamic_registration(&capabilities));
+    }
+
+    /// S4: `workspaceFolders[0]` wins even when `rootUri`/`rootPath` are
+    /// also present.
+    #[test]
+    fn resolve_root_prefers_workspace_folders_over_root_uri_and_root_path() {
+        let params: InitializeParams = serde_json::from_value(json!({
+            "capabilities": {},
+            "workspaceFolders": [{ "uri": "file:///a", "name": "a" }],
+        }))
+        .unwrap();
+        let raw = json!({ "rootUri": "file:///b", "rootPath": "/c" });
+        assert_eq!(
+            resolve_root(&params, &raw),
+            Some(std::path::PathBuf::from("/a"))
+        );
+    }
+
+    /// S4: a client with no `workspaceFolders` at all (legal per the LSP
+    /// spec, just deprecated) must still resolve its root from `rootUri`
+    /// rather than being treated as having no root.
+    #[test]
+    fn resolve_root_falls_back_to_root_uri_without_workspace_folders() {
+        let params: InitializeParams =
+            serde_json::from_value(json!({ "capabilities": {} })).unwrap();
+        let raw = json!({ "rootUri": "file:///b", "rootPath": "/c" });
+        assert_eq!(
+            resolve_root(&params, &raw),
+            Some(std::path::PathBuf::from("/b"))
+        );
+    }
+
+    /// S4: with neither `workspaceFolders` nor `rootUri`, `rootPath` (a
+    /// plain filesystem path, not a URI) is the last fallback.
+    #[test]
+    fn resolve_root_falls_back_to_root_path_as_a_last_resort() {
+        let params: InitializeParams =
+            serde_json::from_value(json!({ "capabilities": {} })).unwrap();
+        let raw = json!({ "rootPath": "/c" });
+        assert_eq!(
+            resolve_root(&params, &raw),
+            Some(std::path::PathBuf::from("/c"))
+        );
+    }
+
+    #[test]
+    fn resolve_root_is_none_when_nothing_is_given() {
+        let params: InitializeParams =
+            serde_json::from_value(json!({ "capabilities": {} })).unwrap();
+        assert_eq!(resolve_root(&params, &json!({})), None);
+    }
+
+    /// S4's decisive case: a client that sends only `rootUri` (no
+    /// `workspaceFolders`) for a real `.rsx` crate root must have that
+    /// root planned, not land in degraded mode the way "no root at all"
+    /// does.
+    #[test]
+    fn a_root_uri_only_client_plans_a_real_rsx_workspace() {
+        let tmp = std::env::temp_dir().join(format!(
+            "outou-lsp-test-server-s4-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let src = tmp.join("src");
+        std::fs::create_dir_all(&src).expect("creating src dir");
+        std::fs::write(src.join("main.rsx"), "fn main() {}\n").expect("writing crate root");
+
+        let params: InitializeParams =
+            serde_json::from_value(json!({ "capabilities": {} })).unwrap();
+        let raw = json!({ "rootUri": uri::path_to_lsp(&tmp).as_str() });
+        let root = resolve_root(&params, &raw).expect("a rootUri-only client resolves a root");
+
+        match crate::documents::Workspace::load(&root).expect("loading the resolved root") {
+            LoadOutcome::Planned(_) => {}
+            LoadOutcome::Degraded { manifest_dir } => panic!(
+                "a valid rootUri-only client must not land in degraded mode (searched {})",
+                manifest_dir.display()
+            ),
+        }
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 
     #[test]

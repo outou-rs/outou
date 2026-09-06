@@ -42,14 +42,14 @@ rows this issue originally tracked:
 
 | Request | Latency (ms) |
 |---|---|
-| hover (`user`) | 6273 |
-| definition (`load_user`, same file) | 809 |
-| definition (`UserCard`, cross-file) | 5689 |
-| completion (member, `user.`) | 4637 |
-| completion (tag, component) | 3 (answered locally; never forwarded) |
-| completion (attribute name) | 3 (answered locally; never forwarded) |
-| completion (prop value, `user={us}`) | 4241 |
-| `didSave` -> mismatched-types diagnostic | 4561 |
+| hover (`user`) | 13122 |
+| definition (`load_user`, same file) | 5465 |
+| definition (`UserCard`, cross-file) | 9709 |
+| completion (member, `user.`) | 9911 |
+| completion (tag, component) | 4 (answered locally; never forwarded) |
+| completion (attribute name) | 4 (answered locally; never forwarded) |
+| completion (prop value, `user={us}`) | 26246 |
+| `didSave` -> mismatched-types diagnostic | 8929 |
 | `didChange` -> Outou syntax diagnostic | 101 |
 
 <!-- END GENERATED -->

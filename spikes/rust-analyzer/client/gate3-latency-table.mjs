@@ -35,6 +35,11 @@ const resultsDir = join(repoRoot, "spikes/rust-analyzer/results");
 /// `key` is the field under its `latencyMs` object, `label` is the
 /// human-readable row label. Order here is the order printed.
 const ROWS = [
+  {
+    file: "progress-before-hover",
+    key: "hover",
+    label: "hover, after a `$/progress` `end` was forwarded (S6/L12)",
+  },
   { file: "hover-user", key: "hover", label: "hover (`user`)" },
   { file: "hover-nonascii", key: "hover", label: "hover (non-ASCII prefix)" },
   {

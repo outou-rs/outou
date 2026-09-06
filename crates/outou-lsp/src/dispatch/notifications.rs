@@ -7,10 +7,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use lsp_server::{Connection, Notification};
+use lsp_server::{Connection, Message, Notification};
 use lsp_types::{
     DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams,
+    DidSaveTextDocumentParams, MessageType, ShowMessageParams,
 };
 use serde_json::json;
 
@@ -78,7 +78,7 @@ pub(crate) fn dispatch_client_notification(
         "textDocument/didSave" => {
             if let Ok(params) = serde_json::from_value::<DidSaveTextDocumentParams>(note.params) {
                 if params.text_document.uri.as_str().ends_with(".rsx") {
-                    handle_rsx_save(state, &params.text_document.uri);
+                    handle_rsx_save(state, connection, &params.text_document.uri);
                 } else if let Some(ra) = &state.ra {
                     ra.notify(
                         "textDocument/didSave",
@@ -156,15 +156,14 @@ fn handle_rsx_close(state: &mut State, connection: &Connection, uri: &lsp_types:
 /// by the ordinary `didChange` path, already tells the user why nothing
 /// was written *for the broken file itself*.
 ///
-/// TODO(phase0) (issue #9 Gate 3 review, L14's SKIP item): the user who
-/// just saved a *different*, valid `.rsx` file gets no editor-visible
-/// signal that their save was blocked crate-wide by some other broken
-/// file — only that broken file's own Outou diagnostic hints at it, and
-/// only if the user happens to be looking at it. A `window/showMessage`
-/// naming the blocking file would close this; not required for Gate 3
-/// (the write itself is correct and transactional, which is what M1
-/// required).
-fn handle_rsx_save(state: &mut State, rsx_uri: &lsp_types::Uri) {
+/// A save blocked crate-wide by some *other* broken `.rsx` file (issue #9
+/// Gate 3 review, L14, fixed): before this fix, the user who just saved a
+/// different, valid file got no editor-visible signal at all that their
+/// save was blocked — only the broken file's own Outou diagnostic hinted
+/// at it, and only if the user happened to be looking at that file.
+/// [`notify_save_blocked_by_another_file`] below closes this with a
+/// `window/showMessage` naming the blocking file.
+fn handle_rsx_save(state: &mut State, connection: &Connection, rsx_uri: &lsp_types::Uri) {
     let Some(workspace) = &state.workspace else {
         return;
     };
@@ -188,6 +187,7 @@ fn handle_rsx_save(state: &mut State, rsx_uri: &lsp_types::Uri) {
         eprintln!(
             "outou-lsp: not writing generated Rust for {rsx_uri_string} (syntax errors prevent generation): {e}"
         );
+        notify_save_blocked_by_another_file(connection, &rsx_uri_string, &e);
         return;
     }
 
@@ -213,6 +213,51 @@ fn handle_rsx_save(state: &mut State, rsx_uri: &lsp_types::Uri) {
             "text": text,
         }),
     );
+}
+
+/// Sends `window/showMessage` (Warning) naming the `.rsx` file whose
+/// syntax error (`outou_cli::build::EmitError::SyntaxErrors`) blocked
+/// [`handle_rsx_save`]'s write, unless it is the very file that was just
+/// saved: that file's own Outou syntax diagnostic (published by the
+/// ordinary `didChange` path) already tells the user why, right where
+/// they are looking, so a second, editor-wide notice would only be noise
+/// for the common case of saving a file that is itself broken. It is the
+/// case this exists for — some *other* `.rsx` file being broken, with no
+/// diagnostic visible unless the user happens to have that file open —
+/// that had no editor-visible signal at all before this fix (issue #9
+/// Gate 3 review, L14).
+fn notify_save_blocked_by_another_file(
+    connection: &Connection,
+    saved_rsx_uri: &str,
+    error: &outou_cli::build::EmitError,
+) {
+    let outou_cli::build::EmitError::SyntaxErrors { path, .. } = error else {
+        // Every other `EmitError` variant (an unreadable file, an
+        // unsupported construct, a write failure) is either not the
+        // "some other file is broken" case this notice is for, or is
+        // already an unusual enough failure that `handle_rsx_save`'s own
+        // `eprintln!` is the right place for it, not a user-facing popup.
+        return;
+    };
+    if outou_sourcemap::file_uri(path).as_str() == saved_rsx_uri {
+        return;
+    }
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    let params = ShowMessageParams {
+        typ: MessageType::WARNING,
+        message: format!(
+            "outou: this save was not written because `{name}` has a syntax error; fix it and save again"
+        ),
+    };
+    let _ = connection
+        .sender
+        .send(Message::Notification(Notification::new(
+            "window/showMessage".to_string(),
+            params,
+        )));
 }
 
 /// Regenerates one `.rsx` unit after an edit (or, in degraded mode,
@@ -392,7 +437,7 @@ fn replan_and_resync(
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     use lsp_server::{Connection, Message};
 
@@ -543,5 +588,73 @@ mod tests {
         );
 
         fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// L14: a save blocked by *another* file's syntax error must produce a
+    /// `window/showMessage` (Warning) naming that file.
+    #[test]
+    fn notify_save_blocked_by_another_file_warns_with_the_broken_files_name() {
+        let (connection, client) = Connection::memory();
+        let error = outou_cli::build::EmitError::SyntaxErrors {
+            path: PathBuf::from("/app/src/components.rsx"),
+            rendered: "unexpected '}'".to_string(),
+        };
+
+        notify_save_blocked_by_another_file(&connection, "file:///app/src/main.rsx", &error);
+
+        let msg = client
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("a window/showMessage notification was sent");
+        match msg {
+            lsp_server::Message::Notification(note) => {
+                assert_eq!(note.method, "window/showMessage");
+                assert_eq!(note.params["type"], 2, "MessageType::WARNING is 2");
+                let message = note.params["message"].as_str().unwrap();
+                assert!(
+                    message.contains("components.rsx"),
+                    "message must name the broken file: {message}"
+                );
+            }
+            other => panic!("expected a notification, got {other:?}"),
+        }
+    }
+
+    /// L14: saving the very file that is itself broken must not also pop
+    /// up a notice — its own Outou syntax diagnostic already says so,
+    /// right where the user is looking.
+    #[test]
+    fn notify_save_blocked_by_another_file_is_silent_for_the_saved_file_itself() {
+        let (connection, client) = Connection::memory();
+        let error = outou_cli::build::EmitError::SyntaxErrors {
+            path: PathBuf::from("/app/src/main.rsx"),
+            rendered: "unexpected '}'".to_string(),
+        };
+
+        notify_save_blocked_by_another_file(
+            &connection,
+            outou_sourcemap::file_uri(Path::new("/app/src/main.rsx")).as_str(),
+            &error,
+        );
+
+        assert!(
+            client.receiver.try_recv().is_err(),
+            "no notice should be sent when the broken file is the one just saved"
+        );
+    }
+
+    /// A non-`SyntaxErrors` `EmitError` (an unreadable file, say) is not
+    /// this notice's case; it must not send anything.
+    #[test]
+    fn notify_save_blocked_by_another_file_ignores_other_emit_error_variants() {
+        let (connection, client) = Connection::memory();
+        let error = outou_cli::build::EmitError::ReadSource {
+            path: PathBuf::from("/app/src/components.rsx"),
+            source: std::io::Error::other("boom"),
+        };
+
+        notify_save_blocked_by_another_file(&connection, "file:///app/src/main.rsx", &error);
+
+        assert!(client.receiver.try_recv().is_err());
     }
 }
