@@ -103,8 +103,11 @@ After that:
   reports semantic (type-mismatch) errors, per the Week 1 spike — runs
   against a build that actually compiles. If Strict generation fails
   anywhere in the plan, nothing is written and the save is not forwarded;
-  Outou's own syntax diagnostic (published by the ordinary `didChange`
-  path) already explains why.
+  for the saved file's own syntax error, Outou's own syntax diagnostic
+  (published by the ordinary `didChange` path) already explains why, but
+  if the plan was blocked by some *other* `.rsx` file's syntax error, this
+  server also sends a `window/showMessage` (Warning) naming that file, so
+  the block is visible even to a user who isn't looking at it.
 - `$/cancelRequest` is rewritten through this server's own pending-request
   map before being forwarded, so it cancels the right rust-analyzer
   request even though the editor's and this server's request-id spaces
@@ -122,7 +125,7 @@ internally) rather than rust-analyzer's own:
 | `workspace/configuration` | Answered locally: an array of `null`s, one per requested item — never a bare `null`, which is not a valid result shape for this request. |
 | `client/registerCapability` | Forwarded to the editor (under a fresh id) only if the editor's own `initialize` capabilities advertised `dynamicRegistration: true` somewhere; otherwise answered locally with `null`. |
 | `window/workDoneProgress/create` | Forwarded to the editor (under a fresh id) only if the editor advertised `window.workDoneProgress`; otherwise answered locally with `null`. |
-| `$/progress` (a notification, not a request) | **Not forwarded** — dropped. TODO(phase0): a real editor gets no readiness signal for rust-analyzer's indexing today; see the Known limitations section. |
+| `$/progress` (a notification, not a request) | Forwarded to the editor verbatim, under its own token, only if the editor advertised `window.workDoneProgress` (the same condition that gates forwarding `window/workDoneProgress/create`); otherwise dropped. |
 | Every other rust-analyzer -> client request | Answered locally with `null`. |
 | Every client -> server request/notification not named above | Forwarded to rust-analyzer verbatim (after any position mapping this document already described). |
 
@@ -195,10 +198,11 @@ failure):
 ## Known limitations
 
 See [`docs/gate3-results.md`](../../docs/gate3-results.md)'s own section
-for the full list with evidence. In short: no `$/progress` forwarding to
-the editor (no readiness signal beyond the answers themselves), semantic
-diagnostics need a save (a rust-analyzer limitation, not this server's),
-a transformed (non-verbatim) source mapping returns `null` rather than a
+for the full list with evidence. In short: `$/progress` (and so the
+readiness signal it carries) only reaches editors that advertise
+`window.workDoneProgress` support, semantic diagnostics need a save (a
+rust-analyzer limitation, not this server's), a transformed
+(non-verbatim) source mapping returns `null` rather than a
 guess, and a handful of SKIP items recorded as `TODO(phase0)` at their
 own call sites (Windows/UNC file URIs, a multi-source diagnostic always
 using the first source, `completionItem/resolve` not being advertised).
