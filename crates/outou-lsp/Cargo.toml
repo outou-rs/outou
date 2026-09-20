@@ -20,6 +20,7 @@ outou-backend-dioxus = { workspace = true }
 # generator (`outou_cli::build::emit::generate_unit`) are reused rather
 # than duplicated: "there is one compiler" (`AGENTS.md`).
 outou-cli = { workspace = true }
+outou-fmt = { workspace = true }
 lsp-server = { workspace = true }
 lsp-types = { workspace = true }
 crossbeam-channel = { workspace = true }

@@ -1,6 +1,6 @@
 [package]
 name = "outou-cli"
-description = "The `outou` command line: build, check and package .rsx crates"
+description = "The `outou` command line: build, check, format and package .rsx crates"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -21,6 +21,7 @@ outou-sourcemap = { workspace = true }
 outou-codegen = { workspace = true }
 outou-backend-dioxus = { workspace = true }
 outou-modules = { workspace = true }
+outou-fmt = { workspace = true }
 clap = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

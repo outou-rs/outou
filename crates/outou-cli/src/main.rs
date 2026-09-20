@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 
 use outou_cli::build::{self, BuildOptions};
 use outou_cli::check;
+use outou_cli::fmt;
 
 /// Rust with JSX.
 #[derive(Debug, Parser)]
@@ -31,6 +32,19 @@ enum Command {
     },
     /// Parse every `.rsx` file and report Outou syntax diagnostics.
     Check,
+    /// Format `.rsx` files: placeholder JSX regions, `rustfmt` for the
+    /// Rust around them, then a JSX-aware pretty printer
+    /// (`outou-fmt`, `docs/phase0/issues/13-formatter.md`).
+    Fmt {
+        /// Files and/or directories to format. A directory is scanned
+        /// recursively for `.rsx` files. Defaults to `src` in the
+        /// current directory.
+        paths: Vec<PathBuf>,
+        /// Report which files are not formatted and exit non-zero,
+        /// without writing anything.
+        #[arg(long)]
+        check: bool,
+    },
     /// Generate Rust and prepare the crate for `cargo publish`.
     ///
     /// Published crates ship pre-generated Rust so that consumers need
@@ -43,6 +57,7 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Build { manifest_dir } => run_build(manifest_dir),
         Command::Check => check::run(),
+        Command::Fmt { paths, check } => fmt::run(&paths, check),
         Command::Package => todo!("outou package: Phase 0, Week 6"),
     }
 }

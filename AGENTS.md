@@ -39,6 +39,7 @@ All four workspace checks must pass before a change is considered done. Do not w
 | `crates/outou-codegen` | `Backend` trait, `Strict` / `Recovery` modes. |
 | `crates/outou-backend-dioxus` | Temporary backend. Emits text; does **not** depend on Dioxus. |
 | `crates/outou-modules` | Module resolver for mixed `.rs` / `.rsx` crates. |
+| `crates/outou-fmt` | Formatter: placeholder JSX regions, `rustfmt` for the Rust, then a JSX pretty printer. This is the only crate that spawns `rustfmt`; `outou-syntax` never shells out (`outou-lsp` separately spawns rust-analyzer, unrelated to formatting). |
 | `crates/outou-lsp`, `crates/outou-cli` | Binaries `outou-lsp` and `outou`. |
 | `xtask/` | Repository automation. |
 | `spikes/rust-analyzer/` | Week 1 experiment. Not a workspace member. No framework code. |

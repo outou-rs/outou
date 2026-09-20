@@ -11,6 +11,7 @@ use serde_json::{json, Value};
 
 use super::{Pending, PendingKind, State};
 use crate::complete;
+use crate::documents::RsxDocument;
 use crate::mapping;
 use crate::uri;
 
@@ -21,8 +22,137 @@ pub(crate) fn dispatch_client_request(state: &mut State, connection: &Connection
         "textDocument/definition" => {
             forward_position_request(state, connection, req, |_, _, _| PendingKind::Definition)
         }
+        "textDocument/formatting" => dispatch_formatting_request(state, connection, req),
         _ => forward_transparent_request(state, connection, req),
     }
+}
+
+/// `textDocument/formatting`: answered entirely locally, never forwarded
+/// to rust-analyzer — formatting is Outou-syntax-driven
+/// (`outou_fmt::format_source`), not a question about the *expanded*
+/// Rust rust-analyzer sees, and it is the exact same pipeline `outou fmt`
+/// uses (`docs/phase0/issues/13-formatter.md`: "one pipeline, not two").
+///
+/// `TODO(phase0)`: this runs synchronously, inline in the single
+/// dispatch loop every other request also goes through, with no
+/// wall-clock budget — one `rustfmt` process per file plus one more per
+/// expression island (`crate::snippet`'s recursive placeholder passes),
+/// so cost scales with island count, not file size. Measured directly
+/// (this machine, release build): ~0.18s for the whole of
+/// `examples/phase0-app/src/components.rsx` (a handful of islands); an
+/// independent review reproduction reported low-single-digit seconds for
+/// a small file engineered to contain dozens of islands. A future fix
+/// should move this to a worker thread and answer `null` past some
+/// deadline rather than block the whole server on a pathological file.
+/// This also ignores the request's `options` (`tabSize`, `insertSpaces`)
+/// entirely: `outou_fmt::FormatOptions` has no equivalent knobs yet, and
+/// `rustfmt`'s own indent width is a fixed constant
+/// (`outou_fmt::width::INDENT_UNIT`), not sourced from the editor.
+///
+/// Responds with `null` (no edits) rather than an LSP error response for
+/// every case the issue's spec calls out as "never edit": an unknown
+/// document, a file with a syntax error, or a file `outou-fmt` otherwise
+/// refuses (`rustfmt` missing or failing) — an editor's format-on-save
+/// must never be surprised by an error popup for a file that simply
+/// cannot be formatted right now. An *operational* failure (`rustfmt`
+/// missing or failing, as opposed to the file's own syntax error) is
+/// still logged to this server's stderr rather than silently dropped, so
+/// a misconfigured environment is diagnosable instead of just quietly
+/// never formatting anything.
+fn dispatch_formatting_request(state: &State, connection: &Connection, req: Request) {
+    let client_id = req.id.clone();
+    let Some(rsx_uri) = extract_document_uri(&req.params) else {
+        respond_null(connection, client_id);
+        return;
+    };
+    let rsx_uri_string = uri::to_outou(&rsx_uri).as_str().to_string();
+    let Some(document) = find_rsx_document(state, &rsx_uri_string) else {
+        respond_null(connection, client_id);
+        return;
+    };
+
+    let source = document.line_index.text();
+    let edits = match formatting_edits(source, &outou_fmt::FormatOptions::default()) {
+        Ok(edits) => edits,
+        Err(outou_fmt::FormatError::SyntaxErrors { .. }) => {
+            respond_null(connection, client_id);
+            return;
+        }
+        Err(err) => {
+            eprintln!("outou-lsp: cannot format {rsx_uri_string}: {err}");
+            respond_null(connection, client_id);
+            return;
+        }
+    };
+
+    let _ = connection.sender.send(Message::Response(Response::new_ok(
+        client_id,
+        serde_json::to_value(edits).unwrap_or(Value::Null),
+    )));
+}
+
+/// The `lsp_types::TextEdit`-shaped JSON edits for formatting `source`, a
+/// pure function of `source` and `options` (rebuilding its own
+/// [`outou_sourcemap::LineIndex`] rather than requiring an
+/// [`RsxDocument`]) so it can be unit-tested directly, including the
+/// "operational failure, not a syntax error" case a real `.rsx` document
+/// is not needed to exercise: `Ok(vec![])` when already formatted,
+/// `Ok(vec![edit])` when not, and `Err` — never silently downgraded to
+/// an empty edit list — for anything [`outou_fmt::format_source`] itself
+/// returns `Err` for, including [`outou_fmt::FormatError::RustfmtUnavailable`]
+/// and [`outou_fmt::FormatError::RustfmtFailed`].
+fn formatting_edits(
+    source: &str,
+    options: &outou_fmt::FormatOptions,
+) -> Result<Vec<Value>, outou_fmt::FormatError> {
+    let formatted = outou_fmt::format_source(source, options)?;
+    if formatted == source {
+        return Ok(Vec::new());
+    }
+    let line_index = outou_sourcemap::LineIndex::new(source);
+    Ok(vec![full_document_edit(&line_index, source, formatted)])
+}
+
+fn extract_document_uri(params: &Value) -> Option<lsp_types::Uri> {
+    params
+        .get("textDocument")?
+        .get("uri")?
+        .as_str()?
+        .parse()
+        .ok()
+}
+
+/// Finds `rsx_uri_string`'s document regardless of whether this server is
+/// running against a planned [`crate::documents::Workspace`] or, in
+/// degraded mode (no `.rsx` crate root), only tracking documents in
+/// [`State::degraded_docs`] — formatting needs only the `.rsx` text
+/// itself, never the plan or a generated unit, so both modes answer it
+/// the same way.
+fn find_rsx_document<'a>(state: &'a State, rsx_uri_string: &str) -> Option<&'a RsxDocument> {
+    if let Some(workspace) = &state.workspace {
+        if let Some(document) = workspace.rsx.get(rsx_uri_string) {
+            return Some(document);
+        }
+    }
+    state.degraded_docs.get(rsx_uri_string)
+}
+
+/// One `lsp_types::TextEdit`-shaped JSON value replacing the whole
+/// document, from `(0, 0)` to the end of `source` as `line_index` (built
+/// from `source`, before formatting) converts it — the position
+/// convention every other response in this crate already uses
+/// (UTF-16 code units, `outou_sourcemap::LineIndex`).
+fn full_document_edit(
+    line_index: &outou_sourcemap::LineIndex,
+    source: &str,
+    formatted: String,
+) -> Value {
+    let whole_document = outou_sourcemap::Span::new(0, source.len() as u32);
+    let range = mapping::to_lsp_range(line_index.span_to_range(whole_document));
+    json!({
+        "range": range,
+        "newText": formatted,
+    })
 }
 
 /// `textDocument/hover` needs the same local/forward split H1 gave
@@ -238,6 +368,161 @@ mod tests {
             resolve_cancel_target(&state, &json!({ "id": 7 })),
             Some(ra_id)
         );
+    }
+
+    /// The bug this guards against: an operational failure (`rustfmt`
+    /// missing) must be an `Err` all the way out of [`formatting_edits`],
+    /// never silently turned into `Ok(vec![])` — which would look
+    /// identical to "already formatted" to every caller, including
+    /// [`dispatch_formatting_request`], hiding a misconfigured
+    /// environment behind a formatter that quietly never does anything.
+    #[test]
+    fn formatting_edits_surfaces_a_rustfmt_unavailable_error_rather_than_an_empty_list() {
+        let options = outou_fmt::FormatOptions {
+            rustfmt_program: "outou-lsp-test-nonexistent-program-xyz".to_string(),
+            ..outou_fmt::FormatOptions::default()
+        };
+        let result = formatting_edits("fn f() { <div /> }", &options);
+        assert!(matches!(
+            result,
+            Err(outou_fmt::FormatError::RustfmtUnavailable { .. })
+        ));
+    }
+
+    /// `textDocument/formatting` for a known, unformatted degraded-mode
+    /// document (no crate root, so no [`crate::documents::Workspace`] at
+    /// all) must be answered locally, with one full-document edit — never
+    /// forwarded (there is nothing to forward to; `state.ra` is `None`
+    /// here and the response still arrives).
+    #[test]
+    fn formatting_request_returns_a_full_document_edit_for_an_unformatted_document() {
+        let mut state = State::new();
+        let uri: lsp_types::Uri = "file:///app.rsx".parse().unwrap();
+        let rsx_uri_string = uri::to_outou(&uri).as_str().to_string();
+        state.degraded_docs.insert(
+            rsx_uri_string,
+            RsxDocument::new("fn f() { <div  /> }".to_string(), 1),
+        );
+        let (connection, client) = Connection::memory();
+
+        dispatch_formatting_request(
+            &state,
+            &connection,
+            Request {
+                id: RequestId::from(1),
+                method: "textDocument/formatting".to_string(),
+                params: json!({
+                    "textDocument": { "uri": "file:///app.rsx" },
+                    "options": { "tabSize": 4, "insertSpaces": true },
+                }),
+            },
+        );
+
+        let message = client
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("a response");
+        let Message::Response(response) = message else {
+            panic!("expected a response, got {message:?}");
+        };
+        let edits = response.response_result.expect("no error");
+        let edits = edits.as_array().expect("an array of edits");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0]["newText"], json!("fn f() {\n    <div />\n}\n"));
+    }
+
+    /// Already-formatted input returns an empty edit list, not `null` —
+    /// distinct from the "cannot format this" cases below, but equally a
+    /// no-op for the editor.
+    #[test]
+    fn formatting_request_returns_no_edits_for_already_formatted_input() {
+        let mut state = State::new();
+        let uri: lsp_types::Uri = "file:///app.rsx".parse().unwrap();
+        let rsx_uri_string = uri::to_outou(&uri).as_str().to_string();
+        state.degraded_docs.insert(
+            rsx_uri_string,
+            RsxDocument::new("fn f() {\n    <div />\n}\n".to_string(), 1),
+        );
+        let (connection, client) = Connection::memory();
+
+        dispatch_formatting_request(
+            &state,
+            &connection,
+            Request {
+                id: RequestId::from(1),
+                method: "textDocument/formatting".to_string(),
+                params: json!({ "textDocument": { "uri": "file:///app.rsx" } }),
+            },
+        );
+
+        let Message::Response(response) = client
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+        else {
+            panic!("expected a response");
+        };
+        assert_eq!(response.response_result.unwrap(), json!([]));
+    }
+
+    /// A file with a syntax error is never edited: `null`, not an error
+    /// response — an editor's format-on-save must not surface an error
+    /// popup for a file that simply cannot be formatted right now.
+    #[test]
+    fn formatting_request_returns_null_for_a_file_with_a_syntax_error() {
+        let mut state = State::new();
+        let uri: lsp_types::Uri = "file:///broken.rsx".parse().unwrap();
+        let rsx_uri_string = uri::to_outou(&uri).as_str().to_string();
+        state.degraded_docs.insert(
+            rsx_uri_string,
+            RsxDocument::new("fn f() { <div cl".to_string(), 1),
+        );
+        let (connection, client) = Connection::memory();
+
+        dispatch_formatting_request(
+            &state,
+            &connection,
+            Request {
+                id: RequestId::from(1),
+                method: "textDocument/formatting".to_string(),
+                params: json!({ "textDocument": { "uri": "file:///broken.rsx" } }),
+            },
+        );
+
+        let Message::Response(response) = client
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+        else {
+            panic!("expected a response");
+        };
+        assert_eq!(response.response_result.unwrap(), Value::Null);
+    }
+
+    /// An unknown document (never opened) is also `null`, never an error.
+    #[test]
+    fn formatting_request_returns_null_for_an_unknown_document() {
+        let state = State::new();
+        let (connection, client) = Connection::memory();
+
+        dispatch_formatting_request(
+            &state,
+            &connection,
+            Request {
+                id: RequestId::from(1),
+                method: "textDocument/formatting".to_string(),
+                params: json!({ "textDocument": { "uri": "file:///never-opened.rsx" } }),
+            },
+        );
+
+        let Message::Response(response) = client
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+        else {
+            panic!("expected a response");
+        };
+        assert_eq!(response.response_result.unwrap(), Value::Null);
     }
 
     #[test]

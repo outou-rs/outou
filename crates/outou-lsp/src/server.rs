@@ -314,6 +314,11 @@ fn build_server_capabilities() -> ServerCapabilities {
             ..Default::default()
         }),
         definition_provider: Some(OneOf::Left(true)),
+        // Answered entirely locally (`crate::dispatch::requests::dispatch_formatting_request`),
+        // never forwarded to rust-analyzer: `outou_fmt::format_source` is
+        // Outou-syntax-driven, the same pipeline `outou fmt` uses
+        // (`docs/phase0/issues/13-formatter.md`).
+        document_formatting_provider: Some(OneOf::Left(true)),
         // Pinned rather than negotiated (M7, issue #9 Gate 3 review,
         // HIGH-6): every position this server computes itself
         // (`crate::mapping`) counts UTF-16 code units, matching
