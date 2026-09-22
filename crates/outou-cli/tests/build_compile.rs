@@ -206,17 +206,23 @@ fn a_users_own_redundant_braces_still_fail_clippy_in_a_file_with_no_lint_allow()
         "clippy-braces-probe",
     );
 
+    // Anchor on just the `fn main() {` opening line, not its full body:
+    // the body itself (what `App` does before/after `main` is entered)
+    // is free to change independently of this probe, which only needs a
+    // point right after entering `main` to inject a call whose redundant
+    // braces `cargo clippy -- -D warnings` must still catch.
     let main_rsx_path = dir.join("src/main.rsx");
     let main_rsx = fs::read_to_string(&main_rsx_path).unwrap();
     let probed = main_rsx.replacen(
-        "fn main() {\n    let _ = App;\n}",
-        "fn main() {\n    let _ = App;\n    let _ = take({ 1 });\n}\n\nfn take(x: i32) -> i32 {\n    x\n}",
+        "fn main() {\n",
+        "fn main() {\n    let _ = take({ 1 });\n",
         1,
     );
     assert_ne!(
         probed, main_rsx,
-        "the fn main() anchor text must still exist"
+        "the `fn main() {{` anchor text must still exist"
     );
+    let probed = format!("{probed}\nfn take(x: i32) -> i32 {{\n    x\n}}\n");
     fs::write(&main_rsx_path, probed).unwrap();
 
     build(&BuildOptions::new(&dir)).expect("probed app still builds");
