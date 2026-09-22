@@ -281,9 +281,10 @@ pay for regenerating unrelated files this way.
 | Definition — cross-file | Works | `UserCard` -> `components.rsx:30:7-15` |
 | Diagnostics — Outou syntax, live | Works, no round trip | `didChange` -> syntax diagnostic in ~100ms |
 | Diagnostics — rustc semantic/backend, on save | Works via flycheck only | Native (pre-save) diagnostics never report semantic errors (rust-analyzer limitation, not Outou's, per the Week 1 spike); `didSave` -> flycheck maps back correctly |
-| Semantic tokens | **Not implemented** | Droppable #14; a TextMate grammar was meant to stand in (`packages/vscode-outou/`) — also not built |
-| Formatting | **Not implemented** | Droppable #13 |
-| Rename / references | **Not implemented** | Droppable #14 |
+| Formatting | Works | Droppable #13, shipped (`crates/outou-fmt`, `outou-lsp`'s `textDocument/formatting`) |
+| TextMate grammar for `.rsx` (`outou-rsx`) | Works, with known regex-grammar limits | Droppable #14, `packages/vscode-outou/syntaxes/outou-rsx.tmLanguage.json`; see that package's own README "Known limitations" (Rust `<`/`>` false positives/negatives are possible, bounded rather than eliminated) |
+| Semantic tokens | Works (full only, no `range`/`delta`) | Droppable #14: rust-analyzer's tokens mapped back through the source map (narrowed to the exact identifier, never a coarse containing span) and merged with Outou's own overlay (component/element/attribute/event/text); legend is rust-analyzer's own, extended with any of Outou's five overlay types it lacks (reproduced live: rust-analyzer 1.98.1 has no `class`/`event`) |
+| Rename / references | Works, with two known gaps | Droppable #14: updates a component's `fn` declaration and both its opening and closing tag from one translation (`crate::mapping::generated_range_to_all_sources`, built on `outou_sourcemap::SourceMap::narrow`); refuses (rename) or drops (references) rather than guessing on anything unmappable; refuses locally, before ever asking rust-analyzer, on an intrinsic (lowercase) tag name. Gaps: a keyword-named prop (`type`/`r#type`) cannot be renamed/referenced from its JSX usage at all (the length-mismatched mapping is reported unmappable, `TODO(phase0)`); `prepareRename` on a *closing* tag returns the *opening* tag's own range (`TODO(phase0)`, `crate::rename`) |
 
 Known limitations from `docs/gate3-results.md`: two separate rust-analyzer processes per workspace
 (this server's own, plus the editor's for ordinary `.rs` files); semantic diagnostics require a

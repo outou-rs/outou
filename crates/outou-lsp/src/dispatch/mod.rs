@@ -38,6 +38,21 @@ struct Pending {
     /// rather than mapped against state that may no longer describe the
     /// file the editor is now showing.
     epoch: u64,
+    /// The `.rsx` document (`crate::uri::to_outou`'s string form) and its
+    /// version at the moment this request was forwarded, for a request
+    /// whose response translation is sensitive to the document having
+    /// changed underneath it while rust-analyzer was still working
+    /// (issue #14 review, BLOCKING-3): an ordinary `didChange`
+    /// regeneration does **not** bump [`State::epoch`] (that only changes
+    /// on a crate-wide re-plan, `notifications::replan_and_resync`), so
+    /// `epoch` alone cannot catch an in-place edit to the same file that
+    /// happened while this request was in flight. `None` for a request
+    /// this crate does not gate on staleness (`Forward`, `Hover`,
+    /// `Definition`, `Completion` already tolerate answering against a
+    /// very-slightly-stale buffer; a stale *rename* would silently
+    /// misplace or corrupt an edit instead of just showing a slightly
+    /// wrong tooltip).
+    rsx_document: Option<(String, i32)>,
 }
 
 enum PendingKind {
@@ -45,6 +60,31 @@ enum PendingKind {
         generated_uri: lsp_types::Uri,
     },
     Definition,
+    /// `textDocument/semanticTokens/full`, forwarded to rust-analyzer for
+    /// the generated file: the response is decoded, mapped back through
+    /// the source map, and merged with Outou's own overlay tokens
+    /// (`crate::semantic_tokens::rewrite_response`).
+    SemanticTokens {
+        generated_uri: lsp_types::Uri,
+        /// The `.rsx` URI (Outou's own string form, `crate::uri::to_outou`)
+        /// this request was for, so mapped tokens can be filtered to it.
+        rsx_uri: String,
+    },
+    /// `textDocument/prepareRename`, forwarded at the mapped generated
+    /// position; the response range is mapped back
+    /// (`crate::rename::translate_prepare_rename_response`).
+    PrepareRename {
+        generated_uri: lsp_types::Uri,
+    },
+    /// `textDocument/rename`, forwarded at the mapped generated position;
+    /// the resulting `WorkspaceEdit` is translated back
+    /// (`crate::rename::translate_workspace_edit`), or the whole rename is
+    /// refused if any part of it is unmappable.
+    Rename,
+    /// `textDocument/references`, forwarded at the mapped generated
+    /// position; the resulting `Location[]` is translated back
+    /// (`crate::references::translate_references_response`).
+    References,
     Completion {
         generated_uri: lsp_types::Uri,
         /// The generated-file position this request was sent for, so the
@@ -107,6 +147,19 @@ pub(crate) struct State {
     /// Bumped by [`notifications::replan_and_resync`] every time a
     /// crate-wide re-plan succeeds. See [`Pending::epoch`].
     epoch: u64,
+    /// The semantic tokens legend this server advertises and translates
+    /// against (`crate::semantic_tokens::legend`): rust-analyzer's own
+    /// legend, read from its `initialize` response, when a live
+    /// rust-analyzer is attached; the standard LSP legend otherwise.
+    pub(crate) semantic_legend: crate::semantic_tokens::Legend,
+    /// Whether rust-analyzer's own `initialize` response advertised
+    /// `semanticTokensProvider` at all (issue #14 review, SHOULD-LAND-7):
+    /// `false` for degraded mode, an rust-analyzer that never started, or
+    /// one whose version does not support semantic tokens.
+    /// `crate::dispatch::requests::dispatch_semantic_tokens_request` uses
+    /// this to answer locally rather than forward a request rust-analyzer
+    /// would only ever answer `MethodNotFound`.
+    pub(crate) ra_supports_semantic_tokens: bool,
 }
 
 impl State {
@@ -122,6 +175,8 @@ impl State {
             client_supports_work_done_progress: false,
             client_supports_dynamic_registration: false,
             epoch: 0,
+            semantic_legend: crate::semantic_tokens::Legend::default_legend(),
+            ra_supports_semantic_tokens: false,
         }
     }
 

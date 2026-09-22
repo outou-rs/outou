@@ -1,0 +1,134 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Outou JSX",
+  "scopeName": "source.outou-rsx",
+  "fileTypes": ["rsx"],
+  "patterns": [
+    { "include": "#jsx-comment" },
+    { "include": "#jsx-element" },
+    { "include": "source.rust" }
+  ],
+  "repository": {
+    "jsx-comment": {
+      "match": "//.*$",
+      "name": "comment.line.double-slash.outou-rsx"
+    },
+    "jsx-element": {
+      "comment": "One JSX element, opening tag through its matching closing tag (backreference \\2) or self-close. Nested elements recurse through this same rule, so a self-closing child's own `/>` is consumed by the child's own end pattern before the parent's end is ever tested. `begin` is deliberately narrowed (issue #14 review, SHOULD-LAND-9) beyond a bare `<Name`: a lookbehind rejects a `<` immediately preceded by a word character, `>`, `)`, `]`, `:` or `.` (Rust generics/turbofish/qualified paths: `Vec<T>`, `impl<T>`, `x.collect::<Vec<_>>()`, `fn f<T: Clone>`), and a lookahead rejects a name immediately followed by only whitespace then `{` (`if a <b {}`'s own shape — indistinguishable from JSX's own rare spread-attribute form `<div {...x}>`, not supported by this grammar). This is a heuristic, not a parser: pathological Rust `<`/`>` usage can still be misclassified either way (`docs/grammar.md`'s real grammar resolves this with full tokenization, which a TextMate grammar cannot do) — see `packages/vscode-outou/README.md`'s own limitations section.",
+      "begin": "(?<![A-Za-z0-9_>\\)\\]:.])(<)([A-Za-z_][A-Za-z0-9_]*(?:-[A-Za-z0-9_]+)*)(?![A-Za-z0-9_])(?!\\s*\\{)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.outou-rsx" },
+        "2": {
+          "patterns": [
+            { "include": "#jsx-component-name-token" },
+            { "include": "#jsx-html-name-token" }
+          ]
+        }
+      },
+      "end": "(?:(</)\\2\\s*(>))|(/>)|(?=^\\s*(?:\\}|fn\\s|pub\\s|impl\\s|struct\\s|enum\\s|trait\\s|mod\\s|use\\s|#\\[))",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.outou-rsx" },
+        "2": { "name": "punctuation.definition.tag.end.outou-rsx" },
+        "3": { "name": "punctuation.definition.tag.end.outou-rsx" }
+      },
+      "name": "meta.tag.outou-rsx",
+      "patterns": [
+        { "include": "#jsx-tag-close-punctuation" },
+        { "include": "#jsx-event-attribute" },
+        { "include": "#jsx-attribute-name" },
+        { "include": "#jsx-attribute-string-value" },
+        { "include": "#jsx-attribute-expression-value" },
+        { "include": "#jsx-bare-attribute-name" },
+        { "include": "#jsx-children-island" },
+        { "include": "#jsx-comment" },
+        { "include": "#jsx-element" },
+        { "include": "#jsx-text" }
+      ]
+    },
+    "jsx-tag-close-punctuation": {
+      "comment": "The opening tag's own unescaped `>` (transition from attributes to children). Self-close `/>` and the matching closing tag are handled by #jsx-element's own `end`, never here.",
+      "match": ">",
+      "name": "punctuation.definition.tag.end.outou-rsx"
+    },
+    "jsx-component-name-token": {
+      "match": "[A-Z][A-Za-z0-9_]*",
+      "name": "entity.name.tag.component.outou-rsx support.class.component.outou-rsx"
+    },
+    "jsx-html-name-token": {
+      "match": "[a-z][A-Za-z0-9_-]*",
+      "name": "entity.name.tag.html.outou-rsx"
+    },
+    "jsx-event-attribute": {
+      "match": "\\b(on[A-Za-z0-9_]*)\\b(?=\\s*=)",
+      "name": "entity.other.attribute-name.event.outou-rsx"
+    },
+    "jsx-attribute-name": {
+      "match": "\\b([A-Za-z_][A-Za-z0-9_-]*)\\b(?=\\s*=)",
+      "name": "entity.other.attribute-name.outou-rsx"
+    },
+    "jsx-bare-attribute-name": {
+      "comment": "A valueless attribute (`<input disabled />`). Imprecise by construction (issue #14 review, SHOULD-LAND-9): this grammar scans an element's attributes and its children through the same `patterns` list (`#jsx-element`'s own patterns, not a separate opening-tag sub-scope), so a bare word here and an ordinary word of JSX text are the same shape to a regex with no parser behind it — a plain child-text word can be highlighted as a bare attribute name. See `packages/vscode-outou/README.md`'s limitations section.",
+      "match": "\\b([A-Za-z_][A-Za-z0-9_-]*)\\b(?!\\s*=)",
+      "name": "entity.other.attribute-name.outou-rsx"
+    },
+    "jsx-attribute-string-value": {
+      "begin": "(=)\\s*(\")",
+      "beginCaptures": {
+        "1": { "name": "punctuation.separator.key-value.outou-rsx" },
+        "2": { "name": "punctuation.definition.string.begin.outou-rsx" }
+      },
+      "end": "(\")",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.string.end.outou-rsx" }
+      },
+      "name": "string.quoted.double.outou-rsx",
+      "patterns": [
+        { "match": "\\\\.", "name": "constant.character.escape.outou-rsx" }
+      ]
+    },
+    "jsx-attribute-expression-value": {
+      "begin": "(=)\\s*(\\{)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.separator.key-value.outou-rsx" },
+        "2": { "name": "punctuation.section.embedded.begin.outou-rsx" }
+      },
+      "end": "(\\})",
+      "endCaptures": {
+        "1": { "name": "punctuation.section.embedded.end.outou-rsx" }
+      },
+      "name": "meta.embedded.expression.outou-rsx",
+      "contentName": "meta.embedded.block.rust",
+      "patterns": [
+        { "include": "#jsx-island-body" }
+      ]
+    },
+    "jsx-children-island": {
+      "comment": "A `{ … }` island among an element's children, re-entering Rust (grammar §6). Distinguished from an attribute-value island only by not being preceded by `=`; #jsx-attribute-expression-value is tried first and consumes the `=` case.",
+      "begin": "(\\{)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.section.embedded.begin.outou-rsx" }
+      },
+      "end": "(\\})",
+      "endCaptures": {
+        "1": { "name": "punctuation.section.embedded.end.outou-rsx" }
+      },
+      "name": "meta.embedded.expression.outou-rsx",
+      "contentName": "meta.embedded.block.rust",
+      "patterns": [
+        { "include": "#jsx-island-body" }
+      ]
+    },
+    "jsx-island-body": {
+      "comment": "Content of a `{ … }` island: Rust that may itself contain nested JSX elements.",
+      "patterns": [
+        { "include": "#jsx-comment" },
+        { "include": "#jsx-element" },
+        { "include": "source.rust" }
+      ]
+    },
+    "jsx-text": {
+      "match": "[^<>{}]+",
+      "name": "text.outou-rsx meta.jsx.text.outou-rsx"
+    }
+  }
+}

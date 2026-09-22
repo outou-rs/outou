@@ -22,7 +22,7 @@ fn App() -> Element {
     let tags = vec!["rust".to_string(), "jsx".to_string(), "phase0".to_string()];
 
     <main class="app">
-        <Greeting name="Outou" />
+        <Greeting name="Outou"></Greeting>
 
         {
             if user.is_some() {

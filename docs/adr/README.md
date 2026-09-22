@@ -15,3 +15,5 @@ One file per decision. Each record has the sections Context, Decision, Consequen
 | [0009](0009-generated-source-location.md) | Where generated Rust lives | Accepted |
 | [0010](0010-facade-crate-as-backend-boundary.md) | The `outou` facade crate is the backend boundary | Accepted |
 | [0011](0011-formatter-placeholder-rustfmt-splice.md) | Formatter: placeholder JSX regions, `rustfmt` for the Rust, then a JSX pretty printer | Accepted |
+| [0012](0012-semantic-tokens-legend-and-overlay.md) | Semantic tokens: legend reuse and overlay precedence | Accepted |
+| [0013](0013-rename-translation-and-refusal.md) | Rename/references translation and the refusal policy | Accepted |

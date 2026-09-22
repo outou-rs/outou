@@ -1190,6 +1190,17 @@
             "line": 24,
             "character": 17
           }
+        },
+        {
+          "file": 0,
+          "start": {
+            "line": 24,
+            "character": 33
+          },
+          "end": {
+            "line": 24,
+            "character": 41
+          }
         }
       ]
     },

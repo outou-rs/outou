@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 
 use super::{Pending, PendingKind, State};
 use crate::complete;
-use crate::documents::RsxDocument;
+use crate::documents::{RsxDocument, Workspace};
 use crate::mapping;
 use crate::uri;
 
@@ -22,7 +22,15 @@ pub(crate) fn dispatch_client_request(state: &mut State, connection: &Connection
         "textDocument/definition" => {
             forward_position_request(state, connection, req, |_, _, _| PendingKind::Definition)
         }
+        "textDocument/prepareRename" => dispatch_prepare_rename_request(state, connection, req),
+        "textDocument/rename" => dispatch_rename_request(state, connection, req),
+        "textDocument/references" => {
+            forward_position_request(state, connection, req, |_, _, _| PendingKind::References)
+        }
         "textDocument/formatting" => dispatch_formatting_request(state, connection, req),
+        "textDocument/semanticTokens/full" => {
+            dispatch_semantic_tokens_request(state, connection, req)
+        }
         _ => forward_transparent_request(state, connection, req),
     }
 }
@@ -213,6 +221,172 @@ fn dispatch_completion_request(state: &mut State, connection: &Connection, req: 
     });
 }
 
+/// `textDocument/semanticTokens/full`: forwarded to rust-analyzer for the
+/// generated file whenever one is attached and known (mapped back by
+/// [`crate::semantic_tokens::rewrite_response`]); otherwise — degraded
+/// mode, or a workspace whose rust-analyzer failed to start, or a document
+/// this server has no generated unit for — answered immediately with
+/// Outou's own AST-derived tokens alone
+/// (`crate::semantic_tokens::local_only_response`), never `null`: JSX
+/// vocabulary (component vs. element, event attributes, …) does not
+/// depend on rust-analyzer at all.
+fn dispatch_semantic_tokens_request(state: &mut State, connection: &Connection, req: Request) {
+    let client_id = req.id.clone();
+    let Some(rsx_uri) = extract_document_uri(&req.params) else {
+        respond_null(connection, client_id);
+        return;
+    };
+    let rsx_uri_string = uri::to_outou(&rsx_uri).as_str().to_string();
+
+    if forward_semantic_tokens_request(state, &rsx_uri_string, &req, client_id.clone()) {
+        return;
+    }
+
+    let Some(document) = find_rsx_document(state, &rsx_uri_string) else {
+        respond_null(connection, client_id);
+        return;
+    };
+    let value = crate::semantic_tokens::local_only_response(
+        document.line_index.text(),
+        &state.semantic_legend,
+    );
+    let _ = connection
+        .sender
+        .send(Message::Response(Response::new_ok(client_id, value)));
+}
+
+/// Whether a `textDocument/semanticTokens/full` request should be
+/// forwarded to rust-analyzer at all (issue #14 review, SHOULD-LAND-7): a
+/// live rust-analyzer is necessary but not sufficient — one that never
+/// advertised `semanticTokensProvider` in its own `initialize` response
+/// (an older or differently-configured version) would only ever answer
+/// `MethodNotFound`, which used to reach the editor as a raw RA error
+/// instead of this server falling back to `local_only_response` the way
+/// every other unsupported-rust-analyzer case already does. A free
+/// function of two plain `bool`s (rather than `&State` directly) so it is
+/// unit-testable without a real [`crate::ra::RaClient`], which this crate
+/// has no test double for.
+fn ra_can_serve_semantic_tokens(has_ra: bool, ra_supports_semantic_tokens: bool) -> bool {
+    has_ra && ra_supports_semantic_tokens
+}
+
+/// Forwards `req` to rust-analyzer for `rsx_uri_string`'s generated unit,
+/// returning `true` if it did (the caller must not answer again). Returns
+/// `false` when there is no workspace, no rust-analyzer, rust-analyzer
+/// never advertised semantic tokens support, or there is no known
+/// generated unit for this document — the caller falls back to answering
+/// locally.
+fn forward_semantic_tokens_request(
+    state: &mut State,
+    rsx_uri_string: &str,
+    req: &Request,
+    client_id: RequestId,
+) -> bool {
+    if !ra_can_serve_semantic_tokens(state.ra.is_some(), state.ra_supports_semantic_tokens) {
+        return false;
+    }
+    let Some(workspace) = &state.workspace else {
+        return false;
+    };
+    let Some(generated_uri_string) = workspace.rsx_to_generated.get(rsx_uri_string) else {
+        return false;
+    };
+    let Some(unit) = workspace.generated.get(generated_uri_string) else {
+        return false;
+    };
+    let generated_uri_lsp = uri::to_lsp(&unit.generated_uri);
+    let rsx_version = workspace.rsx.get(rsx_uri_string).map(|doc| doc.version);
+    let Some(ra) = &state.ra else {
+        return false;
+    };
+
+    let mut params = req.params.clone();
+    params["textDocument"]["uri"] = serde_json::to_value(&generated_uri_lsp).unwrap();
+
+    let ra_id = ra.next_id();
+    state.pending.insert(
+        ra_id.clone(),
+        Pending {
+            client_id,
+            kind: PendingKind::SemanticTokens {
+                generated_uri: generated_uri_lsp,
+                rsx_uri: rsx_uri_string.to_string(),
+            },
+            epoch: state.epoch,
+            rsx_document: rsx_version.map(|version| (rsx_uri_string.to_string(), version)),
+        },
+    );
+    ra.send(Message::Request(Request {
+        id: ra_id,
+        method: req.method.clone(),
+        params,
+    }));
+    true
+}
+
+/// Whether `position` inside `rsx_uri_string` sits on an *intrinsic* HTML
+/// element's tag name (opening or closing), as opposed to a component's
+/// (issue #14 review, SHOULD-LAND-6): reproduced live, forwarding a
+/// rename/prepareRename request for `<div>` to rust-analyzer depends on
+/// it happening to refuse a backend macro token on its own — this server
+/// never guaranteed that itself, and a rust-analyzer that *did* return an
+/// edit for it would rename backend-internal HTML vocabulary a user never
+/// wrote. `crate::complete::tag_name_at_position` reuses the same AST
+/// walk `crate::complete`'s own tag-name completion/hover classification
+/// already relies on; grammar §5's own rule (uppercase-initial =
+/// component) decides the rest.
+fn is_intrinsic_tag_rename(
+    workspace: &Workspace,
+    rsx_uri_string: &str,
+    position: lsp_types::Position,
+) -> bool {
+    complete::tag_name_at_position(workspace, rsx_uri_string, position)
+        .is_some_and(|name| name.chars().next().is_some_and(|c| !c.is_ascii_uppercase()))
+}
+
+/// `textDocument/prepareRename` on an intrinsic tag name answers `null`
+/// (not renameable) locally, never forwarded — see
+/// [`is_intrinsic_tag_rename`]. Every other position forwards as usual.
+fn dispatch_prepare_rename_request(state: &mut State, connection: &Connection, req: Request) {
+    if let Some(workspace) = &state.workspace {
+        if let Some((rsx_uri, position)) = extract_position_params(&req.params) {
+            let rsx_uri_string = uri::to_outou(&rsx_uri).as_str().to_string();
+            if is_intrinsic_tag_rename(workspace, &rsx_uri_string, position) {
+                respond_null(connection, req.id);
+                return;
+            }
+        }
+    }
+    forward_position_request(state, connection, req, |uri, _, _| {
+        PendingKind::PrepareRename { generated_uri: uri }
+    });
+}
+
+/// `textDocument/rename` on an intrinsic tag name is refused locally with
+/// an Outou-vocabulary error, never forwarded — see
+/// [`is_intrinsic_tag_rename`]. Every other position forwards as usual.
+fn dispatch_rename_request(state: &mut State, connection: &Connection, req: Request) {
+    if let Some(workspace) = &state.workspace {
+        if let Some((rsx_uri, position)) = extract_position_params(&req.params) {
+            let rsx_uri_string = uri::to_outou(&rsx_uri).as_str().to_string();
+            if is_intrinsic_tag_rename(workspace, &rsx_uri_string, position) {
+                let _ = connection.sender.send(Message::Response(Response {
+                    id: req.id,
+                    response_result: Err(ResponseError {
+                        code: lsp_server::ErrorCode::InvalidRequest as i32,
+                        message: "Outou cannot rename an HTML element name; only components can \
+                                  be renamed"
+                            .to_string(),
+                        data: None,
+                    }),
+                }));
+                return;
+            }
+        }
+    }
+    forward_position_request(state, connection, req, |_, _, _| PendingKind::Rename);
+}
+
 fn forward_position_request(
     state: &mut State,
     connection: &Connection,
@@ -228,10 +402,16 @@ fn forward_position_request(
         respond_null(connection, client_id);
         return;
     };
+    let rsx_uri_string = uri::to_outou(&rsx_uri).as_str().to_string();
     let Some(mapped) = mapping::rsx_position_to_generated(workspace, &rsx_uri, position) else {
         respond_null(connection, client_id);
         return;
     };
+    // issue #14 review (BLOCKING-3): captured so `dispatch::responses`
+    // can refuse (rename) or drop (references/semantic tokens) a response
+    // that arrives after this exact `.rsx` document changed underneath
+    // it — an ordinary `didChange` regeneration does not bump `epoch`.
+    let rsx_version = workspace.rsx.get(&rsx_uri_string).map(|doc| doc.version);
     let Some(ra) = &state.ra else {
         respond_null(connection, client_id);
         return;
@@ -248,6 +428,7 @@ fn forward_position_request(
             client_id,
             kind: make_kind(mapped.generated_uri, mapped.position, position),
             epoch: state.epoch,
+            rsx_document: rsx_version.map(|version| (rsx_uri_string, version)),
         },
     );
     ra.send(Message::Request(Request {
@@ -269,6 +450,7 @@ fn forward_transparent_request(state: &mut State, connection: &Connection, req: 
             client_id: req.id.clone(),
             kind: PendingKind::Forward,
             epoch: state.epoch,
+            rsx_document: None,
         },
     );
     ra.send(Message::Request(Request {
@@ -348,6 +530,169 @@ fn resolve_cancel_target(state: &State, params: &Value) -> Option<RequestId> {
 mod tests {
     use super::*;
 
+    /// Issue #14 review (SHOULD-LAND-7): forwarding
+    /// `textDocument/semanticTokens/full` needs both a live rust-analyzer
+    /// *and* its own advertised support for the request — either alone is
+    /// not enough.
+    #[test]
+    fn ra_can_serve_semantic_tokens_requires_both_a_live_ra_and_its_advertised_support() {
+        assert!(ra_can_serve_semantic_tokens(true, true));
+        assert!(!ra_can_serve_semantic_tokens(true, false));
+        assert!(!ra_can_serve_semantic_tokens(false, true));
+        assert!(!ra_can_serve_semantic_tokens(false, false));
+    }
+
+    fn workspace_with_rsx(source: &str) -> (State, lsp_types::Uri) {
+        let rsx_uri: lsp_types::Uri = "file:///app/src/main.rsx".parse().unwrap();
+        let mut state = State::new();
+        let mut workspace = Workspace {
+            manifest_dir: std::path::PathBuf::from("/app"),
+            plan: None,
+            registry: outou_sourcemap::Registry::new(),
+            rsx: std::collections::HashMap::new(),
+            generated: std::collections::HashMap::new(),
+            rsx_to_generated: std::collections::HashMap::new(),
+        };
+        workspace.rsx.insert(
+            uri::to_outou(&rsx_uri).as_str().to_string(),
+            RsxDocument::new(source.to_string(), 1),
+        );
+        state.workspace = Some(workspace);
+        (state, rsx_uri)
+    }
+
+    fn position_of(
+        state: &State,
+        rsx_uri: &lsp_types::Uri,
+        needle_offset: usize,
+    ) -> lsp_types::Position {
+        let workspace = state.workspace.as_ref().unwrap();
+        let doc = workspace.rsx.get(uri::to_outou(rsx_uri).as_str()).unwrap();
+        mapping::to_lsp_range(doc.line_index.span_to_range(outou_sourcemap::Span::new(
+            needle_offset as u32,
+            needle_offset as u32,
+        )))
+        .start
+    }
+
+    /// Issue #14 review (SHOULD-LAND-6): a rename request whose cursor
+    /// sits on an *intrinsic* HTML element's tag name is refused locally
+    /// — never sent to rust-analyzer at all (`state.pending` stays
+    /// empty), which also means it needs no live rust-analyzer to test.
+    #[test]
+    fn dispatch_rename_request_refuses_an_intrinsic_tag_without_forwarding() {
+        let source = "#[component]\nfn App() -> Element {\n    <div>hi</div>\n}\n";
+        let (mut state, rsx_uri) = workspace_with_rsx(source);
+        let offset = source.find("<div>").unwrap() + 2;
+        let position = position_of(&state, &rsx_uri, offset);
+        let (connection, client) = Connection::memory();
+
+        dispatch_rename_request(
+            &mut state,
+            &connection,
+            Request {
+                id: RequestId::from(1),
+                method: "textDocument/rename".to_string(),
+                params: json!({
+                    "textDocument": { "uri": rsx_uri.as_str() },
+                    "position": { "line": position.line, "character": position.character },
+                    "newName": "Section",
+                }),
+            },
+        );
+
+        let Message::Response(response) = client
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+        else {
+            panic!("expected a response");
+        };
+        assert!(response.response_result.is_err(), "{response:#?}");
+        assert!(
+            state.pending.is_empty(),
+            "must never be forwarded to rust-analyzer"
+        );
+    }
+
+    /// Same case for `prepareRename`: answered `null`, not an error, and
+    /// also never forwarded.
+    #[test]
+    fn dispatch_prepare_rename_request_nulls_an_intrinsic_tag_without_forwarding() {
+        let source = "#[component]\nfn App() -> Element {\n    <div>hi</div>\n}\n";
+        let (mut state, rsx_uri) = workspace_with_rsx(source);
+        let offset = source.find("<div>").unwrap() + 2;
+        let position = position_of(&state, &rsx_uri, offset);
+        let (connection, client) = Connection::memory();
+
+        dispatch_prepare_rename_request(
+            &mut state,
+            &connection,
+            Request {
+                id: RequestId::from(1),
+                method: "textDocument/prepareRename".to_string(),
+                params: json!({
+                    "textDocument": { "uri": rsx_uri.as_str() },
+                    "position": { "line": position.line, "character": position.character },
+                }),
+            },
+        );
+
+        let Message::Response(response) = client
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+        else {
+            panic!("expected a response");
+        };
+        assert_eq!(response.response_result.unwrap(), Value::Null);
+        assert!(
+            state.pending.is_empty(),
+            "must never be forwarded to rust-analyzer"
+        );
+    }
+
+    /// A rename on a *component* tag name is not refused locally: with no
+    /// rust-analyzer attached (`state.ra` is `None` in this unit test),
+    /// it falls through to `forward_position_request`'s own `None` ->
+    /// `null` handling — the point of this test is only that it does
+    /// *not* take the intrinsic-refusal path.
+    #[test]
+    fn dispatch_rename_request_does_not_refuse_a_component_tag() {
+        let source = "#[component]\nfn App() -> Element {\n    <Greeting>hi</Greeting>\n}\n";
+        let (mut state, rsx_uri) = workspace_with_rsx(source);
+        let offset = source.find("<Greeting>").unwrap() + 2;
+        let position = position_of(&state, &rsx_uri, offset);
+        let (connection, client) = Connection::memory();
+
+        dispatch_rename_request(
+            &mut state,
+            &connection,
+            Request {
+                id: RequestId::from(1),
+                method: "textDocument/rename".to_string(),
+                params: json!({
+                    "textDocument": { "uri": rsx_uri.as_str() },
+                    "position": { "line": position.line, "character": position.character },
+                    "newName": "Welcome",
+                }),
+            },
+        );
+
+        let Message::Response(response) = client
+            .receiver
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap()
+        else {
+            panic!("expected a response");
+        };
+        // No rust-analyzer attached, so `forward_position_request` itself
+        // answers `null` (its own documented "no ra" behavior) — the
+        // important assertion is that this is `Ok(Null)`, not the
+        // `InvalidRequest` error the intrinsic-refusal path would send.
+        assert_eq!(response.response_result.unwrap(), Value::Null);
+    }
+
     /// S2 (issue #9 Gate 3 review, HIGH-5): a `$/cancelRequest` names the
     /// request in the *editor's* id space; this must resolve to the
     /// independent id rust-analyzer was actually sent it under.
@@ -361,6 +706,8 @@ mod tests {
                 client_id: RequestId::from(7),
                 kind: PendingKind::Forward,
                 epoch: 0,
+
+                rsx_document: None,
             },
         );
 
@@ -543,6 +890,8 @@ mod tests {
                 client_id: RequestId::from(10),
                 kind: PendingKind::Forward,
                 epoch: 0,
+
+                rsx_document: None,
             },
         );
         state.pending.insert(
@@ -551,6 +900,8 @@ mod tests {
                 client_id: RequestId::from(11),
                 kind: PendingKind::Definition,
                 epoch: 0,
+
+                rsx_document: None,
             },
         );
         let (connection, client) = Connection::memory();

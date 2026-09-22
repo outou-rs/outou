@@ -17,6 +17,17 @@
         "extensions": [".rsx"],
         "configuration": "./language-configuration.json"
       }
+    ],
+    "grammars": [
+      {
+        "language": "outou-rsx",
+        "scopeName": "source.outou-rsx",
+        "path": "./syntaxes/outou-rsx.tmLanguage.json",
+        "embeddedLanguages": {
+          "meta.embedded.block.rust": "rust",
+          "source.rust": "rust"
+        }
+      }
     ]
   }
 }

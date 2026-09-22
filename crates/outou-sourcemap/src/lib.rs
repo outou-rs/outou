@@ -264,7 +264,20 @@ impl SourceMap {
     /// "there is one compiler" (`AGENTS.md`) extends to "there is one
     /// narrowing".
     pub fn narrow(&self, query: Span) -> NarrowOutcome {
-        let Some(mapping) = self.mappings.iter().find(|m| m.generated.contains(query)) else {
+        // Issue #14 review (SHOULD LAND-11): several mappings can contain
+        // the same query at once (a fine-grained identifier mapping
+        // nested inside a coarser verbatim mapping that covers a whole
+        // statement or item); the *smallest* containing mapping is the
+        // most specific one and must win, matching
+        // `outou-lsp::mapping::rsx_position_to_generated`'s own
+        // smallest-containing-span rule. `.find`'s old first-in-mapping-
+        // order pick was correct only by coincidence when nothing nested.
+        let Some(mapping) = self
+            .mappings
+            .iter()
+            .filter(|m| m.generated.contains(query))
+            .min_by_key(|m| span_len(m.generated))
+        else {
             return NarrowOutcome::NotApplicable;
         };
         let [source] = mapping.sources.as_slice() else {
@@ -529,6 +542,36 @@ mod tests {
             MappingKind::Expression,
         ));
         assert_eq!(map.narrow(Span::new(31, 32)), NarrowOutcome::LengthMismatch);
+    }
+
+    /// Issue #14 review (SHOULD LAND-11): a small, single-source,
+    /// equal-length mapping nested inside a much larger containing
+    /// mapping must win — the specific one, not whichever happens to come
+    /// first in `mappings` order.
+    #[test]
+    fn narrow_picks_the_smallest_containing_mapping_not_the_first() {
+        let map = SourceMap::new(Uri::new("file:///g.rs"), vec![rsx()])
+            .with_mapping(Mapping::new(
+                // The larger, coarser mapping comes first in the vector.
+                Span::new(0, 20),
+                vec![SourceSpan::new(SourceId(0), Span::new(100, 120))],
+                MappingKind::Expression,
+            ))
+            .with_mapping(Mapping::new(
+                // A smaller, more specific mapping nested inside it.
+                Span::new(4, 8),
+                vec![SourceSpan::new(SourceId(0), Span::new(204, 208))],
+                MappingKind::Identifier,
+            ));
+
+        match map.narrow(Span::new(5, 5)) {
+            NarrowOutcome::Exact { span, .. } => {
+                // Scaled within the *small* mapping (204..208), not the
+                // large one (100..120).
+                assert_eq!(span, Span::new(205, 205));
+            }
+            other => panic!("expected Exact against the smaller mapping, got {other:?}"),
+        }
     }
 
     #[test]

@@ -172,6 +172,37 @@ failure):
   fence, a bare heading) surviving, is suppressed entirely rather than
   shown starting mid-sentence or empty-looking.
 
+### Semantic tokens, rename, references
+
+`textDocument/semanticTokens/full` merges two sources: rust-analyzer's
+own tokens for the generated file (decoded, mapped back through the
+source map, split per line where a mapped range crosses a line break) and
+Outou's own AST-derived tokens (component name, HTML element name — both
+opening and closing tag — attribute name, event attribute, JSX text),
+which always win an overlapping position. The advertised legend is
+rust-analyzer's own (read from its `initialize` response) when it is
+attached, or the standard LSP legend in degraded mode / when no
+rust-analyzer is attached at all — in either case, degraded-mode requests
+still get an answer built from Outou's own tokens alone, never `null`.
+See `docs/adr/0012-semantic-tokens-legend-and-overlay.md` and
+`src/semantic_tokens/`.
+
+`textDocument/rename`/`prepareRename` and `textDocument/references` are
+forwarded at the mapped generated position like hover/definition
+(including from a cursor on a *closing* tag name, which needs no special
+case: it maps through the same identifier mapping as the opening tag).
+Rename's `WorkspaceEdit` (`changes` and `documentChanges`, the latter
+versioned against the `.rsx` document, never the generated file's) is
+translated back through the same many-to-many source map that gives an
+element's identifier both its opening and closing tag as sources — so
+renaming a component updates both tags with no separate synthesis step —
+and the whole rename is refused, as an Outou-vocabulary error, if any part
+of it would otherwise have to be silently dropped. References uses the
+same translation but drops an unmappable location instead of refusing,
+since it is read-only. See
+`docs/adr/0013-rename-translation-and-refusal.md`, `src/rename.rs` and
+`src/references.rs`.
+
 ## Layout
 
 | File | Contents |
@@ -193,16 +224,51 @@ failure):
 | `src/diagnostics.rs` | Merges Outou syntax diagnostics with mapped rust-analyzer/flycheck diagnostics; never drops or downgrades an unmapped `ERROR`. |
 | `src/translate.rs` | Backend-vocabulary translation table and marker list, shared by diagnostics, completion and hover (`docs/backend-leakage.md` rows 24-26). |
 | `src/uri.rs` | Conversions between `outou_sourcemap::Uri` and `lsp_types::Uri`. |
+| `src/semantic_tokens/mod.rs` | `textDocument/semanticTokens/full` orchestration: decode, map, merge, re-encode. |
+| `src/semantic_tokens/legend.rs` | The legend advertised/translated against (rust-analyzer's own, or the standard LSP list in degraded mode). |
+| `src/semantic_tokens/token.rs` | Pure delta-encode/decode, per-line splitting and overlay-merge transforms, independently unit-tested. |
+| `src/semantic_tokens/outou_tokens.rs` | The pure AST walk producing Outou's own component/element/attribute/event/text tokens. |
+| `src/rename.rs` | `textDocument/rename`/`prepareRename`: `WorkspaceEdit` translation, refusal policy. |
+| `src/references.rs` | `textDocument/references`: `Location[]` translation (drops rather than refuses on an unmappable entry). |
 | `tests/gate3.rs` | End-to-end Gate 3 test, driving `spikes/rust-analyzer/client/outou-lsp-client.mjs` against a fresh temporary copy of `examples/phase0-app` per probe (never the repository tree). Ignored by default; run explicitly: `cargo test -p outou-lsp --test gate3 -- --ignored --nocapture`. |
 
 ## Known limitations
 
 See [`docs/gate3-results.md`](../../docs/gate3-results.md)'s own section
-for the full list with evidence. In short: `$/progress` (and so the
-readiness signal it carries) only reaches editors that advertise
-`window.workDoneProgress` support, semantic diagnostics need a save (a
-rust-analyzer limitation, not this server's), a transformed
-(non-verbatim) source mapping returns `null` rather than a
-guess, and a handful of SKIP items recorded as `TODO(phase0)` at their
-own call sites (Windows/UNC file URIs, a multi-source diagnostic always
-using the first source, `completionItem/resolve` not being advertised).
+for the full hover/completion/definition/diagnostics list with evidence.
+In short: `$/progress` (and so the readiness signal it carries) only
+reaches editors that advertise `window.workDoneProgress` support,
+semantic diagnostics need a save (a rust-analyzer limitation, not this
+server's), a transformed (non-verbatim) source mapping returns `null`
+rather than a guess, and a handful of SKIP items recorded as
+`TODO(phase0)` at their own call sites (Windows/UNC file URIs, a
+multi-source diagnostic always using the first source,
+`completionItem/resolve` not being advertised).
+
+Semantic tokens/rename/references (issue #14 review):
+
+- **A keyword-named prop (`type`, lowered to the raw identifier `r#type`)
+  has no rename/references answer at all** — refused (rename) or dropped
+  (references) exactly like synthesized code, since its mapping is
+  length-mismatched (`docs/backend-leakage.md` row 29, ADR 0013). No
+  text-only fallback is implemented for this narrower shape.
+  `TODO(phase0)`.
+- **`prepareRename` on a closing tag's own name returns the opening
+  tag's range**, not the closing tag's (`crate::mapping::generated_location_to_source`'s
+  multi-source rule always resolves to the first source, shared with
+  hover/definition) — the request is still answered correctly in
+  substance, just highlighted at the wrong end of the element.
+  `TODO(phase0)` in `crate::rename::translate_prepare_rename_response`.
+- **URI comparisons throughout this crate are lexical**, not normalized
+  per RFC 3986 (`crate::uri`'s own `TODO(phase0)`): two differently-spelled
+  but equivalent URIs would not match. Not reproduced against a real
+  editor — every URI observed so far uses one canonical spelling — but a
+  latent risk worth normalizing before relying on it more.
+- **`textDocument/semanticTokens/full` re-parses the whole `.rsx` file
+  on every request** (both for Outou's own overlay tokens and, when a
+  live rust-analyzer is attached, to build the source map lookup),
+  matching this crate's existing style elsewhere (`crate::complete`,
+  `crate::response`'s `known_component_names`) rather than caching a
+  parse across requests.
+- **No `textDocument/semanticTokens/range` or `/full/delta`** — only the
+  whole-document, non-incremental form is advertised or implemented.

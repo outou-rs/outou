@@ -5,6 +5,20 @@
 //! over the same percent-encoding, so conversion is just a string round-trip;
 //! this module is the one place that does it, so a future encoding change
 //! only has to be made here.
+//!
+//! TODO(phase0) (issue #14 review, LOW-14): every URI comparison in this
+//! crate (`HashMap<String, _>` keys built from [`to_outou`]'s output,
+//! `Registry::is_generated`, equality checks throughout `crate::rename`/
+//! `crate::references`/`crate::semantic_tokens`) is **lexical**, on the
+//! exact string this module produces — not normalized per RFC 3986
+//! (percent-encoding case, `..`/`.` segments, an equivalent but
+//! differently-spelled authority). Two equivalent spellings of the same
+//! `file://` URI would therefore fail to match and could be treated as an
+//! ordinary `.rs` file (not generated) or a different document than they
+//! actually are. Not reproduced against a real editor: every `outou-lsp`
+//! or rust-analyzer output observed so far always uses one canonical
+//! spelling (this module's own [`path_to_lsp`]/[`file_uri`]-derived
+//! form), so this is a latent risk, not a confirmed bug.
 
 use std::path::{Path, PathBuf};
 use std::str::FromStr;

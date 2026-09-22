@@ -71,6 +71,9 @@ const PROBES: &[&str] = &[
     "stale-diagnostics-cleared",
     "save-with-syntax-error",
     "startup-broken-source",
+    "rename-component",
+    "semantic-tokens-full",
+    "references-component",
 ];
 
 /// Substrings that must never appear anywhere in a payload sent to the
@@ -786,8 +789,219 @@ fn check_probe(
             }
             Ok(())
         }
+        "rename-component" => {
+            // Issue #14 review, item 13: renaming the component
+            // `Greeting` -> `Welcome` must produce at least 3 edits in
+            // `main.rsx` (the `fn Greeting` declaration, the opening tag,
+            // and the closing tag — `main.rsx` was changed from a
+            // self-closing `<Greeting name="Outou" />` to
+            // `<Greeting name="Outou"></Greeting>` specifically so this
+            // probe exercises "both tags," not just one occurrence),
+            // each exactly 8 columns wide (`"Greeting".len()`), with no
+            // duplicate ranges. `assert_no_leakage` (run for every probe,
+            // before this function) already covers "no `.generated`
+            // URI," since `.generated` is one of its own markers.
+            let prepare = result.get("prepareRename");
+            if prepare.is_none_or(serde_json::Value::is_null) {
+                return Err("prepareRename returned null for a component tag name".to_string());
+            }
+            let edit = result.get("rename").ok_or("no rename result")?;
+            let main_uri = result
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("no file")?;
+            let edits = edits_for_uri(edit, main_uri);
+            if edits.len() < 3 {
+                return Err(format!(
+                    "expected >= 3 rename edits (declaration + both tags) in {main_uri}, got {}: {edits:#?}",
+                    edits.len()
+                ));
+            }
+            let mut seen_ranges = std::collections::HashSet::new();
+            for item in &edits {
+                let range = item.get("range").ok_or("edit has no range")?;
+                let width = range_width(range)
+                    .ok_or_else(|| format!("edit range spans more than one line: {range}"))?;
+                if width != 8 {
+                    return Err(format!(
+                        "expected an 8-column edit range (\"Greeting\"), got width {width}: {range}"
+                    ));
+                }
+                if !seen_ranges.insert(range.to_string()) {
+                    return Err(format!("duplicate rename edit range: {range}"));
+                }
+                let new_text = item.get("newText").and_then(|v| v.as_str());
+                if new_text != Some("Welcome") {
+                    return Err(format!("expected newText \"Welcome\", got {new_text:?}"));
+                }
+            }
+            Ok(())
+        }
+        "semantic-tokens-full" => {
+            // Issue #14 review, item 13: the raw token list must already
+            // be sorted and strictly non-overlapping, and the advertised
+            // legend (extended with Outou's own overlay types per
+            // BLOCKING-4, even against a real rust-analyzer legend
+            // missing `class`) must let at least one token in the
+            // response resolve to `class` — the component tag `Greeting`
+            // itself.
+            let data = result
+                .pointer("/semanticTokens/data")
+                .and_then(|v| v.as_array())
+                .ok_or("no semanticTokens.data in the result")?;
+            if data.is_empty() {
+                return Err("semanticTokens.data is empty".to_string());
+            }
+            let decoded = decode_semantic_tokens(data)?;
+            for pair in decoded.windows(2) {
+                let (prev, next) = (pair[0], pair[1]);
+                if next.line < prev.line || (next.line == prev.line && next.start < prev.start) {
+                    return Err(format!("tokens out of order: {prev:?} then {next:?}"));
+                }
+                if prev.line == next.line && prev.start + prev.length > next.start {
+                    return Err(format!("overlapping tokens: {prev:?} then {next:?}"));
+                }
+            }
+            let class_index = result
+                .pointer("/semanticTokensLegend/tokenTypes")
+                .and_then(|v| v.as_array())
+                .ok_or("no semanticTokensLegend.tokenTypes recorded")?
+                .iter()
+                .position(|t| t.as_str() == Some("class"))
+                .ok_or("advertised legend has no `class` token type at all")?;
+            if !decoded.iter().any(|t| t.token_type as usize == class_index) {
+                return Err("no `class`-typed (component) token found in the response".to_string());
+            }
+            Ok(())
+        }
+        "references-component" => {
+            // Issue #14 review, item 13: every `.rsx` reference to
+            // `Greeting` must be exactly 8 columns wide and land in
+            // `main.rsx` — `assert_no_leakage` already covers "no
+            // `.generated` URI."
+            let refs = result
+                .pointer("/references")
+                .and_then(|v| v.as_array())
+                .ok_or("no references result")?;
+            let main_uri = result
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("no file")?;
+            let matches: Vec<&serde_json::Value> = refs
+                .iter()
+                .filter(|r| r.get("uri").and_then(|v| v.as_str()) == Some(main_uri))
+                .collect();
+            if matches.len() < 2 {
+                return Err(format!(
+                    "expected at least 2 references in {main_uri} (declaration + usage), got {}",
+                    matches.len()
+                ));
+            }
+            for item in &matches {
+                let range = item.get("range").ok_or("reference has no range")?;
+                let width = range_width(range)
+                    .ok_or_else(|| format!("reference range spans more than one line: {range}"))?;
+                if width != 8 {
+                    return Err(format!(
+                        "expected an 8-column reference range, got width {width}: {range}"
+                    ));
+                }
+            }
+            Ok(())
+        }
         other => Err(format!("unknown probe: {other}")),
     }
+}
+
+/// Every edit for `uri` in a `WorkspaceEdit`, whether it arrived under
+/// `changes[uri]` or as one of `documentChanges`'s `TextDocumentEdit`
+/// entries — `crate::rename::translate_workspace_edit` (`outou-lsp`'s own
+/// side) can produce either shape depending on what rust-analyzer itself
+/// used.
+fn edits_for_uri(edit: &serde_json::Value, uri: &str) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+    if let Some(items) = edit
+        .get("changes")
+        .and_then(|c| c.get(uri))
+        .and_then(|v| v.as_array())
+    {
+        out.extend(items.iter().cloned());
+    }
+    if let Some(document_changes) = edit.get("documentChanges").and_then(|v| v.as_array()) {
+        for entry in document_changes {
+            if entry.pointer("/textDocument/uri").and_then(|v| v.as_str()) == Some(uri) {
+                if let Some(items) = entry.get("edits").and_then(|v| v.as_array()) {
+                    out.extend(items.iter().cloned());
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The width, in UTF-16 columns, of a single-line `range` — `None` if it
+/// spans more than one line (every probe using this expects a one-line
+/// identifier-sized range) or is missing a field.
+fn range_width(range: &serde_json::Value) -> Option<i64> {
+    let start_line = range.pointer("/start/line")?.as_i64()?;
+    let start_char = range.pointer("/start/character")?.as_i64()?;
+    let end_line = range.pointer("/end/line")?.as_i64()?;
+    let end_char = range.pointer("/end/character")?.as_i64()?;
+    if start_line != end_line {
+        return None;
+    }
+    Some(end_char - start_char)
+}
+
+/// One decoded (absolute-coordinate) semantic token, mirroring
+/// `outou_lsp`'s own `semantic_tokens::token::AbsoluteToken` — duplicated
+/// here rather than depending on the `outou-lsp` binary crate's internals
+/// from this integration test, which only has the raw JSON response to
+/// work with.
+#[derive(Debug, Clone, Copy)]
+struct DecodedToken {
+    line: i64,
+    start: i64,
+    length: i64,
+    token_type: i64,
+}
+
+/// Decodes a flat, delta-encoded `SemanticTokens.data` array (chunks of
+/// 5: `deltaLine, deltaStart, length, tokenType, tokenModifiers`) into
+/// absolute coordinates, per the LSP spec.
+fn decode_semantic_tokens(data: &[serde_json::Value]) -> Result<Vec<DecodedToken>, String> {
+    if data.len() % 5 != 0 {
+        return Err(format!(
+            "semanticTokens.data length {} is not a multiple of 5",
+            data.len()
+        ));
+    }
+    let as_i64 = |v: &serde_json::Value| {
+        v.as_i64()
+            .ok_or_else(|| format!("non-integer token field: {v}"))
+    };
+    let mut line = 0i64;
+    let mut start = 0i64;
+    let mut out = Vec::with_capacity(data.len() / 5);
+    for chunk in data.chunks(5) {
+        let delta_line = as_i64(&chunk[0])?;
+        let delta_start = as_i64(&chunk[1])?;
+        let length = as_i64(&chunk[2])?;
+        let token_type = as_i64(&chunk[3])?;
+        line += delta_line;
+        start = if delta_line == 0 {
+            start + delta_start
+        } else {
+            delta_start
+        };
+        out.push(DecodedToken {
+            line,
+            start,
+            length,
+            token_type,
+        });
+    }
+    Ok(out)
 }
 
 fn all_diagnostics(result: &serde_json::Value) -> impl Iterator<Item = &serde_json::Value> {

@@ -77,7 +77,7 @@ fn main_loop(
     connection.initialize_finish(
         initialize_id,
         json!({
-            "capabilities": build_server_capabilities(),
+            "capabilities": build_server_capabilities(&state),
             "serverInfo": { "name": "outou-lsp", "version": VERSION },
         }),
     )?;
@@ -185,7 +185,7 @@ fn load_workspace<F: Fn() -> Result<String, String>>(
             match resolve_ra_binary() {
                 Ok(ra_binary) => match RaClient::spawn(&ra_binary, &workspace.manifest_dir) {
                     Ok(mut ra) => {
-                        if setup_rust_analyzer(&mut ra, &workspace, params) {
+                        if setup_rust_analyzer(state, &mut ra, &workspace, params) {
                             state.ra = Some(ra);
                         } else {
                             eprintln!(
@@ -293,8 +293,17 @@ fn write_missing_generated_files(workspace: &Workspace) {
 /// never report semantic (type-mismatch) errors, only flycheck does, and
 /// flycheck reads the file from disk — the in-memory overlay this server
 /// otherwise keeps rust-analyzer on is not enough for that one criterion.
-fn build_server_capabilities() -> ServerCapabilities {
+fn build_server_capabilities(state: &State) -> ServerCapabilities {
     ServerCapabilities {
+        semantic_tokens_provider: Some(
+            lsp_types::SemanticTokensOptions {
+                legend: state.semantic_legend.to_lsp(),
+                full: Some(lsp_types::SemanticTokensFullOptions::Bool(true)),
+                range: None,
+                ..Default::default()
+            }
+            .into(),
+        ),
         text_document_sync: Some(TextDocumentSyncCapability::Options(
             TextDocumentSyncOptions {
                 open_close: Some(true),
@@ -314,6 +323,11 @@ fn build_server_capabilities() -> ServerCapabilities {
             ..Default::default()
         }),
         definition_provider: Some(OneOf::Left(true)),
+        rename_provider: Some(OneOf::Right(lsp_types::RenameOptions {
+            prepare_provider: Some(true),
+            work_done_progress_options: Default::default(),
+        })),
+        references_provider: Some(OneOf::Left(true)),
         // Answered entirely locally (`crate::dispatch::requests::dispatch_formatting_request`),
         // never forwarded to rust-analyzer: `outou_fmt::format_source` is
         // Outou-syntax-driven, the same pipeline `outou fmt` uses
@@ -336,6 +350,7 @@ fn build_server_capabilities() -> ServerCapabilities {
 /// note) and `didOpen`s every generated unit's current (Recovery-mode)
 /// text as its overlay.
 fn setup_rust_analyzer(
+    state: &mut State,
     ra: &mut RaClient,
     workspace: &Workspace,
     params: &InitializeParams,
@@ -392,6 +407,9 @@ fn setup_rust_analyzer(
         );
         return false;
     }
+    let (legend, supports_semantic_tokens) = resolve_semantic_tokens_support(&result);
+    state.semantic_legend = legend;
+    state.ra_supports_semantic_tokens = supports_semantic_tokens;
     ra.notify("initialized", json!({}));
 
     for unit in workspace.generated.values() {
@@ -446,6 +464,30 @@ fn ra_uses_utf16_positions(initialize_result: &Value) -> bool {
     {
         None => true,
         Some(encoding) => encoding == "utf-16",
+    }
+}
+
+/// Resolves the semantic-tokens legend to advertise/translate against from
+/// rust-analyzer's `initialize` result, and whether rust-analyzer
+/// advertised semantic tokens support at all (issue #14 review,
+/// BLOCKING-4/SHOULD-LAND-7/12) — a pure function of the `initialize`
+/// result, extracted out of [`setup_rust_analyzer`]'s side-effecting
+/// handshake so it can be unit-tested without spawning a real
+/// rust-analyzer. When rust-analyzer did advertise a legend, it is
+/// extended with whatever Outou overlay type names it lacks
+/// (`crate::semantic_tokens::Legend::extended_with_outou_types`) rather
+/// than assumed to already be a superset of them — reproduced live,
+/// rust-analyzer 1.98.1's legend has no `class` or `event`. The `bool`
+/// lets `crate::dispatch::requests::dispatch_semantic_tokens_request`
+/// decide whether forwarding to rust-analyzer is worth attempting at all,
+/// rather than forwarding unconditionally and discovering `MethodNotFound`
+/// only in the response.
+fn resolve_semantic_tokens_support(
+    initialize_result: &Value,
+) -> (crate::semantic_tokens::Legend, bool) {
+    match crate::semantic_tokens::Legend::from_ra_initialize_result(initialize_result) {
+        Some(legend) => (legend.extended_with_outou_types(), true),
+        None => (crate::semantic_tokens::Legend::default_legend(), false),
     }
 }
 
@@ -542,6 +584,45 @@ mod tests {
         assert!(!ra_uses_utf16_positions(
             &json!({ "capabilities": { "positionEncoding": "utf-8" } })
         ));
+    }
+
+    /// Issue #14 review (BLOCKING-4/SHOULD-LAND-7/12): a real
+    /// rust-analyzer legend missing `class`/`event` must still be usable
+    /// for Outou's own overlay tokens (extended, not replaced outright),
+    /// and the returned `bool` records that rust-analyzer really did
+    /// advertise semantic tokens support, for
+    /// `dispatch::requests::dispatch_semantic_tokens_request` to decide
+    /// whether forwarding is even worth attempting (SHOULD-LAND-7).
+    #[test]
+    fn resolve_semantic_tokens_support_extends_a_real_legend_missing_outou_types() {
+        let result = json!({
+            "capabilities": {
+                "semanticTokensProvider": {
+                    "legend": {
+                        "tokenTypes": ["comment", "type", "property", "string"],
+                        "tokenModifiers": []
+                    }
+                }
+            }
+        });
+        let (legend, supported) = resolve_semantic_tokens_support(&result);
+        assert!(supported);
+        assert!(legend
+            .type_index(crate::semantic_tokens::legend::COMPONENT_TYPE)
+            .is_some());
+        assert!(legend
+            .type_index(crate::semantic_tokens::legend::EVENT_TYPE)
+            .is_some());
+        // The pre-existing `type` index (1) is untouched.
+        assert_eq!(legend.type_index("type"), Some(1));
+    }
+
+    #[test]
+    fn resolve_semantic_tokens_support_falls_back_when_ra_advertises_nothing() {
+        let result = json!({ "capabilities": {} });
+        let (legend, supported) = resolve_semantic_tokens_support(&result);
+        assert!(!supported);
+        assert_eq!(legend, crate::semantic_tokens::Legend::default_legend());
     }
 
     #[test]

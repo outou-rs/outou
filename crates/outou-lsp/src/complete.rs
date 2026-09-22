@@ -199,6 +199,48 @@ pub fn is_tag_name_position(
     matches!(classify(&parsed.file, offset), Cursor::TagName { .. })
 }
 
+/// The full (not partial-before-cursor) tag name at `position`, if it
+/// sits on a JSX element's opening *or* closing tag name — used by
+/// `crate::dispatch::requests` to decide whether a rename/prepareRename
+/// request targets an intrinsic HTML element (issue #14 review,
+/// SHOULD-LAND-6): unlike [`is_tag_name_position`], which only says
+/// *whether* the cursor is on a tag name, this returns the name itself,
+/// so the caller can classify it component-vs-intrinsic
+/// (grammar §5: uppercase-initial = component).
+///
+/// Reuses [`outou_syntax::ast::File::jsx_elements`] (already flattens
+/// every element, nested or not) rather than duplicating
+/// [`classify`]'s own traversal: a rename target only needs "is the
+/// cursor on *a* tag name, and if so, what is it," not the
+/// prefix-before-cursor/attribute-name distinctions completion needs.
+pub fn tag_name_at_position(
+    workspace: &Workspace,
+    rsx_uri: &str,
+    position: lsp_types::Position,
+) -> Option<String> {
+    let doc = workspace.rsx.get(rsx_uri)?;
+    let offset = doc
+        .line_index
+        .position_to_offset(outou_sourcemap::Position::new(
+            position.line,
+            position.character,
+        ));
+    let parsed = outou_syntax::parse(doc.line_index.text());
+    for element in parsed.file.jsx_elements() {
+        if let ast::JsxTag::Named { name, .. } = &element.open {
+            if touches(name.span, offset) {
+                return Some(name.name.clone());
+            }
+        }
+        if let Some(ast::JsxTag::Named { name, .. }) = &element.close {
+            if touches(name.span, offset) {
+                return Some(name.name.clone());
+            }
+        }
+    }
+    None
+}
+
 fn touches(span: outou_sourcemap::Span, offset: u32) -> bool {
     span.contains(outou_sourcemap::Span::new(offset, offset))
 }
@@ -695,5 +737,71 @@ mod tests {
             "file:///app/src/main.rsx",
             expr_position
         ));
+    }
+
+    fn workspace_with(source: &str) -> Workspace {
+        let mut workspace = Workspace {
+            manifest_dir: std::path::PathBuf::from("/app"),
+            plan: None,
+            registry: outou_sourcemap::Registry::new(),
+            rsx: std::collections::HashMap::new(),
+            generated: std::collections::HashMap::new(),
+            rsx_to_generated: std::collections::HashMap::new(),
+        };
+        workspace.rsx.insert(
+            "file:///app/src/main.rsx".to_string(),
+            crate::documents::RsxDocument::new(source.to_string(), 1),
+        );
+        workspace
+    }
+
+    /// Issue #14 review (SHOULD-LAND-6): `tag_name_at_position` returns
+    /// the full name (not a prefix) on both the opening and closing tag,
+    /// so a caller can classify component vs. intrinsic without knowing
+    /// anything about completion's own partial-name logic.
+    #[test]
+    fn tag_name_at_position_returns_the_full_name_on_open_and_close_tags() {
+        let source = "#[component]\nfn App() -> Element {\n    <div>hi</div>\n}\n";
+        let workspace = workspace_with(source);
+        let doc = workspace.rsx.get("file:///app/src/main.rsx").unwrap();
+
+        let open_offset = source.find("<div>").unwrap() as u32 + 2;
+        let open_position = mapping::to_lsp_range(
+            doc.line_index
+                .span_to_range(outou_sourcemap::Span::new(open_offset, open_offset)),
+        )
+        .start;
+        assert_eq!(
+            tag_name_at_position(&workspace, "file:///app/src/main.rsx", open_position),
+            Some("div".to_string())
+        );
+
+        let close_offset = source.find("</div>").unwrap() as u32 + 3;
+        let close_position = mapping::to_lsp_range(
+            doc.line_index
+                .span_to_range(outou_sourcemap::Span::new(close_offset, close_offset)),
+        )
+        .start;
+        assert_eq!(
+            tag_name_at_position(&workspace, "file:///app/src/main.rsx", close_position),
+            Some("div".to_string())
+        );
+    }
+
+    #[test]
+    fn tag_name_at_position_is_none_off_any_tag_name() {
+        let source = "#[component]\nfn App() -> Element {\n    let x = 1;\n    <div>hi</div>\n}\n";
+        let workspace = workspace_with(source);
+        let doc = workspace.rsx.get("file:///app/src/main.rsx").unwrap();
+        let offset = source.find("let x").unwrap() as u32 + 2;
+        let position = mapping::to_lsp_range(
+            doc.line_index
+                .span_to_range(outou_sourcemap::Span::new(offset, offset)),
+        )
+        .start;
+        assert_eq!(
+            tag_name_at_position(&workspace, "file:///app/src/main.rsx", position),
+            None
+        );
     }
 }

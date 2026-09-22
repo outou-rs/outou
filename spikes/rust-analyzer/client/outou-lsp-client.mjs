@@ -80,6 +80,9 @@ const PROBES = [
   "stale-diagnostics-cleared",
   "save-with-syntax-error",
   "startup-broken-source",
+  "rename-component",
+  "semantic-tokens-full",
+  "references-component",
 ];
 
 function usage() {
@@ -222,6 +225,21 @@ const initResult = await request("initialize", {
       definition: {},
       completion: { completionItem: { snippetSupport: false } },
       synchronization: { didSave: true },
+      // Issue #14 review, item 13: minimal client capabilities for the
+      // three new probes below. `outou-lsp` does not gate answering
+      // rename/references/semanticTokens on any of these being present
+      // (only `workspace.configuration`/`window.workDoneProgress`/
+      // dynamic registration are checked, for forwarding rust-analyzer's
+      // own requests the other way), but declaring them is still
+      // accurate LSP client behavior.
+      rename: { prepareSupport: true },
+      references: {},
+      semanticTokens: {
+        requests: { full: true },
+        tokenTypes: [],
+        tokenModifiers: [],
+        formats: ["relative"],
+      },
     },
     workspace: {},
     // S6/L12 (issue #9 Gate 3 review): advertising this is what makes
@@ -550,8 +568,8 @@ async function runProbe(probe) {
       // M3 (issue #9 Gate 3 review): an Outou-native answer for a
       // partial *component* tag name, never forwarded to rust-analyzer.
       const text = originalText.replace(
-        '<Greeting name="Outou" />',
-        '<Greeting name="Outou" />\n        <UserC',
+        '<Greeting name="Outou"></Greeting>',
+        '<Greeting name="Outou"></Greeting>\n        <UserC',
       );
       change(2, text);
       const line = text.split("\n").findIndex((l) => l.trim() === "<UserC");
@@ -566,8 +584,8 @@ async function runProbe(probe) {
     case "completion-tag-element": {
       // M3: same, for a partial *HTML element* tag name.
       const text = originalText.replace(
-        '<Greeting name="Outou" />',
-        '<Greeting name="Outou" />\n        <di',
+        '<Greeting name="Outou"></Greeting>',
+        '<Greeting name="Outou"></Greeting>\n        <di',
       );
       change(2, text);
       const line = text.split("\n").findIndex((l) => l.trim() === "<di");
@@ -619,8 +637,8 @@ async function runProbe(probe) {
       // leak in the original review (a zero-width edit at the wrong
       // column, and `dioxus_*::` module names as labels).
       const text = originalText.replace(
-        '<Greeting name="Outou" />',
-        '<Greeting name="Outou" />\n        <div class=',
+        '<Greeting name="Outou"></Greeting>',
+        '<Greeting name="Outou"></Greeting>\n        <div class=',
       );
       change(2, text);
       const line = text.split("\n").findIndex((l) => l.trim() === "<div class=");
@@ -775,6 +793,73 @@ async function runProbe(probe) {
         mainUri,
         (d) => d.source === "outou",
         10000,
+      );
+      break;
+    }
+    case "rename-component": {
+      // Issue #14 review, item 13: renaming the component `Greeting` ->
+      // `Welcome` must update its `fn` declaration and *both* its
+      // opening and closing tag (`main.rsx`'s own usage was changed from
+      // self-closing to `<Greeting name="Outou"></Greeting>` specifically
+      // so this probe can exercise "both tags," not just one occurrence)
+      // — never a generated-file location, never a duplicate/overlapping
+      // edit. The Rust test driving this script makes the actual
+      // assertions against `result.rename`/`result.prepareRename`.
+      const pos = positionOf(originalText, "<Greeting name=");
+      // `requestUntilReady` already records both `result.prepareRename`
+      // and `result.latencyMs.prepareRename`.
+      await requestUntilReady(
+        "prepareRename",
+        "textDocument/prepareRename",
+        {
+          textDocument: { uri: mainUri },
+          position: { line: pos.line, character: pos.character + 3 },
+        },
+        hasNonNullResult,
+      );
+
+      const renameStart = Date.now();
+      const edit = await request("textDocument/rename", {
+        textDocument: { uri: mainUri },
+        position: { line: pos.line, character: pos.character + 3 },
+        newName: "Welcome",
+      });
+      result.latencyMs.rename = Date.now() - renameStart;
+      result.rename = edit;
+      break;
+    }
+    case "semantic-tokens-full": {
+      // Issue #14 review, item 13: the raw token list must already be
+      // sorted and non-overlapping when it reaches the editor (the Rust
+      // test driving this script decodes `result.semanticTokens.data`
+      // and checks both, plus that a `class`-typed token exists at
+      // `Greeting`'s own tag name, using `result.semanticTokensLegend`
+      // below to resolve the type index).
+      await requestUntilReady(
+        "semanticTokens",
+        "textDocument/semanticTokens/full",
+        { textDocument: { uri: mainUri } },
+        (value) => value && Array.isArray(value.data) && value.data.length > 0,
+      );
+      result.semanticTokensLegend =
+        initResult?.capabilities?.semanticTokensProvider?.legend ?? null;
+      break;
+    }
+    case "references-component": {
+      // Issue #14 review, item 13: every `.rsx` reference to `Greeting`
+      // must be exactly 8 columns wide (the identifier's own length) and
+      // never name a `.generated/…` URI — the Rust test driving this
+      // script makes that assertion against `result.references`.
+      const pos = positionOf(originalText, "<Greeting name=");
+      await requestUntilReady(
+        "references",
+        "textDocument/references",
+        {
+          textDocument: { uri: mainUri },
+          position: { line: pos.line, character: pos.character + 3 },
+          context: { includeDeclaration: true },
+        },
+        (value) => Array.isArray(value) && value.length > 0,
       );
       break;
     }

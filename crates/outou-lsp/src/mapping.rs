@@ -275,6 +275,105 @@ fn narrow_single_source(
     }
 }
 
+/// Reverse-maps one generated `(uri, range)` to **every** `.rsx` location
+/// it came from, rather than [`generated_location_to_source`]'s single
+/// (first-source) answer: used by rename and references
+/// (`crate::rename`, `crate::references`).
+///
+/// Issue #14 review (CRITICAL-1): this must **not** simply flatten every
+/// source of every mapping the query overlaps
+/// (`outou_sourcemap::SourceMap::map_range`/`Registry::reverse`, which is
+/// designed for a diagnostic or a coarse "what does this span come from"
+/// query, and deliberately returns a *containing* mapping's whole source
+/// span). Reproduced live: a rename of `Greeting` sends rust-analyzer an
+/// 8-byte generated identifier query that falls *inside* the 22-byte
+/// verbatim-copied `fn Greeting(x: i32) {}` mapping; the old
+/// `Registry::reverse`-based implementation answered with that whole
+/// 22-byte span, so the rename replaced the entire signature.
+///
+/// The rule (structural, not by [`outou_sourcemap::MappingKind`]):
+///
+/// 1. [`outou_sourcemap::SourceMap::narrow`] first — the same primitive
+///    hover/definition already use (`narrow_single_source`,
+///    [`generated_location_to_source`]). `NarrowOutcome::Exact` narrows to
+///    that one offset-preserved sub-range: the common case, a verbatim
+///    (single-source, equal-length) mapping containing the query.
+///    `NarrowOutcome::LengthMismatch` (e.g. `type` -> `r#type`, a source
+///    shorter than its generated counterpart) is unmappable: empty, never
+///    a proportional guess.
+/// 2. Only when `narrow` finds no single unambiguous source
+///    (`NarrowOutcome::NotApplicable` — no containing mapping, or one
+///    with zero or several sources) does a whole-span answer apply, and
+///    only for a mapping whose generated span **exactly equals** the
+///    query: the genuine N:M case (a JSX element name mapped from both
+///    its opening and closing tag, ADR 0007) is always written as exactly
+///    the identifier's own bytes, nothing more, so an *exact* match is
+///    the only way a multi/zero-source mapping can be the right answer. A
+///    query that is merely a *sub-range* of such a mapping cannot be
+///    disambiguated and returns nothing, rather than guessing which
+///    source it partially belongs to.
+///
+/// Returns `None` when `generated_uri` is not a file this registry
+/// produced at all (an ordinary `.rs` module or a dependency crate): the
+/// caller must pass the location through unchanged. Returns `Some(vec![])`
+/// when the location is inside a known generated file but resolves to no
+/// source at all (synthesized code, a length-mismatched mapping, or an
+/// undisambiguatable sub-range) — callers that must not silently drop
+/// such an edit (rename) treat this as a reason to refuse; callers for
+/// which dropping is safe (references, read-only) simply skip it.
+pub fn generated_range_to_all_sources(
+    workspace: &Workspace,
+    generated_uri: &lsp_types::Uri,
+    range: lsp_types::Range,
+) -> Option<Vec<(lsp_types::Uri, lsp_types::Range)>> {
+    let generated = uri::to_outou(generated_uri);
+    // Issue #14 review (SHOULD-LAND-11): the registry, not
+    // `Workspace::generated`, is the authoritative "is this a generated
+    // file at all" answer. Checking `workspace.generated` first would
+    // treat a URI the registry itself knows as generated — but for which
+    // this server currently has no live `GeneratedUnit` (a transient or
+    // inconsistent state) — the same as an ordinary `.rs` file, and a
+    // caller (`crate::references`) would pass its `.generated/…` location
+    // straight through to the editor instead of dropping it.
+    let map = workspace.registry.map_for_generated(&generated)?;
+    let Some(unit) = workspace.generated.get(generated.as_str()) else {
+        return Some(Vec::new());
+    };
+    let query = unit.line_index.range_to_span(to_outou_range(range));
+
+    let sources: Vec<outou_sourcemap::SourceSpan> = match map.narrow(query) {
+        outou_sourcemap::NarrowOutcome::Exact { source, span } => {
+            vec![outou_sourcemap::SourceSpan::new(source, span)]
+        }
+        // TODO(phase0) (docs/backend-leakage.md row 29): this correctly
+        // refuses rather than guesses (a proportional guess across a
+        // transformed mapping is confidently wrong more often than
+        // right, ADR 0013), but it means a keyword-named prop (`type`,
+        // lowered to `r#type`) has no rename/references answer at all —
+        // not even a text-only fallback that renames the `.rsx`
+        // attribute-name span directly, without asking rust-analyzer.
+        outou_sourcemap::NarrowOutcome::LengthMismatch => Vec::new(),
+        outou_sourcemap::NarrowOutcome::NotApplicable => map
+            .mappings
+            .iter()
+            .find(|mapping| mapping.generated == query)
+            .map(|mapping| mapping.sources.clone())
+            .unwrap_or_default(),
+    };
+
+    Some(
+        sources
+            .into_iter()
+            .filter_map(|source| {
+                let source_uri = map.source_uri(source.source)?;
+                let doc = workspace.rsx.get(source_uri.as_str())?;
+                let range = to_lsp_range(doc.line_index.span_to_range(source.span));
+                Some((crate::uri::to_lsp(source_uri), range))
+            })
+            .collect(),
+    )
+}
+
 /// Best-effort fallback position for a generated-Rust diagnostic whose
 /// exact range has no source mapping at all (synthesized code, most often
 /// inside an `rsx!` macro expansion the backend generated): the nearest
@@ -551,5 +650,254 @@ mod tests {
             ),
         );
         assert!(matches!(mapped, MappedLocation::Unchanged));
+    }
+
+    // --- `generated_range_to_all_sources` (issue #14 review, CRITICAL-1):
+    // must narrow to the exact identifier inside a coarse verbatim
+    // mapping, never replace the mapping's whole (much larger) span.
+
+    /// A workspace with three mappings sharing one `.rsx` file:
+    ///
+    /// - A **verbatim, single-source, equal-length** `Expression` mapping
+    ///   for a whole (deliberately not-really-valid-Rust, but
+    ///   byte-identical) function signature `fn Greeting(x: i32) {}`,
+    ///   standing in for the real corpus case ("`Registry::reverse`
+    ///   returns the WHOLE 37-byte signature for a `Greeting` rename").
+    /// - A **two-source** `Identifier` mapping whose generated span is
+    ///   *exactly* one JSX element name occurrence (`element.rs`'s
+    ///   `lower_element_body`: one generated identifier, sources at both
+    ///   the opening and closing tag).
+    /// - A **length-mismatched, single-source** `Attribute` mapping (6
+    ///   generated bytes standing in for `r#type`, 4 source bytes for
+    ///   `type`), standing in for the real `r#type` prop case.
+    fn narrow_fixture_workspace() -> (
+        Workspace,
+        lsp_types::Uri,
+        lsp_types::Uri,
+        String,           // rsx source text, for asserting extracted substrings
+        lsp_types::Range, // generated range: "Greeting" inside the verbatim signature
+        lsp_types::Range, // generated range: the identifier mapping (both tags)
+        lsp_types::Range, // generated range: the length-mismatched attribute mapping
+    ) {
+        let rsx_path = Path::new("/app/src/main.rsx");
+        let generated_path = Path::new("/app/src/.generated/main.rs");
+        let rsx_uri = file_uri(rsx_path);
+        let generated_uri = file_uri(generated_path);
+
+        let rsx_source = "fn Greeting(x: i32) {} <Greeting>hi</Greeting> type";
+        let sig_end = rsx_source.find(" <Greeting>").unwrap();
+        let sig_text = &rsx_source[0..sig_end];
+        let occurrences: Vec<usize> = rsx_source
+            .match_indices("Greeting")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            occurrences.len(),
+            3,
+            "fixture must have exactly 3 occurrences"
+        );
+        let sig_name_offset = occurrences[0] as u32; // "Greeting" inside the signature
+        let open_start = occurrences[1] as u32;
+        let close_start = occurrences[2] as u32;
+        let type_start = rsx_source.rfind("type").unwrap() as u32;
+
+        let prefix_len: u32 = 10;
+        let sig_len = sig_text.len() as u32;
+        let mid_len: u32 = 10;
+        let ident_len: u32 = 8; // "Greeting"
+        let mid2_len: u32 = 10;
+
+        let generated_text = format!(
+            "{}{}{}{}{}{}",
+            "a".repeat(prefix_len as usize),
+            sig_text,
+            "b".repeat(mid_len as usize),
+            "Greeting",
+            "c".repeat(mid2_len as usize),
+            "ABCDEF", // stands in for generated `r#type` (6 bytes)
+        );
+
+        let sig_greeting_generated_start = prefix_len + sig_name_offset;
+        let ident_generated_start = prefix_len + sig_len + mid_len;
+        let type_generated_start = prefix_len + sig_len + mid_len + ident_len + mid2_len;
+
+        let map = SourceMap::new(generated_uri.clone(), vec![rsx_uri.clone()])
+            .with_mapping(Mapping::new(
+                Span::new(prefix_len, prefix_len + sig_len),
+                vec![SourceSpan::new(SourceId(0), Span::new(0, sig_len))],
+                MappingKind::Expression,
+            ))
+            .with_mapping(Mapping::new(
+                Span::new(ident_generated_start, ident_generated_start + ident_len),
+                vec![
+                    SourceSpan::new(SourceId(0), Span::new(open_start, open_start + 8)),
+                    SourceSpan::new(SourceId(0), Span::new(close_start, close_start + 8)),
+                ],
+                MappingKind::Identifier,
+            ))
+            .with_mapping(Mapping::new(
+                Span::new(type_generated_start, type_generated_start + 6),
+                vec![SourceSpan::new(
+                    SourceId(0),
+                    Span::new(type_start, type_start + 4),
+                )],
+                MappingKind::Attribute,
+            ));
+        let registry = outou_sourcemap::Registry::new().with_map(map);
+
+        let mut workspace = Workspace {
+            manifest_dir: std::path::PathBuf::from("/app"),
+            plan: None,
+            registry,
+            rsx: std::collections::HashMap::new(),
+            generated: std::collections::HashMap::new(),
+            rsx_to_generated: std::collections::HashMap::new(),
+        };
+        workspace.rsx.insert(
+            rsx_uri.as_str().to_string(),
+            crate::documents::RsxDocument::new(rsx_source.to_string(), 0),
+        );
+        workspace.generated.insert(
+            generated_uri.as_str().to_string(),
+            crate::documents::test_generated_unit(&generated_uri, &rsx_uri, &generated_text),
+        );
+        workspace.rsx_to_generated.insert(
+            rsx_uri.as_str().to_string(),
+            generated_uri.as_str().to_string(),
+        );
+
+        let unit = workspace
+            .generated
+            .get(generated_uri.as_str())
+            .expect("just inserted");
+        let sig_greeting_range = to_lsp_range(unit.line_index.span_to_range(Span::new(
+            sig_greeting_generated_start,
+            sig_greeting_generated_start + 8,
+        )));
+        let ident_range = to_lsp_range(unit.line_index.span_to_range(Span::new(
+            ident_generated_start,
+            ident_generated_start + ident_len,
+        )));
+        let type_range = to_lsp_range(
+            unit.line_index
+                .span_to_range(Span::new(type_generated_start, type_generated_start + 6)),
+        );
+
+        (
+            workspace,
+            uri::to_lsp(&rsx_uri),
+            uri::to_lsp(&generated_uri),
+            rsx_source.to_string(),
+            sig_greeting_range,
+            ident_range,
+            type_range,
+        )
+    }
+
+    /// CRITICAL-1: querying the 8 generated bytes of the identifier
+    /// `Greeting` *inside* a much larger verbatim (single-source,
+    /// equal-length) mapping must narrow to exactly those 8 `.rsx` bytes —
+    /// never the whole 22-byte signature the old `Registry::reverse`-based
+    /// implementation returned.
+    #[test]
+    fn generated_range_to_all_sources_narrows_inside_a_verbatim_mapping() {
+        let (workspace, rsx_uri, generated_uri, rsx_source, sig_greeting_range, _, _) =
+            narrow_fixture_workspace();
+        let sources =
+            generated_range_to_all_sources(&workspace, &generated_uri, sig_greeting_range)
+                .expect("a known generated file");
+        assert_eq!(sources.len(), 1, "{sources:#?}");
+        let (uri, range) = &sources[0];
+        assert_eq!(*uri, rsx_uri);
+        let doc = workspace.rsx.get(rsx_uri.as_str()).unwrap();
+        let span = doc.line_index.range_to_span(to_outou_range(*range));
+        assert_eq!(
+            &rsx_source[span.start as usize..span.end as usize],
+            "Greeting"
+        );
+    }
+
+    /// A query whose generated span **exactly equals** a genuine N:M
+    /// identifier mapping's own generated span returns every one of its
+    /// full sources (both the opening and closing tag) — the one case
+    /// where a whole-span answer is correct.
+    #[test]
+    fn generated_range_to_all_sources_returns_both_tags_for_an_exact_identifier_mapping() {
+        let (workspace, rsx_uri, generated_uri, rsx_source, _, ident_range, _) =
+            narrow_fixture_workspace();
+        let sources = generated_range_to_all_sources(&workspace, &generated_uri, ident_range)
+            .expect("a known generated file");
+        assert_eq!(sources.len(), 2, "{sources:#?}");
+        let doc = workspace.rsx.get(rsx_uri.as_str()).unwrap();
+        for (uri, range) in &sources {
+            assert_eq!(*uri, rsx_uri);
+            let span = doc.line_index.range_to_span(to_outou_range(*range));
+            assert_eq!(
+                &rsx_source[span.start as usize..span.end as usize],
+                "Greeting"
+            );
+        }
+    }
+
+    /// Issue #14 review (SHOULD-LAND-11): a URI the registry itself
+    /// considers generated (`Registry::is_generated`/`map_for_generated`)
+    /// must never be treated the same as an ordinary `.rs` file just
+    /// because this server currently has no live `GeneratedUnit` for it
+    /// (a transient/inconsistent state) — that would make a caller
+    /// (`crate::references`) pass a `.generated/…` location straight
+    /// through to the editor, exactly the leak `Registry::reverse`'s
+    /// `None` return is supposed to mean "not generated at all," not
+    /// "generated but temporarily unavailable." The authoritative check
+    /// must be the registry, not `Workspace::generated`.
+    #[test]
+    fn generated_range_to_all_sources_never_passes_through_a_known_generated_uri() {
+        let rsx_path = Path::new("/app/src/main.rsx");
+        let generated_path = Path::new("/app/src/.generated/main.rs");
+        let rsx_uri = file_uri(rsx_path);
+        let generated_uri = file_uri(generated_path);
+
+        let map = SourceMap::new(generated_uri.clone(), vec![rsx_uri.clone()]).with_mapping(
+            Mapping::new(
+                Span::new(0, 4),
+                vec![SourceSpan::new(SourceId(0), Span::new(0, 4))],
+                MappingKind::Expression,
+            ),
+        );
+        let registry = outou_sourcemap::Registry::new().with_map(map);
+
+        // Deliberately no `workspace.generated` entry for this URI, even
+        // though the registry above knows it as a generated file.
+        let workspace = Workspace {
+            manifest_dir: std::path::PathBuf::from("/app"),
+            plan: None,
+            registry,
+            rsx: std::collections::HashMap::new(),
+            generated: std::collections::HashMap::new(),
+            rsx_to_generated: std::collections::HashMap::new(),
+        };
+
+        let generated_uri_lsp = uri::to_lsp(&generated_uri);
+        let range = lsp_types::Range::new(
+            lsp_types::Position::new(0, 0),
+            lsp_types::Position::new(0, 4),
+        );
+        let result = generated_range_to_all_sources(&workspace, &generated_uri_lsp, range);
+        assert_eq!(
+            result,
+            Some(Vec::new()),
+            "a known-generated URI must resolve to Some(empty), never None (pass-through)"
+        );
+    }
+
+    /// A sub-range query against a length-mismatched mapping (the
+    /// `r#type`/`type` case) must return nothing at all, never a
+    /// proportionally-scaled guess and never the whole mismatched span.
+    #[test]
+    fn generated_range_to_all_sources_is_empty_for_a_length_mismatched_mapping() {
+        let (workspace, _rsx_uri, generated_uri, _rsx_source, _, _, type_range) =
+            narrow_fixture_workspace();
+        let sources = generated_range_to_all_sources(&workspace, &generated_uri, type_range)
+            .expect("a known generated file");
+        assert!(sources.is_empty(), "{sources:#?}");
     }
 }
