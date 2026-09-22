@@ -252,6 +252,23 @@ struct RustcMessage {
 /// `outou-backend-dioxus`'s `compile_check.rs`/`recovery.rs`), runs
 /// `cargo check --message-format=json` on it once, and returns every
 /// error/warning diagnostic it produced.
+///
+/// Unlike `compile_check.rs`/`recovery.rs`/`build_compile.rs`/`matrix.rs`,
+/// this harness's expected output (`expected.stderr`) encodes a specific
+/// diagnostic *severity*, not merely pass/fail — the CLI's severity
+/// translation (`Severity::Error` vs `Severity::Warning`, from `m.level`)
+/// is exactly what a case like `backend-missing-required-prop` is testing.
+/// If the ambient environment sets `RUSTFLAGS=-D warnings` (as the "example
+/// app builds with cargo build alone" CI job does, for the whole job), a
+/// `cargo check` that inherits it promotes every rustc warning to an error,
+/// which this harness would then correctly re-translate to
+/// `Severity::Error` — but that is a different, environment-dependent
+/// result from the `Severity::Warning` a plain `cargo check` produces and
+/// `expected.stderr` was blessed against. Clearing both the flag and its
+/// pre-encoded form makes this `cargo check` deterministic across `cargo
+/// test` invocations regardless of the caller's own `RUSTFLAGS`/
+/// `CARGO_ENCODED_RUSTFLAGS` (`CARGO_ENCODED_RUSTFLAGS` takes precedence
+/// over `RUSTFLAGS` when both are set, so both must be cleared).
 fn write_and_check_build_crate(cases: &[BuildCase]) -> Vec<RustcMessage> {
     let root = repo_root();
     let outou_path = root.join("crates/outou");
@@ -303,6 +320,8 @@ fn write_and_check_build_crate(cases: &[BuildCase]) -> Vec<RustcMessage> {
         .arg("--message-format=json")
         .current_dir(&temp_dir)
         .env("CARGO_TARGET_DIR", root.join("target"))
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .output()
         .expect("running `cargo check` on the UI build-case crate");
 
