@@ -360,7 +360,8 @@ same-session comparison above is.
 
 ## 7. Diagnostic leakage and backend leakage
 
-`docs/backend-leakage.md` has 28 rows. By classification: **17** pure "Dioxus leakage", **1** more
+`docs/backend-leakage.md` has 28 rows (row 29 was appended by issue #14, after this tally was taken).
+By classification: **17** pure "Dioxus leakage", **1** more
 "Dioxus leakage (fixed)" (row 28) and **1** "Dioxus leakage / Temporary limitation" (row 24) — 19
 rows total naming Dioxus leakage; **8** pure "Temporary limitation" rows plus the one shared with
 row 24 — 9 rows total; **1** "Outou intrinsic (marker) / Dioxus leakage (lowering)" (row 6); **0**
@@ -458,7 +459,9 @@ rename/references and semantic tokens into #14 and listing that pair in the reve
    `outou`-unpublished publish blocker (§8).
 
 Every `TODO(phase0)` in tracked files (`git grep -n "TODO(phase0)" -- '*.rs' '*.md'
-':!docs/phase0-results.md'`: **56 matches**), by file:
+':!docs/phase0-results.md'`: **56 matches** (at the close of Phase 0; the alpha documents added later
+also mention the marker, and `examples/phase0-app/src/components.rsx:17` falls outside this
+pathspec)), by file:
 
 A plain `grep -r` also matches the gitignored, locally generated
 `examples/phase0-app/src/.generated/components.rs`.
@@ -581,7 +584,8 @@ build` succeeding with no build script, no `OUT_DIR` and no extra Cargo flags or
 `src/.generated/` exists — written either by `outou build` or by `outou-lsp` on save (§4,
 `docs/phase0/issues/08-cargo-build-determinism.md`) — diagnostic/definition mapping through source
 maps (`outou-sourcemap`, §5), and Outou syntax diagnostics (§2). Every explicitly droppable item was
-in fact dropped as designed, not half-built.
+in fact built rather than dropped (§9) — none was needed to meet the criteria above, but time allowed
+finishing all three anyway.
 
 `docs/phase0.md`'s nine success criteria, walked against this report's evidence:
 
@@ -604,7 +608,8 @@ A front-end alpha built on this result would carry the following conditions and 
 plainly so they are not discovered later:
 
 - **The runtime decision is still open**, to be made from the backend leakage ledger (§7, 19 of 28
-  rows are Dioxus leakage) — the ledger documents props/`Element`/event-model constraints that are
+  rows are Dioxus leakage — row 29 was appended by issue #14, after this tally was taken) — the ledger
+  documents props/`Element`/event-model constraints that are
   not Outou's own semantics and would need re-litigating before a 1.0 API is fixed.
 - **Two rust-analyzer processes per workspace** run against the same crate whenever an editor also
   runs its own for `.rs` files (`crates/outou-lsp/README.md`, "Two processes, not one") — a real,

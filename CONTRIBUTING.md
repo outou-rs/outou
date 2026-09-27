@@ -1,6 +1,6 @@
 # Contributing
 
-Outou is in a feasibility phase. The most useful contributions right now are measurements, failing cases and review of the design documents, not features.
+Outou's feasibility phase (Phase 0) is complete; the project is now in an internal front-end alpha (see `docs/alpha.md`). The most useful contributions right now are measurements, failing cases and review of the design documents against the alpha's gates, not features outside their scope.
 
 ## Setup
 

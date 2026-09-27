@@ -3,7 +3,7 @@
   "displayName": "Outou",
   "version": "0.0.1",
   "private": true,
-  "description": "Language support for Outou (.rsx). Placeholder; the extension is built after the language server exists.",
+  "description": "Language support for Outou (.rsx). Currently a TextMate-grammar syntax highlighter standing in for semantic tokens; the language server (outou-lsp) exists but is not yet wired into this extension.",
   "publisher": "outou-rs",
   "license": "MIT OR Apache-2.0",
   "repository": { "type": "git", "url": "https://github.com/outou-rs/outou", "directory": "packages/vscode-outou" },
