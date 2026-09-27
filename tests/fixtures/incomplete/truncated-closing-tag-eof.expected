@@ -1,0 +1,4 @@
+error: unexpected end of file inside closing tag, expected `>`
+ --> truncated-closing-tag-eof.rsx:6:1
+error: missing closing tag `</div>`
+ --> truncated-closing-tag-eof.rsx:5:5

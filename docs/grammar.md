@@ -310,14 +310,14 @@ At minimum the following MUST recover with the rest of the file intact, each wit
 | Unclosed element | `incomplete/unclosed-nested-tag.rsx` | ``missing closing tag `</section>` `` |
 | Mismatched closing tag | `diagnostics/mismatched-closing-tag.rsx` | ``closing tag `</span>` does not match opening tag `<div>` `` |
 | Stray closing tag | `diagnostics/stray-closing-tag.rsx` | ``closing tag `</div>` has no matching opening tag`` |
-| Truncated closing tag at end of input | — (`TODO(phase0)`, see `docs/phase0-results.md` §2) | ``unexpected end of file inside closing tag, expected `>` `` |
+| Truncated closing tag at end of input | `incomplete/truncated-closing-tag-eof.rsx` | ``unexpected end of file inside closing tag, expected `>` `` |
 | Closing tag interrupted by `<` | `diagnostics/closing-tag-interrupted-by-lt.rsx` | ``unexpected `<` inside closing tag, expected `>` `` |
-| Unterminated attribute value (string) | — | ``unterminated string in attribute value`` |
+| Unterminated attribute value (string) | `incomplete/unterminated-string-swallows-block-close.rsx` | ``unterminated string in attribute value`` |
 | Unterminated attribute value (island) | `incomplete/unterminated-attribute-value.rsx` | ``unexpected end of file, expected `}` to close the value of attribute `name` `` |
-| Empty attribute-value island | — | ``expected an expression for the value of attribute `name` `` |
+| Empty attribute-value island | `incomplete/class-attribute-value-mid-file.rsx` | ``expected an expression for the value of attribute `name` `` |
 | Unclosed island at end of file | `incomplete/unclosed-island-eof.rsx` | ``unexpected end of file, expected `}` to close this expression`` |
 | Stray `}` in element content | `diagnostics/stray-rbrace-in-text.rsx` | ``unexpected `}` here; write `{"}"}` to include a literal `}` in text`` |
-| Reserved syntax (§10) | — | ``fragments are not supported in Phase 0`` · ``dotted tag names are not supported in Phase 0`` · ``namespaced names are not supported in Phase 0`` · ``spread attributes are not supported in Phase 0`` · ``generic arguments on a tag are not supported in Phase 0`` · ``a JSX expression cannot be followed by `.`, `?`, `(` or `[`; parenthesize it`` · ``duplicate attribute `value` on this tag`` · ``` `Self` is not a valid component name ``` · ``attribute values must be double-quoted strings or `{…}` expressions`` |
+| Reserved syntax (§10) | `ui/reserved-fragment` (fragment only) | ``fragments are not supported in Phase 0`` · ``dotted tag names are not supported in Phase 0`` · ``namespaced names are not supported in Phase 0`` · ``spread attributes are not supported in Phase 0`` · ``generic arguments on a tag are not supported in Phase 0`` · ``a JSX expression cannot be followed by `.`, `?`, `(` or `[`; parenthesize it`` · ``duplicate attribute `value` on this tag`` · ``` `Self` is not a valid component name ``` · ``attribute values must be double-quoted strings or `{…}` expressions`` |
 | JSX element nested more than 128 levels deep | — | ``this element is nested too deeply (Outou supports at most 128 levels)`` |
 | Inline `mod` nested more than 128 levels deep | — | ``modules are nested too deeply (Outou supports at most 128 levels)`` |
 

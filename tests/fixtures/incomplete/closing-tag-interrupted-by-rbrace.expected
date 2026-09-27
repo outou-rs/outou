@@ -1,0 +1,6 @@
+error: unexpected `}` inside closing tag, expected `>`
+ --> closing-tag-interrupted-by-rbrace.rsx:5:22
+error: missing closing tag `</span>`
+ --> closing-tag-interrupted-by-rbrace.rsx:5:10
+error: missing closing tag `</div>`
+ --> closing-tag-interrupted-by-rbrace.rsx:5:5

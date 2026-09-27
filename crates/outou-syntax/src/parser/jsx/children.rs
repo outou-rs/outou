@@ -106,12 +106,8 @@ impl<'s> Parser<'s> {
                         CloseResolution::Resolved { close, end } => {
                             return (children, close, end, ChildrenOutcome::Resolved);
                         }
-                        CloseResolution::Terminated => {
-                            // TODO(phase0): `pos` is the closing tag's own `<`, not the end of
-                            // the scan, so a truncated `</Name` at EOF is left unconsumed and
-                            // Recovery-mode codegen emits it after the generated call; see
-                            // `docs/phase0-results.md` §2.
-                            return (children, None, pos, ChildrenOutcome::Terminated);
+                        CloseResolution::Terminated { end } => {
+                            return (children, None, end, ChildrenOutcome::Terminated);
                         }
                     }
                 }
