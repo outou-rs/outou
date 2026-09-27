@@ -380,8 +380,10 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) {
 /// `cargo test --workspace` (asserting both the library's own `#[cfg(test)]`
 /// module and its doc test actually run), `cargo clippy --workspace
 /// --all-targets -- -D warnings`, `cargo build -p ui-kit --features
-/// extra`, and the packaging/publishing checks (`cargo package --list`
-/// for both members, `cargo publish --dry-run --allow-dirty -p ui-kit`).
+/// extra`, and the packaging checks (`cargo package --list` for both
+/// members). `cargo publish --dry-run` is covered separately by
+/// `outou_and_ui_kit_publish_dry_run_succeeds_together`, on a temp
+/// workspace of `outou` + `ui-kit`.
 ///
 /// One test, one temp copy, one `outou build`.
 #[test]

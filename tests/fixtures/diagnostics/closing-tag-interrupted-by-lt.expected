@@ -1,0 +1,2 @@
+error: unexpected `<` inside closing tag, expected `>`
+ --> closing-tag-interrupted-by-lt.rsx:6:7

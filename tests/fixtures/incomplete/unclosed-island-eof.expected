@@ -1,0 +1,4 @@
+error: unexpected end of file, expected `}` to close this expression
+ --> unclosed-island-eof.rsx:5:10
+error: missing closing tag `</div>`
+ --> unclosed-island-eof.rsx:5:5

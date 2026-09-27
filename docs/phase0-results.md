@@ -49,7 +49,7 @@ input). §9 (recovery) and §10 (reserved constructs) are covered next.
 The parser never panics on any input, including every byte-boundary prefix of every fixture
 (`crates/outou-syntax/tests/never_panics.rs`) and a 46-symbol-alphabet, fixed-seed fuzz test
 (`crates/outou-syntax/tests/fuzz.rs`, `FUZZ_ALPHABET`, LCG seed `0x9E3779B97F4A7C15`). Of
-`docs/grammar.md` §9's 15 required recovery cases, six are asserted verbatim against a fixture's
+`docs/grammar.md` §9's 15 required recovery cases, nine are asserted verbatim against a fixture's
 sibling `.expected` file (`docs/phase0/issues/04-lexer-parser-recovery.md`):
 
 - a truncated tag/attribute name at end of input (`unterminated-attribute-name.rsx`)
@@ -58,16 +58,30 @@ sibling `.expected` file (`docs/phase0/issues/04-lexer-parser-recovery.md`):
 - a mismatched closing tag, reported once, not cascaded (`mismatched-closing-tag.rsx`)
 - an unterminated attribute-value island (`unterminated-attribute-value.rsx`)
 - a stray `}` in element content (`stray-rbrace-in-text.rsx`)
+- a stray closing tag with no matching opening tag (`diagnostics/stray-closing-tag.rsx`)
+- a closing tag interrupted by `<` (`diagnostics/closing-tag-interrupted-by-lt.rsx`)
+- an unclosed island at end of file (`incomplete/unclosed-island-eof.rsx`)
 
 Five more are asserted elsewhere: an unterminated attribute-value string
 (`unterminated-string-swallows-block-close`), an empty attribute-value island
 (`class-attribute-value-mid-file`, `crates/outou-syntax/tests/islands.rs`), the nesting-cap pair —
 JSX and inline `mod` past 128 levels — in `never_panics.rs`, and reserved syntax via
-`tests/ui/reserved-fragment`. **Four have no fixture and no test asserting their diagnostic text at
-all** — a stray closing tag, a truncated closing tag at end of input, a closing tag interrupted by
-`<`, and an unclosed island at end of file; the strings exist only in
-`crates/outou-syntax/src/parser/diag.rs`. Recorded as a Phase 0 test gap, not fixed here; writing
-the missing fixtures is issue #4 work.
+`tests/ui/reserved-fragment`. **One still has no fixture**: a truncated closing tag at end of input
+(`` unexpected end of file inside closing tag, expected `>` ``, `diag::eof_inside_closing_tag`). The
+diagnostic itself is reachable and reports correctly and only once (checked directly against
+`outou_syntax::parse` on `<div>\n</div` at end of input, alongside the enclosing element's own
+legitimate, non-cascading "missing closing tag"), but `CloseResolution::Terminated`
+(`crates/outou-syntax/src/parser/jsx/closing.rs`) carries no end-of-scan position the way
+`TagOutcome::Terminated` (`.../jsx/tag.rs`, behind `eof_inside_tag`) does: `children.rs` falls back
+to the position of the closing tag's own `<`, so the truncated `</Name` text is left unconsumed up to
+the real end of file and reappears as raw, non-Rust text spliced right after the generated
+`rsx! { … }` call. That fails `crates/outou-backend-dioxus/tests/recovery.rs`'s
+`every_incomplete_fixture_produces_parseable_analyzable_rust`, which every other
+`tests/fixtures/incomplete/` fixture satisfies, so a fixture for this one case was not added rather
+than weakening that invariant. This is a distinct gap from the swallowed-tail limitation below (and
+from `LOW-17`, which is about function-signature swallowing, not closing-tag position tracking); no
+parser behavior was changed to work around it. Recorded as a Phase 0 test/parser gap, not fixed here
+— issue #4 follow-up.
 
 **The swallowed-tail limitation.** A body-less function whose parameter list never reaches a closing
 `)` (`fn App(` cut off mid-file) is not always diagnosed as an error: the parser can swallow the
@@ -85,8 +99,9 @@ gets a chance to help
 **Nesting cap.** JSX elements and inline modules are each capped at 128 levels of nesting
 (`docs/grammar.md` §9, decision D4). Past the cap the parser diagnoses `this element is nested too
 deeply` / `modules are nested too deeply (Outou supports at most 128 levels)` instead of recursing
-further; 128 was chosen with roughly 3x margin over the deepest nesting (500 JSX levels, 1000
-inline-module levels) observed to overflow a 2 MiB debug-build thread stack.
+further; 128 was chosen with roughly 3.9x margin from the deepest JSX nesting (500 levels) and
+roughly 7.8x margin from the deepest inline-module nesting (1000 levels) observed to overflow a
+2 MiB debug-build thread stack.
 
 ### Known ambiguities and reserved constructs (`docs/grammar.md` §10, plus the corpus-found residual)
 
@@ -184,15 +199,18 @@ generated code always has — while returning correct completion everywhere else
 (b) satisfied all seven Strategy A criteria.
 
 **The Cargo command matrix** (issue #10, `crates/outou-cli/tests/matrix.rs`): `cargo
-build`/`check`/`test`/`clippy --all-targets -- -D warnings` all pass for `examples/phase0-app`;
-`cargo build`/`test`/`clippy --workspace --all-targets -- -D warnings`, plus `cargo package --list`
-and `cargo publish --dry-run`, all pass for the two-crate workspace fixture
+build`/`check`/`test`/`clippy --all-targets -- -D warnings` and `cargo package --list` all pass for
+`examples/phase0-app`; `cargo build`/`test`/`clippy --workspace --all-targets -- -D warnings` and
+`cargo package --list` (for both members) all pass for the two-crate workspace fixture
 (`tests/fixtures/workspace/{ui-kit,app}`; `cargo check` is not separately run against the
-workspace). `#[cfg(test)] mod tests` inside a `.rsx` file runs under `cargo test` exactly as it
-would in a `.rs` file. Plain (JSX-free) `///` doc tests in a `.rsx` file with a `[lib]` target run
-under `cargo test --doc`; a `[[bin]]`-only crate (`examples/phase0-app`, by ADR 0009's application
-layout) cannot run *any* doc test, plain or JSX — an ordinary Cargo constraint (a doc test links
-against the crate as a library), not an Outou gap.
+workspace). `cargo publish --dry-run` is not run against that fixture: a standalone `ui-kit` publish
+cannot resolve the unpublished `outou`. It passes instead for `outou` and `ui-kit` packaged together
+in a separate temporary two-crate workspace (`outou_and_ui_kit_publish_dry_run_succeeds_together`;
+see §8's "The `outou`-unpublished blocker, resolved (#15)"). `#[cfg(test)] mod tests` inside a
+`.rsx` file runs under `cargo test` exactly as it would in a `.rs` file. Plain (JSX-free) `///` doc
+tests in a `.rsx` file with a `[lib]` target run under `cargo test --doc`; a `[[bin]]`-only crate
+(`examples/phase0-app`, by ADR 0009's application layout) cannot run *any* doc test, plain or JSX —
+an ordinary Cargo constraint (a doc test links against the crate as a library), not an Outou gap.
 
 **MSRV.** `Cargo.toml` sets `rust-version = "1.85"` (clap 4.6 requires it);
 `.github/workflows/ci.yml` runs the test job on a `[stable, "1.85"]` matrix, which is where `cargo
@@ -429,34 +447,72 @@ rename/references and semantic tokens into #14 and listing that pair in the reve
    `outou`-unpublished publish blocker (§8).
 
 Every `TODO(phase0)` in the tree (`grep -rn "TODO(phase0)" --include=*.rs --include=*.md .`,
-excluding `target/`, `.corpus/` and this document: **31 matches**), by file:
+excluding `target/`, `.corpus/` and this document *by file*: **56 matches**), by file. (Piping that
+command through `grep -v docs/phase0-results.md` instead of excluding the file by path undercounts
+by one: `docs/grammar.md:313`'s cell text itself contains the substring `docs/phase0-results.md` as
+a cross-reference, so a substring-based `grep -v` drops that line too even though it is not from
+this document.)
 
 | File | What is deferred |
 |---|---|
-| `docs/grammar.md`, `docs/phase0/issues/03-grammar-spec.md` (1 deferred item, 3 mentions) | `#[react_import(...)]`'s payload/semantics, pushed to the React-interop phase (only `docs/grammar.md:15` is the deferred item itself; the other two mentions, in `docs/phase0/issues/03-grammar-spec.md`, describe it) |
+| `docs/grammar.md:15`, `docs/phase0/issues/03-grammar-spec.md` (1 deferred item, 3 mentions) | `#[react_import(...)]`'s payload/semantics, pushed to the React-interop phase (only `docs/grammar.md:15` is the deferred item itself; the other two mentions, in `docs/phase0/issues/03-grammar-spec.md`, describe it). `docs/grammar.md`'s other `TODO(phase0)` mention, at line 313, is an unrelated gap — see the `children.rs` row below |
 | `docs/backend-leakage.md` (row 11, resolved by row 16) | Whether codegen could emit fully-qualified backend paths instead of re-exporting them — investigated and rejected, not open |
 | `crates/outou-syntax/src/lexer/mod.rs` (2 sites) | Non-XID-continue bytes above 0x7F accepted in a `JsxName`; a `tokenize` doc note |
-| `crates/outou-syntax/src/parser/jsx/children.rs` | A byte-precise diagnostic message for one recovery shape |
+| `crates/outou-syntax/src/parser/jsx/children.rs` (2 sites), `docs/grammar.md:313` | A byte-precise diagnostic message for one recovery shape (no fixture); `CloseResolution::Terminated`'s `pos` is the closing tag's own `<`, not the end of scan, so a truncated `</Name` at EOF is left unconsumed and re-spliced after the generated call in Recovery-mode codegen (§2, §9 above) — `docs/grammar.md:313`'s `TODO(phase0)` note in the §9 table's Fixture column points at this same gap |
 | `crates/outou-backend-dioxus/tests/golden/components/expected.rs` | Whether a JSX-bearing doc test is required (it is not) |
 | `crates/outou-lsp/src/uri.rs`, `docs/gate3-results.md` (LOW-16 reference) | Windows/UNC file URIs — not reachable on Phase 0's macOS/Linux platforms |
 | `crates/outou-lsp/src/mapping.rs` (2 sites), `docs/gate3-results.md` (MEDIUM-15 reference) | A multi-source diagnostic always uses only its first source; a fixture/test-module duplication (`L15`) |
+| `crates/outou-lsp/src/rename.rs` (2 sites) | `prepareRename` on a *closing* tag returns the *opening* tag's own range, since `generated_location_to_source` always resolves a multi-source mapping to its first source (issue #14 review, MEDIUM-8) |
 | `crates/outou-lsp/src/documents/workspace.rs` (3 sites), `docs/gate3-results.md` (L15 reference) | `load_unit`/`load_unit_with_text` near-duplication; `HIGH-2`'s narrower SKIP half |
 | `crates/outou-lsp/src/complete.rs` (2 sites) | Recovery quality for `<div class=` swallowing a following sibling element; re-parsing every `.rsx` file on every tag/attribute-name keystroke (`L15`) |
+| `crates/outou-lsp/src/dispatch/requests.rs` | Synchronous, unbudgeted formatting request handling — one `rustfmt` process per file plus one per expression island, cost scaling with island count |
 | `crates/outou-lsp/README.md` | The SKIP items recorded at their own call sites (Windows/UNC file URIs, first-source-only multi-source diagnostics, `completionItem/resolve` not advertised) |
 | `crates/outou-cli/tests/ui.rs`, `docs/phase0/issues/11-diagnostics-ui-tests.md` | `outou check --semantic` — the UI harness's semantic/backend mapping machinery is test-only, not a real subcommand |
 | `crates/outou-cli/src/build/workspace.rs` (2 sites) | Member-path globbing limited to a single trailing `/*` segment; `[workspace] default-members` not read |
+| `crates/outou-cli/src/fmt.rs` | `outou fmt`'s in-place file write is not atomic (no write-to-temp-then-rename) |
+| `crates/outou-cli/src/rsx_files.rs` | A `.rsx` file that is itself a symlink is formatted through the symlink (ordinary Unix `write` semantics, but worth flagging) |
+| `crates/outou-cli/src/package.rs` | Cross-references `outou package`'s own `-p`/`--package` passthrough gap, described in the README row below |
 | `crates/outou-cli/README.md` (2 sites), `docs/phase0/issues/08-cargo-build-determinism.md` | The `.rs`-declares-`.rsx`-child limitation (§3); the globbing limitation above. (The `outou`-unpublished publish blocker this row used to list is resolved, not deferred — issue #15, §8.) |
+| `crates/outou-cli/README.md` (`outou package` section) | Any *other* `-p` package named alongside `--manifest-dir`'s own crate is passed to `cargo` unverified |
+| `crates/outou-fmt/README.md` (5 items), `crates/outou-fmt/src/width.rs` (2 sites), `crates/outou-fmt/src/rustfmt_proc.rs` | CRLF always normalized to `\n`; the line-width budget is a fixed constant, not read from `rustfmt.toml`; a synthetic-wrapper snippet's fixed 4-space dedent can misalign a non-multiple-of-4 continuation; `hard_tabs = true` is contained, not honored; `rustfmt`'s working directory/edition are process-global, not per-crate; a `fits` call site is handed a line's leading indent rather than the placeholder's own column; a stdin/stdout deadlock with a very verbose `rustfmt` run is a known but unhit risk |
 | `xtask/src/corpus/lock.rs` | A `toml`-parsing simplification (`F15`/LOW, issue #12 review) |
+| `docs/adr/0011-formatter-placeholder-rustfmt-splice.md` (4 items) | Same formatter limitations as the `outou-fmt` row above, recorded again at the ADR's own Consequences section |
+| `docs/adr/0013-rename-translation-and-refusal.md` (2 items, 3 mentions) | The keyword-named-prop rename/references gap (`docs/backend-leakage.md` row 29) has no text-only fallback; `prepareRename` on a closing tag returns the opening tag's range (same gap as the `rename.rs` row above). The third mention (line 30) is not a deferred item: it explains why a `TODO(phase0)` is deliberately *not* added for a currently-unreachable shape |
 | `AGENTS.md` | States the `TODO(phase0)` convention itself (not a deferred item) |
 
-**Follow-ups filed by this report** (out of this change's scope; not edited here):
+**Follow-ups filed by this report, now resolved:**
 
 - `docs/grammar.md:328` / `crates/outou-syntax/src/parser/diag.rs`'s nesting-cap margin: "roughly 3x
-  margin" is really ~3.9x (JSX) and ~7.8x (modules).
-- `tests/fixtures/formatting/README.md`: its prose says 12 fixtures, its own table lists 13.
-- `crates/outou-cli/README.md:35`: carries the same over-broad Cargo-matrix `cargo check` claim
-  corrected in §4 of this document.
-- `docs/design.md:86`: pre-existing competitor-comparison and project-continuation language.
+  margin" corrected to ~3.9x (JSX) and ~7.8x (modules), matching the 500/1000-level overflow points
+  cited alongside it (`docs/grammar.md` §9, `diag::MAX_NESTING`'s doc comment, §2 above).
+- `tests/fixtures/formatting/README.md`: its provenance prose now says it covers the 12 whitespace
+  fixtures, and that the 13th, `attribute-escapes`, was added later for escape decoding and was not
+  part of that cross-check.
+- `crates/outou-cli/README.md:51` and `docs/phase0-results.md` §4: the Cargo-matrix sentence no
+  longer claims `cargo publish --dry-run` passes for the two-crate workspace fixture itself
+  (`workspace_fixture_cargo_matrix` never runs `cargo publish`); it now says `cargo package --list`
+  passes for both members of that fixture, and that `cargo publish --dry-run` is exercised
+  separately, on a temporary `outou` + `ui-kit` workspace, by
+  `outou_and_ui_kit_publish_dry_run_succeeds_together`. `crates/outou-cli/tests/matrix.rs`'s own doc
+  comment (~383) was corrected to match. The README's opening clause no longer claims `publish` is
+  exercised for both the application and the workspace fixture.
+- `docs/design.md`: lines 22, 36 and 86 were rewritten to remove competitor comparisons
+  (Dioxus/Yew) and a project-continuation judgment ("Outou continues" / "is abandoned"), per
+  `AGENTS.md`'s rule against both in public documents. The surrounding text (the list of what a
+  `.rsx` file keeps; the fallback described under "If the bet fails") is unchanged.
+
+**New follow-ups filed by this report** (out of scope for this change; not fixed here):
+
+- The truncated closing tag at end of input's missing fixture, §2 above — `CloseResolution::Terminated`
+  (`crates/outou-syntax/src/parser/jsx/closing.rs`) does not carry an end-of-scan position, so
+  recovery leaves trailing `</Name` bytes unconsumed and later re-spliced as invalid Rust in
+  Recovery-mode codegen output. A `TODO(phase0)` comment recording this was added at the
+  `CloseResolution::Terminated` arm in `crates/outou-syntax/src/parser/jsx/children.rs` (~109), in
+  the style of that file's existing `TODO(phase0)` (~148); no behavior changed.
+- `docs/adr/0001-standalone-rsx-source-format.md` lines 7, 18 and 23 use language similar to what was
+  rewritten in `docs/design.md` (competitor comparisons, a project-continuation judgment) but were
+  left unchanged: it is an Accepted ADR, and editing an Accepted ADR's context is a separate decision
+  from correcting live public docs, out of scope for this change.
 
 ## 10. Decision — the Phase 0 criteria are met
 
@@ -510,6 +566,11 @@ plainly so they are not discovered later:
 - **The swallowed-tail parser recovery gap** (§2) means one shape of half-typed input (a truncated
   function signature) can silently eat following code in the editor overlay, recovered only when the
   user finishes or abandons that edit.
+- **A truncated closing tag at end of input is left unconsumed by Recovery mode** (§2, §9):
+  `CloseResolution::Terminated` (`crates/outou-syntax/src/parser/jsx/children.rs`) reports `pos` as
+  the closing tag's own `<` rather than the end of the scan, so the trailing `</Name` bytes are not
+  consumed and are later re-spliced as invalid Rust in Recovery-mode codegen output — not yet covered
+  by a fixture (`docs/grammar.md` §9's table).
 
 **What the fallback would have cost, had this been a NO-GO.** Issue #16 asks this to be recorded
 regardless of the outcome. Falling back to `outou::jsx!` as an ordinary procedural macro (ADR 0001's

@@ -142,10 +142,11 @@ pub fn stray_rbrace_in_text() -> String {
 
 /// The maximum JSX element nesting depth and inline-`mod` nesting depth
 /// Outou supports before it stops recursing and diagnoses instead
-/// (decision D4, grammar §9). Measured to give roughly 3x margin over the
-/// deepest nesting observed to overflow a 2 MiB thread stack in a debug
-/// build (500 JSX levels, 1000 inline-module levels) while comfortably
-/// exceeding any real UI's nesting.
+/// (decision D4, grammar §9). Measured to give roughly 3.9x margin from
+/// the deepest JSX nesting observed to overflow a 2 MiB thread stack in a
+/// debug build (500 levels) and roughly 7.8x margin from the deepest
+/// inline-module nesting observed to overflow it (1000 levels), while
+/// comfortably exceeding any real UI's nesting.
 pub const MAX_NESTING: u32 = 128;
 
 /// `this element is nested too deeply (Outou supports at most 128 levels)`

@@ -19,7 +19,7 @@ fn App() -> Element {
 
 The element is not inside a macro. It is an expression of the language, in a `.rsx` file, next to ordinary Rust.
 
-Dioxus, Yew and others already offer HTML-like DSLs inside macros. What they cannot offer, and what Outou is betting on, is this: **JSX outside a macro DSL, without losing Rust's developer experience.** Concretely, while editing a `.rsx` file you keep:
+HTML-like syntax inside a macro invocation is an established approach in Rust UI code; Outou's bet is instead **JSX outside a macro DSL, without losing Rust's developer experience.** Concretely, while editing a `.rsx` file you keep:
 
 - go to definition on `load_user()`
 - the type of `user` on hover
@@ -33,7 +33,7 @@ and all of this keeps working while the file is half-typed (`<UserCard us`, `<di
 
 The novelty is therefore not a VDOM, hooks or a renderer. It is the front end and the tooling: grammar, parser with error recovery, module resolution, Cargo integration, source maps, rust-analyzer integration, diagnostics and formatting. That is what Phase 0 validates, and nothing else.
 
-The one question Phase 0 answers: **can JSX become part of Rust without making Rust worse?** If yes, Outou continues. If no, the standalone `.rsx` format is abandoned.
+The one question Phase 0 answers: **can JSX become part of Rust without making Rust worse?** The answer decides the source format: a standalone `.rsx` file if yes, the procedural-macro fallback described under "If the bet fails" if no.
 
 ## Non-goals of Phase 0
 
@@ -83,7 +83,7 @@ fn App() -> Element {
 }
 ```
 
-"Rust with JSX" survives that fallback. The main differentiator, JSX as a first-class Rust expression, does not. In that case the project is compared again with existing macro DSLs and continued only if it still has a reason to exist.
+"Rust with JSX" survives that fallback. The property Outou is built around, JSX as a first-class Rust expression, does not.
 
 ## Future
 

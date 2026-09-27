@@ -1,0 +1,2 @@
+error: closing tag `</div>` has no matching opening tag
+ --> stray-closing-tag.rsx:5:5
