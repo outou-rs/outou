@@ -168,6 +168,13 @@ pub struct PlannedUnit {
     pub module_path: Vec<String>,
     /// Absolute path to the `.rsx` source.
     pub source_file: PathBuf,
+    /// `source_file`, relative to the crate directory and forward-slash
+    /// joined (`super::paths::crate_relative_display`) — e.g.
+    /// `src/widgets/button.rsx`. Set into
+    /// `outou_codegen::GenerateOptions::source_display` so the generated
+    /// header names the source without embedding the generating
+    /// machine's absolute path (ADR 0008).
+    pub source_display: String,
     /// Absolute path to the generated `.rs` file.
     pub generated_file: PathBuf,
     /// Absolute path to the generated `.rs.map.json` sidecar.
@@ -279,6 +286,7 @@ fn planned_unit(
         .expect("generated_path always has a parent")
         .to_path_buf();
     let source_file = crate_dir.join(&node.file);
+    let source_display = super::paths::crate_relative_display(crate_dir, &source_file);
 
     let mut module_paths = BTreeMap::new();
     let mut inline_base_dirs = Vec::new();
@@ -295,6 +303,7 @@ fn planned_unit(
     Ok(PlannedUnit {
         module_path: node.path.clone(),
         source_file,
+        source_display,
         generated_file,
         map_file,
         module_paths,

@@ -41,9 +41,14 @@ pub const SOURCE_MAP_JSON_VERSION: u32 = 1;
 pub struct SourceMapJson {
     /// Format version. Always [`SOURCE_MAP_JSON_VERSION`].
     pub version: u32,
-    /// Generated file path or URI, as written by the compiler.
+    /// Generated file path or URI, as written by the compiler. When
+    /// written by `outou build`, a relative path is relative to the
+    /// crate directory (the one containing `Cargo.toml`), not to the
+    /// file that embeds it.
     pub generated: String,
-    /// Source file paths or URIs, indexed by [`SourceId`].
+    /// Source file paths or URIs, indexed by [`SourceId`]. Same
+    /// relative-path convention as [`Self::generated`] when written by
+    /// `outou build`.
     pub sources: Vec<String>,
     /// Free-form note for humans reading the file. Ignored by tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]

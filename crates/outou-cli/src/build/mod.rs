@@ -15,6 +15,7 @@
 
 pub mod clean;
 pub mod emit;
+pub mod paths;
 pub mod plan;
 pub mod workspace;
 

@@ -12,6 +12,7 @@ use clap::{Parser, Subcommand};
 use outou_cli::build::{self, BuildOptions};
 use outou_cli::check;
 use outou_cli::fmt;
+use outou_cli::package;
 
 /// Rust with JSX.
 #[derive(Debug, Parser)]
@@ -48,8 +49,25 @@ enum Command {
     /// Generate Rust and prepare the crate for `cargo publish`.
     ///
     /// Published crates ship pre-generated Rust so that consumers need
-    /// neither `outou` nor a build script.
-    Package,
+    /// only `cargo build`: no Outou compiler, CLI or build script (the
+    /// generated code still depends on the `outou` runtime crate like any
+    /// ordinary dependency, ADR 0010; ADR 0008).
+    Package {
+        /// Directory containing the crate's `Cargo.toml`. Defaults to the
+        /// current directory.
+        #[arg(long)]
+        manifest_dir: Option<PathBuf>,
+        /// Only check whether the committed `src/.generated/` output
+        /// matches the current `.rsx` sources; list drift and exit
+        /// non-zero without writing anything or calling `cargo` (CI's
+        /// `generated-drift` job).
+        #[arg(long)]
+        check: bool,
+        /// Extra arguments passed straight through to `cargo package`
+        /// (e.g. `-- --allow-dirty`). Ignored with `--check`.
+        #[arg(last = true)]
+        cargo_args: Vec<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -58,7 +76,14 @@ fn main() -> ExitCode {
         Command::Build { manifest_dir } => run_build(manifest_dir),
         Command::Check => check::run(),
         Command::Fmt { paths, check } => fmt::run(&paths, check),
-        Command::Package => todo!("outou package: Phase 0, Week 6"),
+        Command::Package {
+            manifest_dir,
+            check,
+            cargo_args,
+        } => {
+            let manifest_dir = manifest_dir.unwrap_or_else(|| PathBuf::from("."));
+            package::run(&manifest_dir, check, &cargo_args)
+        }
     }
 }
 

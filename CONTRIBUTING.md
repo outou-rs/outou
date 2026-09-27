@@ -26,7 +26,7 @@ cargo fmt --all -- --check
 
 ## Generated Rust
 
-Generated Rust under `.generated/` directories is ignored by git for **applications**. **Libraries** that publish pre-generated Rust commit it, and CI verifies that regenerating from `.rsx` yields the same files. Never edit generated files by hand.
+Generated Rust under `.generated/` directories is ignored by git for **applications**. **Libraries** that publish pre-generated Rust commit it, and CI verifies that regenerating from `.rsx` yields the same files (`outou package --check`, the `generated-drift` job — `crates/outou-cli/README.md`). Never edit generated files by hand.
 
 ## Syntax corpora
 

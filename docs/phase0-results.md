@@ -17,9 +17,9 @@ Gates 0, 1 and 2 were reached without changing strategy, each after its own revi
 trusted (`docs/gate3-results.md`), and the parser corpus run found and fixed one CRITICAL,
 currently-affecting defect (issue #12, F1) before reaching its final 0-panic, 0.10%-false-positive
 result. Every "must not be cut" item in `docs/phase0.md` is delivered; every explicitly droppable
-item (#13, #14, #15) was in fact dropped, as planned, and each is a stub or absent rather than
-partially built. The Phase 0 criteria, read literally against `docs/phase0.md` and `docs/design.md`,
-are met.
+item (#13, #14, #15) was in fact *built* (formatter, semantic tokens/rename/references, and `outou
+package`/publish automation, in that order — see §9), none actually cut. The Phase 0 criteria, read
+literally against `docs/phase0.md` and `docs/design.md`, are met.
 
 | Gate | Verdict | Evidence |
 |---|---|---|
@@ -386,37 +386,47 @@ dot-prefixed paths *regardless of `include`* — an earlier draft of that docume
 this exact point, traced to a test helper that had (at the time) copied the fixture into a bare,
 non-git directory before packaging.
 
-**The `outou`-unpublished blocker.** `cargo publish --dry-run --allow-dirty -p ui-kit` fails: `` no
-matching package named `outou` found ... location searched: crates.io index ``. `ui-kit`'s generated
-code depends on `outou` (`::outou::__private::*`) as an ordinary Cargo dependency, and `outou` has
-not been published to crates.io. This is an ordinary Cargo constraint (any crate with an unpublished
-`path` dependency fails to publish the same way), not a dot-directory or JSX-specific one, and it is
-orthogonal to ADR 0009's `src/.generated/` layout, which packages correctly on its own.
+**The `outou`-unpublished blocker, resolved (#15).** A *standalone* `cargo publish --dry-run
+--allow-dirty -p ui-kit` still fails: `` no matching package named `outou` found ... location
+searched: crates.io index ``, since `ui-kit`'s generated code depends on `outou`
+(`::outou::__private::*`) as an ordinary Cargo dependency and `outou` has not been published to
+crates.io. But packaging `outou` and `ui-kit` *together* in one `cargo publish -p outou -p ui-kit`
+invocation succeeds: Cargo builds the temporary lockfile for a multi-package publish assuming every
+packaged crate lands on the same registry together, so `ui-kit`'s local `path` dependency on the
+`outou` being packaged alongside it resolves. Confirmed first as a manual spike, then as
+`outou_and_ui_kit_publish_dry_run_succeeds_together` in `crates/outou-cli/tests/matrix.rs`.
 
-**What `outou package` (#15, droppable, not implemented) still needs:**
-`crates/outou-cli/src/main.rs` has `Command::Package => todo!(...)`. Per issue #15's checklist, none
-of the three items are built: (1) generating Rust and including it in the published crate — the
-design is fixed (ADR 0008) and `outou build`'s own generation is reusable, but no `package`
-subcommand calls it; (2) a CI job regenerating from `.rsx` and failing on a difference from the
-committed/packaged Rust; (3) `cargo publish --dry-run` on a library fixture as an automated check
-(done manually in this report and in issue #10's matrix, not wired into a `package` command). The
-`outou`-unpublished blocker above is also unresolved: a real `outou package` needs either to require
-`outou` published first, or to resolve that dependency some other way at publish time
-(`TODO(phase0)`, `crates/outou-cli/README.md`).
+**What `outou package` (#15, droppable) delivers:**
+`crates/outou-cli/src/package.rs` (`pub mod package` in `src/lib.rs`), wired into
+`Command::Package` in `src/main.rs`. All three of issue #15's checklist items are built: (1)
+`outou package [--manifest-dir DIR] [-- <cargo package args>]` regenerates through `build::build`
+(Strict, exactly like `outou build`), confirms every generated `.rs` file is actually listed by
+`cargo package --list` (an actionable error otherwise — a gitignored `.generated/` or a missing
+`[package] include` would silently publish a library with no generated Rust at all), then runs
+`cargo package`; (2) `outou package --check` runs `package::check_generated` — plans the crate,
+generates every unit in memory, and diffs it against disk (`changed`/`missing`/`stale`) without
+writing anything or calling `cargo` — wired into CI as the `generated-drift` job against every
+committed, `outou`-generated fixture; (3) the `outou`-unpublished blocker above is resolved, and
+`outou_and_ui_kit_publish_dry_run_succeeds_together` exercises it as an automated (if `#[ignore]`d)
+test. A prerequisite fix (also #15) made generated output crate-relative rather than
+machine-relative — see ADR 0008's Consequences and `crates/outou-cli/README.md`'s `outou package`
+section.
 
 ## 9. What was cut or deferred
 
 Per `docs/phase0.md`'s "what is cut first" list, which orders four items (Formatter,
 Rename/references, Semantic tokens, Publish automation); issues #13-#15 track them as three, merging
 rename/references and semantic tokens into #14 and listing that pair in the reverse of
-`docs/phase0.md`'s order:
+`docs/phase0.md`'s order. All three are now done — none was actually cut:
 
-1. **Formatter (#13)** — not implemented. No placeholder-substitution pipeline, no
+1. **Formatter (#13)** — done: placeholder-substitution pipeline (`crates/outou-fmt`),
    `textDocument/formatting`.
-2. **Semantic tokens and rename/references (#14)** — not implemented. No TextMate grammar stand-in
-   either (`packages/vscode-outou/` has none).
-3. **`outou package` / publish automation (#15)** — not implemented (`todo!()`); the design (ADR
-   0008) is fixed and verified manually (§8).
+2. **Semantic tokens and rename/references (#14)** — done: full semantic tokens merged with Outou's
+   own overlay; rename/references with two known gaps (§5's table); a TextMate grammar stand-in
+   (`packages/vscode-outou/`).
+3. **`outou package` / publish automation (#15)** — done: `outou package [--check]`
+   (`crates/outou-cli/src/package.rs`), the `generated-drift` CI job, and a resolved (not deferred)
+   `outou`-unpublished publish blocker (§8).
 
 Every `TODO(phase0)` in the tree (`grep -rn "TODO(phase0)" --include=*.rs --include=*.md .`,
 excluding `target/`, `.corpus/` and this document: **31 matches**), by file:
@@ -435,7 +445,7 @@ excluding `target/`, `.corpus/` and this document: **31 matches**), by file:
 | `crates/outou-lsp/README.md` | The SKIP items recorded at their own call sites (Windows/UNC file URIs, first-source-only multi-source diagnostics, `completionItem/resolve` not advertised) |
 | `crates/outou-cli/tests/ui.rs`, `docs/phase0/issues/11-diagnostics-ui-tests.md` | `outou check --semantic` — the UI harness's semantic/backend mapping machinery is test-only, not a real subcommand |
 | `crates/outou-cli/src/build/workspace.rs` (2 sites) | Member-path globbing limited to a single trailing `/*` segment; `[workspace] default-members` not read |
-| `crates/outou-cli/README.md` (3 sites), `docs/phase0/issues/08-cargo-build-determinism.md` | The `.rs`-declares-`.rsx`-child limitation (§3); the globbing limitation above; the `outou`-unpublished publish blocker (§8) |
+| `crates/outou-cli/README.md` (2 sites), `docs/phase0/issues/08-cargo-build-determinism.md` | The `.rs`-declares-`.rsx`-child limitation (§3); the globbing limitation above. (The `outou`-unpublished publish blocker this row used to list is resolved, not deferred — issue #15, §8.) |
 | `xtask/src/corpus/lock.rs` | A `toml`-parsing simplification (`F15`/LOW, issue #12 review) |
 | `AGENTS.md` | States the `TODO(phase0)` convention itself (not a deferred item) |
 
@@ -494,9 +504,9 @@ plainly so they are not discovered later:
   latency, because rust-analyzer's own native diagnostics never report them (confirmed general, not
   Outou-specific, by the Week 1 spike) — an alpha user will see a lag between typing a type error
   and seeing it that a `.rs` file in the same editor would not have.
-- **No formatter, semantic tokens, rename, or publish automation** exist at all (§9); an alpha user
-  gets a TextMate-free, rustfmt-free editing experience for `.rsx` and cannot `cargo publish` a
-  library without first hand-rolling generation into the package.
+- **Formatter, semantic tokens, rename/references, and publish automation are all now built** (§9),
+  none of the droppable items were actually cut — but each has its own known gaps stated in §5's
+  table and §9, and none has had the scrutiny of the gated (non-droppable) work.
 - **The swallowed-tail parser recovery gap** (§2) means one shape of half-typed input (a truncated
   function signature) can silently eat following code in the editor overlay, recovered only when the
   user finishes or abandons that edit.

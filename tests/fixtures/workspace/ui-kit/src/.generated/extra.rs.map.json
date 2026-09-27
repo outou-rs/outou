@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "generated": "file:///Users/kiyoshi/Documents/projects/outou-rs/outou/tests/fixtures/workspace/ui-kit/src/.generated/extra.rs",
+  "generated": "src/.generated/extra.rs",
   "sources": [
-    "file:///Users/kiyoshi/Documents/projects/outou-rs/outou/tests/fixtures/workspace/ui-kit/src/extra.rsx"
+    "src/extra.rsx"
   ],
   "mappings": [
     {

@@ -106,6 +106,23 @@ jobs:
       - run: cargo test -p outou-backend-dioxus -- --ignored
       - run: cargo test -p outou-cli --test ui -- --ignored
 
+  generated-drift:
+    name: generated output matches committed .rsx sources (issue #15)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # ADR 0008: a published Outou library commits its `src/.generated/`
+      # output, and it must always match what regenerating its `.rsx`
+      # sources right now would produce. `outou package --check` never
+      # writes anything and never calls `cargo`. `tests/fixtures/workspace/ui-kit`
+      # is the only committed fixture whose `.generated/` was actually
+      # produced by `outou build` — the rust-analyzer spike fixture's own
+      # `.generated/` is hand-written (`spikes/rust-analyzer/`), so this
+      # job does not apply to it.
+      - run: cargo run -p outou-cli -- package --check --manifest-dir tests/fixtures/workspace/ui-kit
+
   cargo-matrix:
     name: cargo build/check/test/clippy/package/publish matrix (issue #10)
     runs-on: ubuntu-latest

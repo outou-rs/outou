@@ -26,38 +26,52 @@ pub fn clean_stale(
     produced: &HashSet<PathBuf>,
 ) -> std::io::Result<Vec<PathBuf>> {
     let mut removed = Vec::new();
+    for path in walk_managed_files(generated_dir)? {
+        if produced.contains(&path) {
+            continue;
+        }
+        fs::remove_file(&path)?;
+        removed.push(path);
+    }
+    Ok(removed)
+}
+
+/// Every managed file (`*.rs`, `*.rs.map.json`, or a leftover atomic-write
+/// temp file — see [`is_managed_file`]) under `generated_dir`, walked
+/// recursively, in an unspecified order. Read-only: shared by
+/// [`clean_stale`] (which then removes the ones not in `produced`) and
+/// `crate::package`'s in-memory drift check (which only reports stale
+/// files, never deletes them), so neither reimplements the walk. A
+/// missing `generated_dir` is not an error — a crate with nothing
+/// generated yet has nothing to walk.
+pub(crate) fn walk_managed_files(generated_dir: &Path) -> std::io::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
     if !generated_dir.exists() {
-        return Ok(removed);
+        return Ok(files);
     }
 
     let mut stack = vec![generated_dir.to_path_buf()];
     while let Some(dir) = stack.pop() {
         for entry in fs::read_dir(&dir)? {
             let entry = entry?;
-            let file_type = entry.file_type()?;
             let path = entry.path();
-            if file_type.is_dir() {
+            if entry.file_type()?.is_dir() {
                 stack.push(path);
                 continue;
             }
-            if !is_managed_file(&path) {
-                continue;
+            if is_managed_file(&path) {
+                files.push(path);
             }
-            if produced.contains(&path) {
-                continue;
-            }
-            fs::remove_file(&path)?;
-            removed.push(path);
         }
     }
-    Ok(removed)
+    Ok(files)
 }
 
 /// Whether `path`'s file name is one `outou build` would have produced or
 /// left behind: a generated Rust file (`*.rs`), its source-map sidecar
 /// (`*.rs.map.json`), or a crashed run's leftover atomic-write temp file
 /// (`.<name>.outou-tmp-<pid>`, `emit::atomic_write`'s exact naming).
-fn is_managed_file(path: &Path) -> bool {
+pub(crate) fn is_managed_file(path: &Path) -> bool {
     let name = match path.file_name().and_then(|n| n.to_str()) {
         Some(name) => name,
         None => return false,

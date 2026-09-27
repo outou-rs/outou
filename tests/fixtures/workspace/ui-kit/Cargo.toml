@@ -35,18 +35,20 @@ path = "src/.generated/crate-root.rs"
 # a git working tree with the same ignore rules as this repository
 # before packaging, so the check exercises the real code path.
 #
-# The genuine Phase 0 publish limitation is different: `cargo publish
-# --dry-run --allow-dirty -p ui-kit` fails with "no matching package
-# named `outou` found ... location searched: crates.io index", because
-# `ui-kit` depends on `outou` via a local `path` dependency and `outou`
-# itself has not been published to crates.io. ADR 0008 says a consumer
-# of an Outou library needs only `outou` (no build dependency, no
-# Outou toolchain) — but `outou` still has to actually exist as a
-# published dependency for that library's own `cargo publish` to work.
-# `outou package` (currently `todo!()`) will need to either require
-# `outou` to already be published before packaging a dependent library,
-# or otherwise resolve/vendor that dependency at publish time; this is
-# an ordinary Cargo constraint, not a dot-directory or JSX-specific one.
+# The genuine Phase 0 publish limitation is different, and is resolved
+# (issue #15, `crates/outou-cli/README.md`'s `outou package` section): a
+# *standalone* `cargo publish --dry-run --allow-dirty -p ui-kit` still
+# fails with "no matching package named `outou` found ... location
+# searched: crates.io index", because `ui-kit` depends on `outou` via a
+# local `path` dependency and `outou` itself has not been published to
+# crates.io. But `outou` and `ui-kit` are always published *together* in
+# practice, and packaging several inter-dependent crates in one `cargo
+# package`/`publish` invocation makes Cargo build the temporary lockfile
+# on the assumption that all of them land on the same registry together
+# — so `cargo publish -p outou -p ui-kit` (not `-p ui-kit` alone)
+# resolves this `path` dependency and succeeds. See
+# `outou_and_ui_kit_publish_dry_run_succeeds_together` in
+# `crates/outou-cli/tests/matrix.rs`.
 
 [dependencies]
 # `version` alongside `path`, exactly like the repository root

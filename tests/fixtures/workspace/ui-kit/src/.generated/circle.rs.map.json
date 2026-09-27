@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "generated": "file:///Users/kiyoshi/Documents/projects/outou-rs/outou/tests/fixtures/workspace/ui-kit/src/.generated/circle.rs",
+  "generated": "src/.generated/circle.rs",
   "sources": [
-    "file:///Users/kiyoshi/Documents/projects/outou-rs/outou/tests/fixtures/workspace/ui-kit/src/shapes/circle.rsx"
+    "src/shapes/circle.rsx"
   ],
   "mappings": [
     {

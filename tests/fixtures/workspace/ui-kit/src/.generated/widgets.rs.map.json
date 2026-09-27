@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "generated": "file:///Users/kiyoshi/Documents/projects/outou-rs/outou/tests/fixtures/workspace/ui-kit/src/.generated/widgets.rs",
+  "generated": "src/.generated/widgets.rs",
   "sources": [
-    "file:///Users/kiyoshi/Documents/projects/outou-rs/outou/tests/fixtures/workspace/ui-kit/src/widgets.rsx"
+    "src/widgets.rsx"
   ],
   "mappings": [
     {

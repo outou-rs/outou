@@ -1,8 +1,12 @@
 //! `cargo xtask determinism` (issue #8, Gate 2's last checklist item).
 //!
 //! Generates every required fixture and `examples/phase0-app` through two
-//! independent code paths and asserts the results are identical after
-//! normalizing away each temp directory's own absolute prefix:
+//! independent code paths and asserts the results are byte-for-byte
+//! identical. Generated output is crate-relative (ADR 0008: the header
+//! comment and the `.rs.map.json` sidecar's own `generated`/`sources`
+//! fields never embed the generating machine's absolute path), so two
+//! temp copies of the same source tree, generated at two different
+//! absolute paths, compare equal without any normalization step:
 //!
 //! 1. **The build path**: `outou_cli::build::build`, the exact pipeline
 //!    `outou build` runs, into a fresh temp copy — twice, into two
@@ -33,6 +37,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use outou_backend_dioxus::DioxusBackend;
 use outou_cli::build::emit::file_uri;
+use outou_cli::build::paths::relativize_map_json;
 use outou_cli::build::plan::{find_crate_root, plan, CrateRoot};
 use outou_cli::build::{build, BuildOptions};
 use outou_codegen::{Backend, GenerateOptions, Mode};
@@ -166,7 +171,8 @@ fn generate_via_independent_path(name: &str, manifest_dir: &Path) -> Result<(), 
             .map_err(|e| format!("{name}: reading {}: {e}", unit.source_file.display()))?;
         let parsed = outou_syntax::parse(&source);
         let mut opts =
-            GenerateOptions::new(file_uri(&unit.generated_file), file_uri(&unit.source_file));
+            GenerateOptions::new(file_uri(&unit.generated_file), file_uri(&unit.source_file))
+                .with_source_display(unit.source_display.clone());
         opts.module_paths = unit.module_paths.clone();
 
         let generated = DioxusBackend
@@ -177,7 +183,7 @@ fn generate_via_independent_path(name: &str, manifest_dir: &Path) -> Result<(), 
                     unit.source_file.display()
                 )
             })?;
-        let map_json = generated
+        let mut map_json = generated
             .source_map
             .to_json(&generated.rust, &[&source])
             .map_err(|e| {
@@ -186,6 +192,12 @@ fn generate_via_independent_path(name: &str, manifest_dir: &Path) -> Result<(), 
                     unit.generated_file.display()
                 )
             })?;
+        relativize_map_json(
+            &mut map_json,
+            &canonical,
+            &unit.generated_file,
+            &[&unit.source_file],
+        );
         let map_text = serde_json::to_string_pretty(&map_json)
             .expect("SourceMapJson always serializes")
             + "\n";
@@ -204,9 +216,10 @@ fn generate_via_independent_path(name: &str, manifest_dir: &Path) -> Result<(), 
 }
 
 /// Compares every managed file (`*.rs`, `*.rs.map.json`) under
-/// `left/src/.generated` and `right/src/.generated`, after normalizing
-/// away each tree's own absolute path prefix. `label` describes which two
-/// code paths are being compared, for the failure message.
+/// `left/src/.generated` and `right/src/.generated` byte-for-byte (the
+/// `.rs.map.json` sidecar structurally, so pretty-printing whitespace
+/// never causes a false failure). `label` describes which two code paths
+/// are being compared, for the failure message.
 fn compare_trees(left: &Path, right: &Path, target: &str, label: &str) -> Result<(), String> {
     let left_generated = left.join("src/.generated");
     let right_generated = right.join("src/.generated");
@@ -228,48 +241,22 @@ fn compare_trees(left: &Path, right: &Path, target: &str, label: &str) -> Result
             .map_err(|e| format!("{target}: reading {}: {e}", left_path.display()))?;
         let right_text = fs::read_to_string(&right_path)
             .map_err(|e| format!("{target}: reading {}: {e}", right_path.display()))?;
-        let left_normalized = normalize(&left_text, left);
-        let right_normalized = normalize(&right_text, right);
-
         let matches = if relative.to_string_lossy().ends_with(".map.json") {
-            structurally_equal_json(&left_normalized, &right_normalized)
+            structurally_equal_json(&left_text, &right_text)
         } else {
-            left_normalized == right_normalized
+            left_text == right_text
         };
 
         if !matches {
             return Err(format!(
                 "{target} ({label}): {} differs\n{}",
                 relative.display(),
-                unified_diff(&left_normalized, &right_normalized)
+                unified_diff(&left_text, &right_text)
             ));
         }
     }
 
     Ok(())
-}
-
-/// Replaces every occurrence of `root`'s own absolute path with `<root>`,
-/// so two trees generated into different temp directories become
-/// comparable (the header comment and every source-map URI embed the
-/// generating/source file's absolute path).
-///
-/// This only normalizes away *location*-dependence between two temp
-/// copies of the same source tree; it does not (and is not meant to)
-/// paper over actual *non*-determinism, since both trees are normalized
-/// the same way (LOW-9, issue #8: raised and rejected as misframed — a
-/// global string replace here cannot hide a real difference in generated
-/// bytes, only a difference in where the two copies happened to live on
-/// disk).
-///
-/// TODO(phase0, ADR 0008): the generated header still embeds an absolute
-/// `file://` source URI by design (`outou_sourcemap::file_uri`), which is
-/// exactly what makes this normalization necessary in the first place. `outou
-/// package` (ADR 0008, pre-generated publish artifacts) will need a
-/// relative or repo-root-relative form instead, since a published crate's
-/// generated file cannot embed the path of the machine that generated it.
-fn normalize(text: &str, root: &Path) -> String {
-    text.replace(&root.display().to_string(), "<root>")
 }
 
 /// Parses both texts as JSON and compares them structurally (field order

@@ -15,6 +15,7 @@ use outou_backend_dioxus::DioxusBackend;
 use outou_codegen::{Backend, GenerateOptions, Mode};
 pub use outou_sourcemap::file_uri;
 
+use super::paths;
 use super::plan::{Plan, PlannedUnit};
 
 /// Files written by one [`emit`] run.
@@ -117,13 +118,19 @@ pub fn emit(plan: &Plan) -> Result<EmitOutput, EmitError> {
 
         let generated = generate_unit(unit, &source, Mode::Strict)?;
 
-        let map_json = generated
+        let mut map_json = generated
             .source_map
             .to_json(&generated.rust, &[&source])
             .map_err(|source| EmitError::SourceMapJson {
                 path: unit.generated_file.clone(),
                 source,
             })?;
+        paths::relativize_map_json(
+            &mut map_json,
+            &plan.crate_dir,
+            &unit.generated_file,
+            &[&unit.source_file],
+        );
         let map_text = serde_json::to_string_pretty(&map_json)
             .expect("SourceMapJson always serializes")
             + "\n";
@@ -170,7 +177,8 @@ pub fn generate_unit(
 ) -> Result<outou_codegen::Generated, EmitError> {
     let parsed = outou_syntax::parse(source);
     let mut opts =
-        GenerateOptions::new(file_uri(&unit.generated_file), file_uri(&unit.source_file));
+        GenerateOptions::new(file_uri(&unit.generated_file), file_uri(&unit.source_file))
+            .with_source_display(unit.source_display.clone());
     opts.module_paths = unit.module_paths.clone();
 
     DioxusBackend
@@ -225,9 +233,11 @@ mod tests {
     fn unit_for(source_file: PathBuf, generated_file: PathBuf) -> PlannedUnit {
         let mut map_file = generated_file.clone();
         map_file.set_extension("rs.map.json");
+        let source_display = super::paths::crate_relative_display(Path::new("/"), &source_file);
         PlannedUnit {
             module_path: Vec::new(),
             source_file,
+            source_display,
             generated_file,
             map_file,
             module_paths: BTreeMap::new(),

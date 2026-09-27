@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "generated": "file:///Users/kiyoshi/Documents/projects/outou-rs/outou/tests/fixtures/workspace/ui-kit/src/.generated/crate-root.rs",
+  "generated": "src/.generated/crate-root.rs",
   "sources": [
-    "file:///Users/kiyoshi/Documents/projects/outou-rs/outou/tests/fixtures/workspace/ui-kit/src/lib.rsx"
+    "src/lib.rsx"
   ],
   "mappings": [
     {

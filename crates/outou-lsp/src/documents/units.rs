@@ -73,6 +73,7 @@ pub(crate) fn test_generated_unit(
         planned: PlannedUnit {
             module_path: Vec::new(),
             source_file: PathBuf::new(),
+            source_display: String::new(),
             generated_file: PathBuf::new(),
             map_file: PathBuf::new(),
             module_paths: Default::default(),
