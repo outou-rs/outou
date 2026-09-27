@@ -11,7 +11,7 @@ labels: [alpha, gate-a2, must-keep, parser]
 | **Gate** | A2 |
 | **Droppable** | No |
 
-Four recovery gaps are on record from Phase 0 (`docs/alpha.md`, "A2: recovery, in detail"). This issue covers the three parser-side ones: the swallowed tail, `recover_fragment` and `recover_stray_close`. `A2-completion-gaps.md` covers the `<div class=` sibling-swallowing gap.
+Four recovery gaps are on record from Phase 0 (`docs/alpha.md`, "A2: recovery, in detail"). This issue covers the three parser-side ones: the swallowed tail, `recover_fragment` and `recover_stray_close`. `19-completion-gaps.md` (#19) covers the `<div class=` sibling-swallowing gap.
 
 - [ ] Fix the swallowed-tail limitation: a body-less function whose parameter list never reaches a closing `)` can swallow following source before Outou's own symbol-preservation recovers (`crates/outou-backend-dioxus/README.md:30`, `LOW-17`).
 - [ ] Make `bodyless-fn-mid-file` and `unclosed-island-mid-file` assert that `fn After` survives as its own item and that the truncated construct is diagnosed. Update their `.expected` files and the `recovery.rs` module doc that describes the limitation.
