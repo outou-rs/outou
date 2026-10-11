@@ -17,4 +17,7 @@ node_modules/
 !spikes/rust-analyzer/fixture/src/.generated/
 !tests/fixtures/workspace/ui-kit/src/.generated/
 
+# Raw output of `MEASURE_A1_SAVE_ARTIFACTS=1` measure_a1 runs (not kept in the repo)
+spikes/rust-analyzer/results/measure-a1-*.json
+
 .DS_Store

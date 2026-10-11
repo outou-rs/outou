@@ -1,0 +1,660 @@
+# Alpha results
+
+This document accumulates the alpha's decision report (`docs/alpha.md`, "Decision report"). This
+revision covers **A1: measurement** only (issue #17, `docs/alpha/issues/17-measurement.md`); later
+gates append their own sections here rather than replacing this one.
+
+Every number in (a), (c) and (d) is from the **settled re-measurement of 2026-10-11** (harness
+fixed after review: samples are taken only once rust-analyzer has settled, RSS covers the whole
+process tree and is shown next to macOS physical footprint, cold-init is timed from `initialize`
+sent, and the RSS cold window ends on a settled session, not the first lucky hover). Machine state
+for each run is in "Setup". (b) flycheck and (e) incremental regeneration are unchanged from the
+**clean 2026-09-28 re-run** (the harness fixes do not affect them). The **first 2026-09-28 pass**
+ran while a VS Code-owned rust-analyzer and one hung leftover rust-analyzer process were present on
+the machine; that pass's numbers are not kept here (replaced, not appended) since a mixed-condition table would
+misrepresent which numbers share a baseline.
+
+## A1: measurement
+
+### Setup
+
+- **Workspaces measured**: `examples/phase0-app` (single crate, crate root + one module) and
+  `tests/fixtures/workspace` (a two-member Cargo workspace, `app` + `ui-kit`). Every heavy
+  (rust-analyzer-driving) measurement ran against a fresh temporary copy of the relevant fixture,
+  built once via `outou build`, mirroring `crates/outou-lsp/tests/gate3.rs`'s own
+  `fresh_copy`/`seed_build`. `coldinit`, `flycheck` and `completion` ran against
+  `examples/phase0-app` only (its `main.rsx` is what those modes' cursor positions are anchored to);
+  `rss` ran against **both** workspaces (against `tests/fixtures/workspace`'s `app` member, the
+  crate with a `.rsx` root); the pure-Rust incremental-regeneration measurement ran against every
+  planned unit of both workspaces directly.
+- **Machine**: MacBookPro18,3 (Apple M1 Pro, 10 cores), 16 GiB RAM (`sysctl hw.model hw.memsize`).
+- **OS**: macOS 26.6.2 (build 25G83).
+- **Toolchain**: `rustc 1.98.1 (48a229cea 2026-09-01)`, `cargo 1.98.1 (797e8a9bc 2026-08-05)`.
+- **rust-analyzer**: `rust-analyzer 1.98.1 (48a229ce 2026-09-01)` — the binary `outou-lsp` itself
+  resolves via `OUTOU_RUST_ANALYZER`/`PATH` (`crates/outou-lsp/README.md`, "Running it"); the same
+  binary was used for every "direct"/"plain" comparison session.
+- **Node**: v24.14.0 (drives every heavy probe below, the same way `tests/gate3.rs` does).
+- Every heavy run used a `CARGO_TARGET_DIR` shared across probes, outside the repository tree, so
+  repeated cold-indexing runs were not each also paying to recompile `dioxus` and its dependency
+  graph from scratch (`tests/gate3.rs`'s own `shared_cargo_target_dir` convention).
+- **Build profile**: `outou-lsp` is the dev/debug binary (`CARGO_BIN_EXE_outou-lsp` under plain
+  `cargo test`), which is also the profile the completion assertion runs in. `rust-analyzer` is the
+  release binary shipped with the toolchain. Every magnitude below that involves `outou-lsp` (flycheck,
+  cold-init, completion overhead, `outou-lsp`'s own RSS) is therefore a **debug-profile** magnitude.
+  The settled re-measurement adds release `outou-lsp` completion numbers (`cargo test --release`)
+  for information only.
+- **Machine load and memory state, settled re-measurement (2026-10-11, ~45-57 minutes after a
+  reboot, one run at a time; first measured run started 11:33 JST at uptime ~45 min, last ended
+  11:45 JST at uptime ~57 min)**: `vm.swapusage` was `0.00M used` before and after
+  every run (no swap, no memory compression pressure), no rust-analyzer or VS Code process was
+  running, no Docker VM. The machine was not perfectly idle: macOS background services
+  (WindowServer, iTerm2, Acronis agent, occasional `mediaanalysisd`/`duetexpertd` bursts) kept the
+  1-minute load average at about 3-5 throughout, and part of the "after" value is the measurement
+  itself (a rust-analyzer cold index pegs a core or two). Each run was started only when
+  load1 <= 4, no rust-analyzer/VS Code process existed and no process used > 80% CPU; every run
+  below passed that check on first try ("clean" = yes). Load averages are 1/5/15 min, before ->
+  after (from the harness's `machineState`).
+
+  | run | load before -> after | swap used before / after | clean pre-check |
+  |---|---|---|---|
+  | completion N=50, debug | 3.71/5.49/11.59 -> 3.93/5.30/11.20 | 0 / 0 | yes |
+  | completion N=50, release | 3.58/5.15/11.04 -> 3.62/5.00/10.72 | 0 / 0 | yes |
+  | rss phase0-app single #1 | 3.41/4.93/10.66 -> 5.32/5.32/10.70 | 0 / 0 | yes |
+  | rss phase0-app two-process #1 | 3.18/4.65/9.84 -> 3.05/4.55/9.72 | 0 / 0 | yes |
+  | rss workspace single #1 | 3.13/4.54/9.68 -> 3.34/4.54/9.62 | 0 / 0 | yes |
+  | rss workspace two-process #1 | 3.15/4.48/9.57 -> 3.13/4.41/9.46 | 0 / 0 | yes |
+  | rss phase0-app single #2 | 3.19/4.40/9.42 -> 4.15/4.57/9.42 | 0 / 0 | yes |
+  | rss phase0-app two-process #2 | 3.90/4.51/9.37 -> 5.21/4.79/9.39 | 0 / 0 | yes |
+  | rss workspace single #2 | 3.89/4.81/8.79 -> 4.94/5.00/8.81 | 0 / 0 | yes |
+  | rss workspace two-process #2 | 3.74/4.69/8.55 -> 4.04/4.72/8.49 | 0 / 0 | yes |
+  | rss phase0-app single #3 | 3.80/4.59/8.31 -> 5.52/4.96/8.38 | 0 / 0 | yes |
+  | rss phase0-app two-process #3 | 3.62/4.51/7.96 -> 3.95/4.55/7.91 | 0 / 0 | yes |
+  | rss workspace single #3 | 3.95/4.55/7.91 -> 3.89/4.51/7.84 | 0 / 0 | yes |
+  | rss workspace two-process #3 | 3.89/4.51/7.84 -> 4.48/4.61/7.80 | 0 / 0 | yes |
+  | coldinit N=5 | 3.79/4.43/7.62 -> 3.71/4.37/7.52 | 0 / 0 | yes |
+
+  The clean 2026-09-28 re-run (flycheck (b), incremental (e)) did not record load or swap; it was checked
+  with `ps` only. The 2026-10-11 code session that preceded this pass saw load 17.8 / 8.8 / 8.1
+  and 11.2 of 12 GiB swap used, which is why nothing was measured then.
+
+- **Machine state, verified before every run below**: `ps -eo pid,comm | grep -i rust-analyzer`
+  empty, and no VS Code / other editor process running. No other rust-analyzer instance or editor
+  ran concurrently with any measurement in this document. Compilation (debug and release test
+  binaries, `outou-cli`) was finished before the first measurement, so no build overlapped one.
+
+### Tooling
+
+- **`spikes/rust-analyzer/client/measure-a1.mjs`**: the measurement harness, a JSON-RPC-over-stdio
+  driver in the style of `spikes/rust-analyzer/client/{outou-lsp-client,gate3-overhead}.mjs` (Content-
+  Length framing, `window.workDoneProgress` capability, `publishDiagnostics` tracking reused rather
+  than reimplemented a third time). Four modes, one process per invocation, each printing one JSON
+  document to stdout:
+  - `coldinit` — cold `initialize` → first usable hover/completion/definition, N fresh processes.
+  - `flycheck` — `didSave` → mapped semantic diagnostic latency, N repeated introduce/revert cycles
+    on a warm session, `outou-lsp` vs. a plain rust-analyzer session on the same generated file
+    (the same same-session A/B idea as `docs/gate3-results.md`'s "Proxy overhead (S8)", applied to
+    flycheck instead of hover/definition/completion).
+  - `completion` — the same same-session A/B method, run against a fixed list of measurement-only
+    "sites" injected at runtime into the fresh temp copy (`COMPLETION_SITES`, never into a
+    checked-in fixture), each engineered to make rust-analyzer's own candidate-list size land in a
+    different rough order of magnitude — see (d) below.
+  - `rss` — sampling every `--interval-ms` (default 500 ms) of one or two long-lived sessions
+    (`--config single|two-process`). Each measured entry is the **whole process tree** under its root
+    pid (`rust-analyzer-proc-macro-srv`, transient `cargo`/`rustc`), from one `ps -A` snapshot per
+    sample: summed `ps` RSS next to the summed macOS **physical footprint** (`footprint(1)`), because
+    `ps` RSS drops when macOS compresses a process's pages and footprint does not. `--phase cold`
+    samples from spawn until both sessions have **settled** (same criterion for every session: a
+    useful hover at an anchor that is identical for 5 requests over at least 2 s; a direct
+    rust-analyzer session additionally waits for `experimental/serverStatus` quiescent, which
+    `outou-lsp` does not forward). `--phase cold+edit` continues in the *same process* with
+    `--edits` scripted edits and reports `windows.cold` and `windows.edit` separately. The anchor is
+    `load_user` in `examples/phase0-app` and `Card` in `use ui_kit::{Button, Card};` in
+    `tests/fixtures/workspace/app`, which only resolves once the `ui-kit` dependency is loaded.
+  - Settling (all modes that sample after a warm-up): `completion` waits, per session, for a
+    candidate count whose trailing run of identical answers has at least 5 requests and spans at least 2 s (direct: after
+    `experimental/serverStatus` quiescent; `outou-lsp`: also equal to the direct session's settled
+    count, otherwise it is sampled anyway and the bucket is reported as disagreeing). Both have a
+    timeout with an explicit error.
+  - `coldinit` starts its clock when `initialize` is *sent* (`outou-lsp` loads the workspace and
+    handshakes with rust-analyzer before it replies) and reports cumulative time to first usable
+    hover / completion / definition plus `totalMs`, alongside per-step times.
+  - Every JSON result carries `machineState` (load average, swap) before and after the run.
+- **`crates/outou-lsp/tests/measure_a1.rs`**: the orchestrator, in the style of `tests/gate3.rs`
+  (its own `fresh_copy`/`seed_build`/`shared_cargo_target_dir` helpers are duplicated in miniature
+  here rather than factored into a shared module — `tests/gate3.rs` also deliberately corrupts its
+  copies mid-probe, and coupling that pairing to a shared module was judged not worth it for a
+  handful of small helper functions). One `#[test]` (not `#[ignore]`d — pure Rust, no
+  rust-analyzer, safe under the default `cargo test --workspace` budget) plus five `#[ignore]`d
+  tests, one per heavy mode:
+
+  ```text
+  cargo test -p outou-lsp --test measure_a1 -- --ignored --nocapture measure_a1_coldinit
+  cargo test -p outou-lsp --test measure_a1 -- --ignored --nocapture measure_a1_flycheck
+  cargo test -p outou-lsp --test measure_a1 -- --ignored --nocapture measure_a1_completion_overhead
+  # optional: MEASURE_A1_COMPLETION_N=50 MEASURE_A1_COMPLETION_SITE=large-enum-path (same test)
+  cargo test -p outou-lsp --test measure_a1 -- --ignored --nocapture measure_a1_rss_single
+  cargo test -p outou-lsp --test measure_a1 -- --ignored --nocapture measure_a1_rss_two_process
+  ```
+
+  The `rss` tests default to `examples/phase0-app`. `MEASURE_A1_FIXTURE=workspace` makes them copy
+  `tests/fixtures/workspace` whole, rewrite the `outou` path dependency in **both** `app/Cargo.toml`
+  and `ui-kit/Cargo.toml`, run the `outou build` step for both members and measure `app`. Each rss
+  test runs one process per config (`--phase cold+edit`) and writes nothing into the repository.
+  `MEASURE_A1_COMPLETION_N` (positive integer) and `MEASURE_A1_COMPLETION_SITE` (non-empty label) are
+  validated before anything is spawned, as are the harness's own flags.
+
+  The heavy tests need `node` and a rust-analyzer binary; they only run when asked for with
+  `--ignored`, so a missing prerequisite **panics** rather than returning a pass that looks like a
+  measurement. Raw JSON is **not** kept in the repository: a run prints its result and writes it to a
+  system temp directory (or into `spikes/rust-analyzer/results/` if `MEASURE_A1_SAVE_ARTIFACTS=1` is
+  set; those `measure-a1-*.json` files are gitignored), and the tables in this document are the record. Never run two of these at once, and never
+  alongside `cargo clippy`/`cargo test` — CPU contention skews every number. Every heavy job in the
+  original passes was run one at a time.
+- **Why an `#[ignore]`d test binary over an `xtask` subcommand**: every heavy mode needs the
+  just-built `outou-lsp` binary's path, which `env!("CARGO_BIN_EXE_outou-lsp")` gives a test binary
+  for free; an `xtask` subcommand would have to locate the debug binary by convention instead. The
+  fresh-copy/seed-build machinery also already exists in this exact shape in `tests/gate3.rs`, so a
+  sibling test file reuses that pattern directly rather than inventing an `xtask`-flavored version of
+  it.
+
+### (a) Two-process resource cost: RSS and CPU, `--config single` vs. `--config two-process`
+
+Method: `rss` mode, `--phase cold+edit`, `--interval-ms 500`, one process per config, 3 repeats per
+cell (2026-10-11, debug `outou-lsp`, machine state in "Setup"). `single` is one plain rust-analyzer
+session on the fixed workspace (`src/.generated/crate-root.rs`, the exact file `outou-lsp` opens as
+its own overlay). `two-process` is `outou-lsp` (spawning its own rust-analyzer child, found via
+`pgrep -P`) plus a *second*, independent plain rust-analyzer session on the same workspace —
+standing in for the editor's own rust-analyzer session against the same crate
+(`crates/outou-lsp/README.md`, "Two processes, not one"). Each entry is the **whole process tree**
+(rust-analyzer, `rust-analyzer-proc-macro-srv`, transient `cargo`/`rustc`). The **cold** window
+runs from spawn until every session has settled (see "Tooling"); the **edit** window continues in
+the *same process* with 10 scripted edits (append/remove a trailing comment) 500 ms apart, saving to
+disk every fifth edit to also exercise `checkOnSave`. All figures are the **peak over the window**
+in MiB, as **median of 3 repeats [min-max]**; CPU is the tree's summed cumulative CPU seconds in
+the window. "Footprint" is macOS physical footprint (`footprint(1)`, counts compressed pages) and
+is the figure for "how much memory does this hold"; "RSS" is summed `ps` RSS, shown for
+completeness (it is noisier between repeats and includes mapped pages that the footprint does not
+attribute in the same way). No swap was in use (see "Setup"), so RSS was not compression-collapsed
+this time.
+
+**`examples/phase0-app` — cold indexing (to settled):**
+
+| | peak footprint | peak RSS | CPU time |
+|---|---|---|---|
+| `single`: plain rust-analyzer | 906 [867-915] | 1000 [965-1238] | 5.71 s [5.58-5.73] |
+| `two-process`: `outou-lsp`'s rust-analyzer child | 837 [808-889] | 903 [890-944] | 6.01 s [5.98-6.14] |
+| `two-process`: plain rust-analyzer (editor stand-in) | 831 [791-836] | 959 [957-1124] | 5.40 s [5.37-5.49] |
+| `two-process`: `outou-lsp` itself | 2 | 5 | 0.06 s [0.06-0.07] |
+| **`two-process` total** (child + editor stand-in; excludes `outou-lsp` itself) | **1523 [1483-1680]** | **1891 [1862-2014]** | **11.41 s [11.34-11.63]** |
+
+**`examples/phase0-app` — scripted editing session (10 edits, 2 saves; same process, after cold):**
+
+| | peak footprint | peak RSS | CPU time |
+|---|---|---|---|
+| `single`: plain rust-analyzer | 545 [538-547] | 958 [944-1010] | 0.15 s [0.15-0.18] |
+| `two-process`: `outou-lsp`'s rust-analyzer child | 565 [551-618] | 1001 [924-1020] | 0.23 s [0.20-0.33] |
+| `two-process`: plain rust-analyzer (editor stand-in) | 611 [603-617] | 894 [768-1010] | 0.26 s [0.24-0.35] |
+| `two-process`: `outou-lsp` itself | 2 | 5 | 0.03 s |
+| **`two-process` total** | **1174 [1154-1180]** | **1819 [1645-2004]** | **0.47 s [0.46-0.54]** |
+
+**`tests/fixtures/workspace` `app` — cold indexing (to settled; anchor `Card` from `ui_kit`):**
+
+| | peak footprint | peak RSS | CPU time |
+|---|---|---|---|
+| `single`: plain rust-analyzer | 879 [844-898] | 980 [952-1013] | 5.24 s [5.15-5.26] |
+| `two-process`: `outou-lsp`'s rust-analyzer child | 862 [823-876] | 941 [934-995] | 5.55 s [5.54-5.65] |
+| `two-process`: plain rust-analyzer (editor stand-in) | 841 [805-867] | 982 [969-1014] | 4.95 s [4.76-5.00] |
+| `two-process`: `outou-lsp` itself | 2 | 5 | 0.05 s [0.05-0.06] |
+| **`two-process` total** | **1552 [1440-1619]** | **1935 [1858-1955]** | **10.41 s [10.29-10.65]** |
+
+**`tests/fixtures/workspace` `app` — scripted editing session (10 edits, 2 saves; same process, after cold):**
+
+| | peak footprint | peak RSS | CPU time |
+|---|---|---|---|
+| `single`: plain rust-analyzer | 537 [535-538] | 955 [937-1095] | 0.11 s [0.11-0.25] |
+| `two-process`: `outou-lsp`'s rust-analyzer child | 560 [543-662] | 994 [857-1080] | 0.17 s [0.11-0.31] |
+| `two-process`: plain rust-analyzer (editor stand-in) | 535 [534-539] | 893 [763-999] | 0.18 s [0.10-0.21] |
+| `two-process`: `outou-lsp` itself | 2 | 5 | 0.01-0.02 s |
+| **`two-process` total** | **1095 [1082-1196]** | **1972 [1620-1993]** | **0.38 s [0.21-0.49]** |
+
+Findings:
+
+- **Headline: the two-process setup costs about 1.7-2.2x the physical footprint and about 2x the
+  CPU of a single plain rust-analyzer session, on both workspaces.** Cold: footprint 1523 vs 906 MiB
+  (1.68x) on `phase0-app`, 1552 vs 879 MiB (1.77x) on `workspace`; CPU 11.4 vs 5.7 s (2.0x) and
+  10.4 vs 5.2 s (2.0x). Edit window: footprint 1174 vs 545 MiB (2.15x) and 1095 vs 537 MiB (2.04x).
+  Expected, since it is architecturally two independent rust-analyzer instances doing independent
+  full analysis of the same crate (`crates/outou-lsp/README.md`, "Two processes, not one"). In
+  absolute terms: about 1.1 GiB resident footprint at steady state (2x ~550 MiB) and about
+  1.5 GiB at the cold peak, for the pair. The two-process total is higher than the single session
+  in every repeat on both workspaces (no inversion; the previous harness's `workspace` rows, where
+  the two-process total was *below* the single peak, were artefacts of its racy windows).
+- **`outou-lsp`'s own process is negligible**: ~5 MiB RSS / ~2 MiB footprint, under 0.07 s CPU per
+  window (debug build).
+- **Both workspaces cost about the same.** The earlier report of `tests/fixtures/workspace` being
+  4-8x smaller than `phase0-app` was an artefact of the old cold window ending on a hover at
+  `fn main()`, before the `ui-kit` dependency (and `dioxus`) was loaded. With the cold window ending
+  on a settled session anchored on `Card` from `ui_kit`, both are dominated by the same `dioxus`
+  dependency graph (single cold footprint 879-906 MiB, edit 537-545 MiB).
+- **The cold peak is transient.** Footprint falls from ~900 MiB (cold, single) to ~540 MiB in the
+  edit window; the cold peak includes `proc-macro-srv`/build-script work and index construction.
+  Peak **RSS** does not fall the same way (958 vs 1000 MiB) and varies widely between repeats
+  (e.g. `phase0-app` single cold 965-1238), so peak footprint is the figure to compare. Treat the
+  RSS columns as secondary.
+- Figures in earlier drafts of this document no longer apply: the first-pass figures (665 MiB single
+  / 1.15 GiB two-process) counted only the rust-analyzer processes themselves and used `ps` RSS on a
+  swapping machine; they were lower bounds.
+- Sampled at 500 ms; a shorter-lived spike between samples would not be captured. The cold window
+  has only 15-21 samples per run. CPU is the process tree's summed cumulative CPU time; a transient
+  child that exits stops contributing, so it can undercount slightly. Three repeats give a
+  median and a range, not a distribution.
+
+### (b) Flycheck latency: `didSave` → mapped semantic diagnostic
+
+These numbers are for the dev/debug `outou-lsp`. Method: `flycheck` mode, N=10, warm target dir (the shared `CARGO_TARGET_DIR`, already populated by
+prior runs), `examples/phase0-app` only. Each sample introduces a type error (`let user =
+load_user();` → `let user: i32 = load_user();`), times `didSave` → the first `publishDiagnostics`
+containing `"mismatched types"`, then reverts and waits for that diagnostic to actually clear before
+the next sample (so a stale diagnostic from the revert cannot be mistaken for the next introduction;
+the harness now throws if the diagnostic does not clear, instead of continuing).
+Compared side by side: through `outou-lsp` (on `main.rsx`, the real editor path) vs. a plain
+rust-analyzer session, same crate, saving the already-generated `src/.generated/crate-root.rs`
+directly (the "plain `.rs` save" comparison the issue asks for).
+
+| | median | max | samples (ms) |
+|---|---|---|---|
+| `outou-lsp` (`.rsx` save) | 711.5 ms | 1129 ms | 661, 661, 711, 1129, 1067, 611, 611, 715, 763, 712 |
+| plain rust-analyzer (`.rs` save) | 712 ms | 1271 ms | 612, 1271, 815, 1170, 610, 660, 713, 711, 713, 711 |
+
+Both sides are sampled by polling every 50 ms, so the resolution is 50 ms; the 0.5 ms median
+difference (`outou-lsp` 711.5 ms vs. 712 ms) is far below it and means nothing beyond "no measurable
+difference". Outou's added part (re-planning the crate from disk, writing every unit through the
+Strict path, and forwarding the save) is within noise here — flycheck latency
+is dominated by rust-analyzer's own `cargo check` invocation on this crate's dependency graph, not by
+`outou-lsp`'s own bookkeeping. Consistent with the first pass (median ~712-772 ms both times) and
+with `docs/phase0-results.md` §6's earlier, less formal figure ("4.7-8.9 seconds end to end" for the
+Gate 3 probes, dominated by *cold* indexing state rather than a warm flycheck's own cost).
+
+### (c) Cold `initialize` → first usable hover/completion/definition
+
+Method: `coldinit` mode, N=5, `examples/phase0-app` only, debug `outou-lsp`, 2026-10-11 (machine
+state in "Setup"). One fresh `outou-lsp` process per run (with a freshly spawned rust-analyzer
+child each time), sequentially requesting hover, then completion, then definition, each retried
+until a useful answer arrives. The clock starts when `initialize` is *sent* (`outou-lsp` loads the
+workspace and handshakes with rust-analyzer before it replies, so that work is included). Values
+are cumulative time since `initialize` sent.
+
+| | median | max | samples (ms, runs 0-4) |
+|---|---|---|---|
+| `initialize` response | 48 ms | 525 ms | 525, 42, 48, 47, 48 |
+| first usable hover (cumulative) | 3771 ms | 4266 ms | 4266, 3771, 3740, 3750, 3790 |
+| first usable completion (cumulative) | 3886 ms | 4384 ms | 4384, 3886, 3865, 3867, 3910 |
+| first usable definition (cumulative) = `totalMs` | 3887 ms | 4385 ms | 4385, 3887, 3866, 3867, 3911 |
+
+Per step (time added after the previous step): hover 3728 ms median (max 3741), completion 118 ms
+(max 125), definition 1 ms (max 1).
+
+The cost is the first hover: `outou-lsp` answers `initialize` in ~48 ms (a first-run outlier of
+525 ms), then the first useful hover arrives ~3.7 s after `initialize` was sent, which is
+rust-analyzer's initial indexing (with the shared, already-populated `CARGO_TARGET_DIR`, this is
+indexing/analysis time, not a cold `cargo build` of `dioxus`). Completion and definition, sent
+right after in the same already-warm session, add ~120 ms and ~1 ms. The five runs are tight apart
+from run 0 (+500 ms, the first process start after the build; likely a cold filesystem/page cache
+for the binaries).
+
+### (d) Forwarded-completion overhead per candidate-list-size bucket
+
+> **Profile and settling.** The asserted numbers are for the **debug** `outou-lsp`
+> (rust-analyzer is the release binary on both sides); the release `outou-lsp` is shown for
+> information only. Both were measured on 2026-10-11 by the settled harness: each session first
+> waits for `experimental/serverStatus` quiescent (direct) and then for a candidate count that is
+> stable for >= 5 consecutive requests spanning >= 2 s, and the `outou-lsp` session must also reach
+> the direct session's settled count. Earlier passes (the first 2026-09-28 pass at N=10, and the unsettled N=50
+> pass kept further below as history) started sampling as soon as the first non-empty answer
+> arrived; their candidate counts (3 / 122 / 1200) and the multi-second stalls came from that. The
+> count flip 3 -> 5 (tiny type) and 1200 -> 1204 (large enum) is rust-analyzer making the
+> blanket-impl methods of `core` visible once its analysis finishes; settled, every session reports
+> 5 / 122 / 1204.
+
+Method: `completion` mode, N=50, same-session A/B (`docs/gate3-results.md`, "Proxy overhead (S8)"),
+`examples/phase0-app` only, against three measurement-only sites injected at runtime into the fresh
+copy's `main.rsx` (and the equivalent plain-Rust text in the already-generated
+`src/.generated/crate-root.rs`) — never into the checked-in fixture:
+
+- **`tiny-local-type`**: a new 3-method local type (`struct __MeasureTiny; impl __MeasureTiny { fn
+  alpha/beta/gamma(&self) {} }`), completed on `__measure_tiny.`.
+- **`option-member-access`**: the existing `user.` (`Option<User>`) member-access site (same as the
+  first pass's only bucket).
+- **`large-enum-path`**: a new 1200-variant local enum (`enum __MeasureMega { V0, ..., V1199 }`),
+  completed on `__MeasureMega::` — every earlier attempt at a large list (a longer identifier prefix
+  on the member-access site; a single-character prefix at an unqualified expression position; a
+  single-character prefix at a type-ascription position, each with `completion.autoimport.enable`
+  explicitly set) plateaued at 26-42 candidates regardless of method, which looks like this
+  rust-analyzer version capping its own import/flyimport suggestion count well under 1000 — a large
+  *local* enum sidesteps import search entirely, since path completion on an already-resolved local
+  type is not subject to that cap.
+
+Each sample is retried (up to 4 attempts in total) if it comes back with 0 candidates (observed once,
+transiently, for the large-enum site in an earlier run of this measurement). The harness now records
+the number of attempts per sample and lists the retried samples (0-based index and attempt count) in
+its output and in the test's printout, so a retry is visible instead of absorbed; see
+`measureCompletionSamples` in `measure-a1.mjs`.
+
+Settled results, N=50 per bucket and side, one fresh session pair per bucket, no retried samples
+(0 empty answers), candidate counts equal in both sessions and constant across all 50 samples in
+every bucket. Times in ms; "overhead" = `outou-lsp` minus direct, on medians and on p95s.
+`settleMs` (time the session needed to settle) was 2.4-2.6 s for the direct session and
+5.5-5.6 s for `outou-lsp` in all six runs.
+
+**Debug `outou-lsp` (the asserted profile; PASSED):**
+
+| bucket | candidates | `outou-lsp` median / p95 / max | direct median / p95 / max | overhead median | overhead p95 | ceiling (5 ms + 0.15 ms x n) | margin |
+|---|---|---|---|---|---|---|---|
+| `tiny-local-type` | 5 | 3 / 6 / 9 | 2 / 5 / 12 | 1 | 1 | 5.75 | 5.8x |
+| `option-member-access` | 122 | 16 / 18 / 20 | 4 / 9 / 14 | 12 | 9 | 23.3 | 1.9x (tightest) |
+| `large-enum-path` | 1204 | 57 / 59 / 60 | 8 / 11 / 20 | 49 | 48 | 185.6 | 3.8x |
+
+**Release `outou-lsp` (`cargo test --release`; information only, no assertion):**
+
+| bucket | candidates | `outou-lsp` median / p95 / max | direct median / p95 / max | overhead median | overhead p95 | debug ceiling / release median overhead |
+|---|---|---|---|---|---|---|
+| `tiny-local-type` | 5 | 2 / 3 / 5 | 2 / 3 / 4 | 0 | 0 | n/a (0 ms) |
+| `option-member-access` | 122 | 5 / 11 / 13 | 4 / 8 / 12 | 1 | 3 | 23x |
+| `large-enum-path` | 1204 | 14 / 16 / 22 | 8 / 12 / 18 | 6 | 4 | 31x |
+
+Findings:
+
+- **The debug threshold held in every bucket.** Median overhead 1 / 12 / 49 ms against ceilings of
+  5.75 / 23.3 / 185.6 ms. The tightest margin is the middle bucket (12 of 23.3 ms, 1.9x), which
+  is also the bucket where the fitted formula over-predicts least; the large bucket has 3.8x
+  headroom and the tiny one 5.8x. Counts agreed and were stable in all three buckets.
+- **Overhead grows with candidate-list size, roughly linearly, in both profiles** (debug: ~1 ms at
+  5, 12 ms at 122, 49 ms at 1204, i.e. about 0.04 ms/candidate; release: 0 / 1 / 6 ms, about
+  0.005 ms/candidate). Consistent with `docs/gate3-results.md`'s "Proxy overhead (S8)" explanation
+  that the per-item work in `crate::response::map_completion_response` scales with the list. These
+  numbers do not identify which per-item step costs what. In release the overhead is ~8x smaller
+  than in debug, so the assertion's bound is about 31x loose at 1204 candidates and **would not catch
+  a release regression**: A3 (#21) must judge completion-path optimisation on release numbers.
+- **The multi-second `large-enum-path` stall did not occur on settled sessions.** Debug max was 60
+  ms (`outou-lsp`) / 20 ms (direct); release max 22 / 18 ms. This supports the earlier diagnosis
+  (see the unsettled pass below) that the ~2.4 s stalls came from rust-analyzer's late
+  re-analysis landing inside the sample window, not from `outou-lsp`. It is one settled session per
+  bucket and profile (50 samples each), so it is consistent with the stall not being triggered once settled (2 settled
+  sessions only), not that it can never happen. Still no p95/tail threshold is derived from this.
+- Medians and p95s are from 50 samples; p95 is the 3rd-largest value, so the p95 and max columns
+  are close to the same one or two samples.
+
+#### (d) Earlier N=50 pass, unsettled harness (2026-10-11; historical, kept for the stall finding)
+
+**Superseded as a baseline by the settled tables above** (candidate counts, medians and overheads
+below include unsettled sampling). Kept because it is the evidence that the multi-second stall is
+rust-analyzer's late re-analysis rather than `outou-lsp`'s work. A pass (2026-10-11, same Apple M1 Pro; unsettled harness; only a `ps` check for
+rust-analyzer/VS Code was recorded beforehand, no load or swap, and the same day's earlier session
+had about 11.2 GiB of swap in use) re-ran `completion` mode at **N=50** (`MEASURE_A1_COMPLETION_N=50`; the harness also
+gained `--site <label>` / `MEASURE_A1_COMPLETION_SITE` to restrict a run to one bucket). Method otherwise the pre-settle method (no settling wait; the settled table above differs in that), with a fresh
+temp copy and fresh sessions per run. Run 1 below is a `large-enum-path`-only run; the all-bucket run is
+one run of all three buckets; runs 2-4 are further `large-enum-path`-only runs, each with fresh
+sessions, to test repeatability.
+
+All-bucket run, N=50 (medians in ms, sample counts > 1 s all 0):
+
+| bucket | candidates | `outou-lsp` median / p95 / max | direct median / p95 / max | overhead median |
+|---|---|---|---|---|
+| `tiny-local-type` | 5 | 4 / 8 / 9 | 4 / 14 / 16 | 0 ms |
+| `option-member-access` | 122 | 18 / 36 / 61 | 5 / 6 / 6 | 13 ms |
+| `large-enum-path` | 1204 | 60 / 70 / 131 | 8.5 / 11 / 12 | 51.5 ms |
+
+(The tiny bucket reports 5 candidates here against 3 in the first 2026-09-28 pass; the same site text
+was used, so this is rust-analyzer-side: the extra two are the blanket-impl `into`/`try_into`
+methods, visible only once analysis has settled. The sessions did not always agree on the count even
+within a pass: a later verification run saw `outou-lsp` report 5 where the direct session reported 3
+in the tiny bucket. The settled harness now fails a bucket in that case.)
+
+`large-enum-path` only, four N=50 runs (200 samples per side), sorted, in ms:
+
+- Run 1, `outou-lsp` (1200 cand.): median 59, p95 72, max 199, >1 s: 0. `57 57 57 57 58 58 58 58 58 58
+  58 58 58 58 58 58 58 58 58 58 58 58 58 59 59 59 59 59 59 59 59 59 60 61 61 61 61 61 62 62 63 63 63 63
+  65 67 68 72 76 199`. Direct: median 7, p95 12, max 99, >1 s: 0. `6 6 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7 7
+  7 7 7 7 7 7 7 7 8 8 8 8 8 8 8 8 8 8 9 9 9 10 11 11 11 11 12 12 12 30 99`.
+- Run 2, `outou-lsp` (1200 then 1204): median 59, p95 65, max **2410**, >1 s: **1**. `57 58 58 58 58 58
+  58 58 58 58 59 59 59 59 59 59 59 59 59 59 59 59 59 59 59 59 59 60 60 60 60 60 60 60 60 60 60 60 61
+  61 61 62 63 63 63 64 64 65 65 2410`. Direct (1200 then 1204): median 8, p95 28, max **2443**, >1 s:
+  **1**. `7 7 7 7 7 7 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 9 9 9 9 9 9 9 9 9 9 9 10 10 11
+  11 28 76 2443`.
+- Run 3, `outou-lsp` (1204): median 59, p95 64, max 69, >1 s: 0. `57 57 58 58 58 58 58 58 58 59 59 59 59
+  59 59 59 59 59 59 59 59 59 59 59 59 59 59 59 59 60 60 60 60 60 60 60 61 61 61 61 61 61 61 62 62 63
+  63 64 64 69`. Direct: median 8, p95 10, max 11, >1 s: 0. `7 7 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8
+  8 8 8 8 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 10 10 10 10 11`.
+- Run 4, `outou-lsp` (1200 then 1204): median 59, p95 65, max **2448**, >1 s: **1**. `58 58 58 58 58
+  58 58 58 58 58 58 58 58 58 58 58 58 58 59 59 59 59 59 59 59 59 59 59 59 59 59 59 59 60 60 60 60 60
+  60 60 61 61 62 62 62 62 65 65 69 2448`. Direct (1204): median 8.5, p95 11, max 13, >1 s: 0. `8 8 8 8
+  8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 8 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 9 10 10 10 11 12 13`.
+- All-bucket run's `large-enum-path`: see the table above (`outou-lsp` max 131, >1 s: 0; direct max 12).
+
+Pooled over the five N=50 `large-enum-path` runs (250 samples per side): `outou-lsp` has **2**
+samples over 1 s (2410 and 2448 ms), direct has **1** (2443 ms); every other sample in both sessions
+is under 200 ms. Medians: `outou-lsp` 59-60 ms, direct 7-8.5 ms; overhead medians 50.5-52 ms.
+
+Findings:
+
+- **The multi-second stall is repeatable, but it is not specific to `outou-lsp`.** It reproduced in 2
+  of 4 fresh `large-enum-path` sessions through `outou-lsp` (about 2.4 s each, smaller than the earlier
+  pass's ~4 s) and in 1 of 4 fresh direct rust-analyzer sessions (2443 ms) — i.e. also in the
+  session with no `outou-lsp` in the path. The first 2026-09-28 pass's 3994 ms is consistent with the
+  same phenomenon; its "vs. 10 ms direct" comparison was a different session's tail, not evidence
+  that the proxy adds seconds.
+- **It coincides with a rust-analyzer-side state change, not with request volume.** In the stalled
+  sessions the candidate count changes from 1200 to 1204 right at the stall (sample indices are
+  0-based): direct run 2, sample 17
+  (2443 ms, the first 1204-candidate answer); `outou-lsp` run 2, sample 1 (2410 ms, first 1204); `outou-lsp` run 4,
+  sample 1 (2448 ms, first 1204). The harness's warm-up only waited for a non-empty answer, not for
+  rust-analyzer to go quiescent, so a later background event (most likely a late build-script/
+  proc-macro/`cargo check` result invalidating the analysis and forcing a re-analysis of the
+  1200-variant enum, which is not itself ruled out here) lands inside the sampling window. Sessions that had already
+  settled on 1204 before sampling (run 3, the all-bucket run) show no stall. The 1200 → 1204 change is
+  `core`'s blanket-impl methods (`from`/`into`/`try_from`/`try_into`) becoming visible on the enum,
+  which is what a late completion of rust-analyzer's analysis looks like from the outside.
+- **`outou-lsp`'s own work is not the multi-second cost.** `map_completion_response`
+  (`crates/outou-lsp/src/response.rs`) is a single linear pass over the items (a cursor-containment
+  check, a leak check, a `textEdit` remap and two `remove`s per item); the steady-state overhead is
+  a flat ~50 ms at 1200 items (0.04 ms/item), with `outou-lsp`'s p95 within ~15 ms of its median in the
+  runs without a stall. No timing instrumentation was added to `outou-lsp`: the direct-session
+  reproduction already localizes the stall to rust-analyzer, and the evidence is purely
+  black-box (harness-side timings), so the *exact* rust-analyzer event was not identified.
+- **Consequence for A3 (#21):** the stall is a rust-analyzer behavior a client can hit just after
+  startup/first-edit, so the product question is mostly about what the first completions after
+  open cost (e.g. whether `outou-lsp` should wait for/show readiness), not a leak-scan or mapping
+  bug. Remaining unknown: the exact trigger. Reproducing it with rust-analyzer's own
+  `RA_LOG`/`--log-file` on a larger set of sessions would pin it down. Items deferred to A3 (#21):
+  pin down the stall trigger with `RA_LOG`; decide whether `outou-lsp` should forward
+  `experimental/serverStatus` or otherwise show readiness (today it forwards only
+  `publishDiagnostics` and `$/progress`, which is also why the harness has to settle on the answer
+  itself for the `outou-lsp` side); and judge any completion-path optimisation on **release**
+  numbers. The `outou build` CLI-path FAIL in (f) belongs to #20, not #21.
+
+### (e) Incremental `.rsx` → generated Rust distribution
+
+Method: `incremental_regeneration_distribution_on_both_workspaces` (not `#[ignore]`d — pure Rust, no
+subprocess), N=40 per unit, calling `outou_cli::build::emit::generate_unit` directly on every planned
+unit of both fixed workspaces. That is the unit-generation step of `Workspace::regenerate`, not all of
+it (`regenerate` also re-parses for `declared_modules`, builds a `LineIndex` and updates the
+registry), so these numbers are a lower bound on a whole edit's regeneration time. The test now
+asserts the **p95** per unit (nearest rank) against 10 ms and prints the max without asserting it, so
+one scheduler hiccup under concurrent compile load cannot fail it.
+
+| workspace / unit | median | p95 | max |
+|---|---|---|---|
+| `examples/phase0-app` / `main.rsx` | 0.32 ms | 0.43 ms | 0.46 ms |
+| `examples/phase0-app` / `components.rsx` | 0.27 ms | 0.30 ms | 0.39 ms |
+| `tests/fixtures/workspace` `app` / `main.rsx` | 0.09 ms | 0.09 ms | 0.11 ms |
+| `tests/fixtures/workspace` `ui-kit` / `lib.rsx` | 0.17 ms | 0.19 ms | 0.22 ms |
+| `tests/fixtures/workspace` `ui-kit` / `widgets.rsx` | 0.07 ms | 0.08 ms | 0.08 ms |
+| `tests/fixtures/workspace` `ui-kit` / `button.rsx` | 0.05 ms | 0.06 ms | 0.10 ms |
+| `tests/fixtures/workspace` `ui-kit` / `extra.rsx` | 0.05 ms | 0.06 ms | 0.06 ms |
+| `tests/fixtures/workspace` `ui-kit` / `circle.rsx` | 0.06 ms | 0.07 ms | 0.09 ms |
+
+The worst observed value across every unit in both workspaces is 0.46 ms (`main.rsx`, the largest
+unit measured) — actually *lower* than the first pass's 1.68 ms for the same unit (both comfortably
+under the fixed 10 ms threshold; the difference is normal run-to-run noise for a sub-millisecond
+measurement, not a regression). The 1.68 ms figure came from the earlier mixed-condition pass whose
+numbers are otherwise discarded. The table above is the record; raw samples are not kept in the
+repository.
+
+### (f) "A single-file edit never regenerates the whole crate"
+
+- **Language-server path: PASS.** `regenerating_one_unit_does_not_touch_another`
+  (`crates/outou-lsp/src/documents/workspace/tests.rs`) re-verified passing (re-run for this
+  report, alongside `regenerating_one_unit_is_fast` under its new 10 ms threshold — both pass).
+  `components.rs`'s generated text is byte-identical before and after editing `main.rsx`.
+- **`outou build` CLI path: FAIL, as already recorded in `docs/phase0-results.md` §6.**
+  Re-verified directly for this report: touching only `examples/phase0-app`'s `main.rsx` (appending
+  a comment) and re-running `outou build --manifest-dir <copy>` reports `generated 2 file(s)` —
+  both `crate-root.rs` *and* `components.rs` are rewritten on every invocation, even though only the
+  crate root's source changed. `components.rs`'s *content* happened to come out byte-identical in
+  this case (nothing about `components.rsx` changed), but the file is unconditionally regenerated and
+  rewritten regardless — this is A3's work to fix, not A1's; recorded here as the pass/fail baseline
+  A3 starts from.
+
+### Thresholds
+
+1. **Incremental `.rsx` → generated Rust: Fixed 10 ms (user-confirmed 2026-09-27).** Rationale: the
+   worst measured `generate_unit` value across both fixed workspaces and every planned unit (N=40
+   each) was 1.68 ms in the earlier mixed-condition pass — roughly 6x headroom under 10 ms; the
+   clean-machine pass in (e) above found an even lower 0.46 ms worst case, so headroom is, if
+   anything, wider than first estimated. `generate_unit` is one step of `Workspace::regenerate`
+   (which also re-parses for `declared_modules`, builds a `LineIndex` and updates the registry); the
+   whole call was not timed separately. 10 ms is also comfortably under a single 60 Hz frame (16.7 ms), the usual perceptual
+   anchor for "instantaneous" UI feedback. **Applied**: `regenerating_one_unit_is_fast`
+   (`crates/outou-lsp/src/documents/workspace/tests.rs`) now asserts a 10 ms bound (on the median of
+   5 calls, after review; the diff below is the original single-call change):
+
+   ```diff
+   --- a/crates/outou-lsp/src/documents/workspace/tests.rs
+   +++ b/crates/outou-lsp/src/documents/workspace/tests.rs
+   @@ -169,11 +169,12 @@
+    /// Perf smoke test for issue #9's budget ("incremental `.rsx` ->
+    /// generated Rust: perceived as instantaneous"): regenerating one
+    /// small-to-medium real unit is a single `outou_syntax::parse` +
+    /// `DioxusBackend::generate` call (`outou_cli::build::emit::generate_unit`),
+    /// the same primitive `outou build` uses per file — no LSP-specific
+   -/// overhead beyond that. 50ms is a generous bound (typical runs are
+   -/// well under 1ms for a file this size); this exists to catch a
+   -/// catastrophic regression, not to pin an exact number.
+   +/// overhead beyond that. 10ms is the fixed A1 threshold
+   +/// (`docs/alpha-results.md`, "A1: measurement", user-confirmed
+   +/// 2026-09-27): the worst measured value across both fixed workspaces
+   +/// (`examples/phase0-app`, `tests/fixtures/workspace`) was 1.68ms (N=40
+   +/// per unit).
+    #[test]
+    fn regenerating_one_unit_is_fast() {
+        let outcome = Workspace::load(&phase0_app_dir()).expect("plans and generates");
+        let LoadOutcome::Planned(mut workspace) = outcome else {
+            panic!("examples/phase0-app has a `.rsx` crate root");
+        };
+        let main_rsx_uri = workspace
+            .rsx
+            .keys()
+            .find(|uri| uri.ends_with("main.rsx"))
+            .expect("main.rsx is a known unit")
+            .clone();
+        let text = workspace.rsx[&main_rsx_uri].line_index.text().to_string();
+
+        let start = Instant::now();
+        workspace
+            .regenerate(&main_rsx_uri, &text, 2)
+            .expect("regenerating succeeds");
+        let elapsed = start.elapsed();
+
+   -    assert!(
+   -        elapsed.as_millis() < 50,
+   -        "regenerating one unit took {elapsed:?}, expected well under 50ms"
+   -    );
+   +    assert!(
+   +        elapsed.as_millis() < 10,
+   +        "regenerating one unit took {elapsed:?}, expected well under 10ms"
+   +    );
+    }
+   ```
+
+   The same 10 ms bound is also asserted, on the per-unit p95 (as a catastrophic-regression guard, not
+   a re-derivation), in `crates/outou-lsp/tests/measure_a1.rs`'s own
+   `incremental_regeneration_distribution_on_both_workspaces`.
+
+2. **Forwarded-completion overhead: Fixed (user-confirmed, 2026-10-11): median overhead ≤ 5 ms +
+   0.15 ms × candidate count, per bucket, same-session A/B — as the bound for the dev/debug-profile
+   `outou-lsp`** (`CARGO_BIN_EXE_outou-lsp` under plain `cargo test`, which is where
+   `measure_a1_completion_overhead` asserts it). Release numbers (`cargo test --release`) are
+   recorded as information only; there is **no release assertion**. In release the bound is very
+   loose (measured: ~31x at 1204 candidates, release median overhead 6 ms vs. the 185.6 ms ceiling)
+   and **would not catch a
+   release regression**: A3 (#21) completion-path optimisation must be judged on release numbers, not
+   on this assertion. Measured at three candidate-list-size buckets (see (d)); the form is a
+   rate-plus-fixed-cost fit to the two extreme buckets of the first 2026-09-28 pass (N=10, unsettled; fixed term about 2x the
+   fitted 2.4 ms, per-candidate term 3x the fitted 0.05 ms/candidate, for headroom; both fit points
+   came from that pass's unsettled sessions, see (d)).
+   - Ceilings at the measured sizes (N=50, settled re-measurement 2026-10-11, debug): 5.75 ms at 5
+     candidates (measured median overhead 1 ms, 5.8x margin), 23.3 ms at 122 (12 ms, 1.9x, the
+     tightest), 185.6 ms at 1204 (49 ms, 3.8x). **The assertion passed in all three buckets**, with
+     candidate counts equal in both sessions and constant across samples. Release (information
+     only): 0 / 1 / 6 ms median overhead at 5 / 122 / 1204.
+   - **No p95/tail threshold is set.** The `large-enum-path` multi-second stall (see (d), "Earlier
+     N=50 pass") is a rust-analyzer-side event that also appears in direct sessions and did not occur
+     in the settled runs (max 60 ms debug), so a tail bound still cannot be derived from these runs;
+     it stays blocked on pinning down the trigger (A3, #21).
+   - Asserted by `measure_a1_completion_overhead` in `crates/outou-lsp/tests/measure_a1.rs` (ignored
+     test, per bucket, median overhead against the formula). The test also fails a bucket whose two
+     sessions did not settle on the same candidate count, or whose count changed while sampling,
+     because the ceiling would otherwise be computed for the wrong list size.
+3. **RSS/CPU, flycheck latency and cold-init: baselines only, no threshold proposed**, matching
+   `docs/alpha.md`'s own scoping ("Baseline: ..." vs. "Threshold: ..." in issue #17's checklist) —
+   these are rust-analyzer-dominated, not something `outou-lsp` controls the cost of.
+
+### Issue #17 checklist — what this work satisfies
+
+Referring to `docs/alpha/issues/17-measurement.md`'s checklist (not ticked there per this task's
+instructions; recorded here instead):
+
+- Measurement setup (fixed workspaces, machine/OS/toolchain/rust-analyzer version): **done**, see
+  "Setup" above.
+- Baseline: two-process RSS/CPU sampling, cold + scripted editing, vs. a single plain session:
+  **done** (settled re-measurement, 3 repeats, process-tree
+  footprint and RSS, cold and edit windows, both workspaces), see (a).
+- Baseline: flycheck latency, N≥10, warm target dir, median/max, vs. plain `.rs` save: **done**, see
+  (b).
+- Baseline: cold `initialize` → first usable hover/completion/definition, N runs, median/max:
+  **done** (N=5, timed from `initialize` sent, settled-harness
+  re-measurement 2026-10-11), see (c).
+- Threshold: incremental `.rsx` → generated Rust, both workspaces, N≥30: **measured** (N=40 per
+  unit, both workspaces, re-confirmed on a clean machine) and **Fixed at 10 ms (user-confirmed)** —
+  see "Thresholds" (1) and the applied diff.
+- Threshold: forwarded-completion overhead, same-session A/B, per candidate-list-size bucket:
+  **measured at three bucket sizes** (tens / hundreds / ~1000+, see (d); re-measured at N=50 on
+  2026-10-11 on settled sessions, debug and release), **Fixed (user-confirmed 2026-10-11): median overhead ≤ 5 ms + 0.15 ms × candidate count,
+  no tail threshold** — see "Thresholds" (2).
+- Threshold: "a single-file edit never regenerates the whole crate," pass/fail on both paths:
+  **done**, see (f) — language-server path PASS, `outou build` CLI path FAIL (issue #20's work, not fixed
+  here).
+- Every number, threshold and method recorded in this document: **done**, this section and (a)-(f)
+  above.
+
+### What could not be measured, or was measured differently than planned
+
+- **Sampling resolution and repeat count.** RSS is sampled every 500 ms with 3 repeats per cell
+  (median and range reported), cold-init has N=5 and completion N=50 per bucket (one session per
+  bucket and profile). The machine was quiet but not idle (load1 about 3-5 from macOS background
+  services, see "Setup"). Treat the numbers as a baseline for this machine, not as a distribution.
+- **The `large-enum-path` completion bucket's tail behavior**: in the unsettled N=50 pass (2026-10-11,
+  see (d)) the multi-second stall is repeatable (about 2.4 s, 2 of 4 `outou-lsp` sessions) but also
+  occurs in direct rust-analyzer sessions (1 of 4), coincides with the candidate count changing
+  1200 → 1204, and so points at rust-analyzer's own late background work rather than `outou-lsp`'s
+  mapping. The exact rust-analyzer trigger was not identified, which is why no tail/p95 threshold is
+  set. Flagged rather than smoothed over.
+- **Deferred to A3 (#21)**: pinning down the stall trigger with `RA_LOG`; whether `outou-lsp` should
+  forward `experimental/serverStatus` / show readiness; judging completion-path optimisation on
+  release numbers (the debug threshold is loose in release).
+- **Deferred to #20**: the `outou build` CLI-path FAIL in (f).
+- **Harness limitations (recorded, not fixed)**: harness requests have no per-request timeout, so a
+  wedged server can hang the rss mode or a `Command::output()` call; and the `outou-lsp` side of the
+  RSS settle uses hover stability only (no quiescence signal, no expected signature).
+- Candidate-list-size bucketing has three real buckets (not one), and the RSS harness now supports
+  both fixed workspaces directly (`MEASURE_A1_FIXTURE`).

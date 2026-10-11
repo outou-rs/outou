@@ -17,3 +17,6 @@ labels: [alpha, gate-a3, droppable, lsp]
 - [ ] If over threshold, profile `crate::response`'s leak-scanning/reverse-mapping path (`crates/outou-lsp/src/response.rs`) for the largest cost, and optimize it (e.g. avoid rescanning fields that cannot carry backend vocabulary, cap or short-circuit on candidate-list size).
 - [ ] Re-measure after optimizing and confirm the result is within the A1 threshold.
 - [ ] Record before/after numbers in `docs/alpha-results.md`.
+- [ ] Pin down the trigger of the multi-second `large-enum-path` stall (a rust-analyzer-side event seen in direct sessions too) by reproducing it with `RA_LOG`/`--log-file` on a larger set of sessions (`docs/alpha-results.md`, A1 (d)).
+- [ ] Decide whether `outou-lsp` should forward `experimental/serverStatus` or otherwise show readiness (today it forwards only `publishDiagnostics` and `$/progress`).
+- [ ] Judge any completion-path optimisation on **release** numbers: the debug-profile threshold is loose in release (~31x headroom at 1204 candidates) and would not catch a release regression.

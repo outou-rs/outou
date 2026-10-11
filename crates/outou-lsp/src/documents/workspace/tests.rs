@@ -167,13 +167,17 @@ fn replan_sees_a_module_declared_only_in_the_open_buffer() {
 }
 
 /// Perf smoke test for issue #9's budget ("incremental `.rsx` ->
-/// generated Rust: perceived as instantaneous"): regenerating one
-/// small-to-medium real unit is a single `outou_syntax::parse` +
-/// `DioxusBackend::generate` call (`outou_cli::build::emit::generate_unit`),
-/// the same primitive `outou build` uses per file — no LSP-specific
-/// overhead beyond that. 50ms is a generous bound (typical runs are
-/// well under 1ms for a file this size); this exists to catch a
-/// catastrophic regression, not to pin an exact number.
+/// generated Rust: perceived as instantaneous"). One `Workspace::regenerate`
+/// call parses and generates the unit (`outou_cli::build::emit::generate_unit`,
+/// the per-file step `outou build` also uses), and additionally re-parses
+/// for `declared_modules`, builds a `LineIndex` and updates the registry.
+/// 10ms is the fixed A1 threshold (`docs/alpha-results.md`, "A1:
+/// measurement", user-confirmed 2026-09-27). For scale: the clean-machine
+/// A1 pass measured the `generate_unit` step alone at 0.46ms worst case
+/// (N=40 per unit, both fixed workspaces); the whole `regenerate` call was
+/// not timed separately. The test takes the median of a few calls so a
+/// single scheduler hiccup under concurrent compile load cannot fail it;
+/// it exists to catch a catastrophic regression, not to pin a number.
 #[test]
 fn regenerating_one_unit_is_fast() {
     let outcome = Workspace::load(&phase0_app_dir()).expect("plans and generates");
@@ -188,14 +192,20 @@ fn regenerating_one_unit_is_fast() {
         .clone();
     let text = workspace.rsx[&main_rsx_uri].line_index.text().to_string();
 
-    let start = Instant::now();
-    workspace
-        .regenerate(&main_rsx_uri, &text, 2)
-        .expect("regenerating succeeds");
-    let elapsed = start.elapsed();
+    const CALLS: usize = 5;
+    let mut timings = Vec::with_capacity(CALLS);
+    for version in 2..2 + CALLS as i32 {
+        let start = Instant::now();
+        workspace
+            .regenerate(&main_rsx_uri, &text, version)
+            .expect("regenerating succeeds");
+        timings.push(start.elapsed());
+    }
+    timings.sort();
+    let median = timings[CALLS / 2];
 
     assert!(
-        elapsed.as_millis() < 50,
-        "regenerating one unit took {elapsed:?}, expected well under 50ms"
+        median < std::time::Duration::from_millis(10),
+        "regenerating one unit took a median of {median:?} over {CALLS} calls ({timings:?}), expected well under 10ms"
     );
 }
