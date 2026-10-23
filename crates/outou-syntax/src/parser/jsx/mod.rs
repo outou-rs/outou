@@ -43,7 +43,7 @@ mod tag;
 use outou_sourcemap::Span;
 
 use crate::ast;
-use crate::lexer::disambiguate::{Classification, NamedTag};
+use crate::lexer::disambiguate::{self, Classification, NamedTag};
 use crate::lexer::rust_token::next_significant;
 
 use super::diag;
@@ -120,29 +120,53 @@ impl<'s> Parser<'s> {
     ) -> (ast::JsxElement, usize) {
         match classification {
             Classification::Rust => unreachable!("caller only calls this for a JSX classification"),
-            Classification::Fragment { lt } => self.recover_fragment(lt),
+            Classification::Fragment { lt } => self.recover_top_level_fragment(lt),
             Classification::StrayClose { lt } => self.recover_stray_close(lt),
             Classification::Named(tag) => self.parse_named_element(lt_pos, tag),
         }
     }
 
-    /// `<>`: reserved in Phase 0 (grammar §10). Recovery: consume just the
-    /// two characters and report a placeholder element.
+    /// `<>` at expression level: [`Self::recover_fragment`], plus the
+    /// truncated `</` that may directly follow it.
+    ///
+    /// After a recovered fragment the caller resumes with an operand just
+    /// finished, so a following `<` reads as a less-than operator and
+    /// `</` would be spliced into the Rust output verbatim as invalid
+    /// Rust. A closing tag cut short right after the fragment (nothing but
+    /// whitespace and comments between) is therefore consumed here with
+    /// the same per-shape diagnostics a real closing tag gets. A complete
+    /// `</...>` is left alone: it is not a truncation, and a fragment's
+    /// body and close are not scanned (reserved syntax, grammar §10).
     //
-    // TODO(phase0): the fragment's body is never scanned at all — `end` is
-    // just past `<>` itself, with nothing done about whatever comes next.
-    // For `<>\n</` (a reserved fragment immediately followed by a truncated
-    // `</`), the caller resumes at `\n</` as plain Rust, and that text is
-    // never valid Rust: it is spliced verbatim as an `Expr::Rust` source
-    // slice by Recovery-mode codegen (`docs/grammar.md`'s round-trip
-    // contract, §9), producing output that fails to parse — with no
-    // diagnostic at all pointing at the truncated `</` (only the
-    // "fragments are not supported" diagnostic for the `<>` itself is
-    // reported). Not fixed here: fixing it needs either scanning the
-    // fragment's body for a matching (unsupported) `</>` the way a real
-    // element scans children, or otherwise recognizing a `<`-led construct
-    // immediately following recovered-fragment text instead of falling
-    // through to "ordinary Rust".
+    // TODO(alpha): two fragment shapes are still not recovered (no owning
+    // issue yet; found while fixing #18). (1) A
+    // complete `</Name>` after a top-level `<>` is left to the caller and
+    // reaches Recovery output as a `<` operator followed by invalid Rust.
+    // (2) A fragment *body* before a truncated `</` (`<>\n<p/>\n</`) is
+    // never scanned, so the `</` is not found by the look-ahead above.
+    // Fixing them needs the fragment's body and matching `</>` scanned the
+    // way a real element's children are; reserved syntax (grammar §10) did
+    // not justify that in the alpha's recovery issue (#18).
+    fn recover_top_level_fragment(&mut self, lt: usize) -> (ast::JsxElement, usize) {
+        let (element, end) = self.recover_fragment(lt);
+        let close_at = next_significant(self.bytes, end).start;
+        if !self.bytes[close_at..].starts_with(b"</") {
+            return (element, end);
+        }
+        let (shape, shape_end) = self.scan_closing_tag_shape(close_at);
+        if matches!(shape, closing::ClosingTagShape::Named { .. }) {
+            return (element, end);
+        }
+        self.diagnose_truncated_closing_tag(close_at, &shape, shape_end);
+        let end = self.absorb_element_after_interrupted_close(&shape, shape_end);
+        (incomplete_element(lt, end, "a tag name"), end)
+    }
+
+    /// `<>`: reserved in Phase 0 (grammar §10). Recovery: consume just the
+    /// two characters and report a placeholder element. The fragment's
+    /// body is never scanned; the one thing that follows it that cannot be
+    /// left to the caller, a truncated `</`, is handled by
+    /// [`Self::recover_top_level_fragment`].
     fn recover_fragment(&mut self, lt: usize) -> (ast::JsxElement, usize) {
         let gt = next_significant(self.bytes, lt + 1);
         self.push_diag(
@@ -153,32 +177,50 @@ impl<'s> Parser<'s> {
         (incomplete_element(lt, end, "a tag name"), end)
     }
 
-    /// `</Name>` where nothing is open (grammar §4.1, §9).
-    //
-    // TODO(phase0): unlike `resolve_closing_tag`, this calls
-    // `scan_closing_tag_shape` directly and never inspects the returned
-    // `ClosingTagShape`, so an `Eof` or `InterruptedByLt`/`InterruptedByRbrace`
-    // shape gets none of `resolve_closing_tag`'s own diagnostics (e.g.
-    // `diag::eof_inside_closing_tag`) — only the generic
-    // `diag::stray_closing_tag` below, and with the name lost, since
-    // `ClosingTagShape::name_text` returns `None` for every shape but
-    // `Named`. For a top-level, truncated `</div` at end of file this
-    // produces `` closing tag `</>` has no matching opening tag `` (the
-    // name silently dropped) instead of a message naming `div`, and
-    // Recovery-mode codegen's output for this shape does not parse either.
-    // Not fixed here: fixing it needs `ClosingTagShape` to carry a partial
-    // name for every shape (not just `Named`), and this function to route
-    // through `resolve_closing_tag`'s own per-shape diagnostics the way a
-    // real closing tag does, instead of only ever reporting
-    // `stray_closing_tag`.
+    /// `</Name>` where nothing is open (grammar §4.1, §9). A closing tag
+    /// cut short (end of file, `<` or `}` before the `>`) gets the same
+    /// per-shape diagnostic [`Self::resolve_closing_tag`] reports, then
+    /// the "no matching opening tag" one, naming the partially-scanned tag
+    /// name (`</div` is reported as `</div>`).
     fn recover_stray_close(&mut self, lt: usize) -> (ast::JsxElement, usize) {
-        let (resolution, end) = self.scan_closing_tag_shape(lt);
-        let name = resolution.name_text(self.source).unwrap_or_default();
+        let (shape, end) = self.scan_closing_tag_shape(lt);
+        self.diagnose_truncated_closing_tag(lt, &shape, end);
+        let name = shape.name_text(self.source).unwrap_or_default();
         self.push_diag(
             Span::new(lt as u32, lt as u32 + 1),
             diag::stray_closing_tag(&name),
         );
+        let end = self.absorb_element_after_interrupted_close(&shape, end);
         (incomplete_element(lt, end, "an opening tag"), end)
+    }
+
+    /// A closing tag cut short by a `<` (`</div <p/>`) leaves that `<` to
+    /// the caller, which resumes after an operand and would read it as a
+    /// less-than operator, splicing the element after it into Recovery
+    /// output as invalid Rust. When the `<` begins JSX, that element is
+    /// parsed here (with its own diagnostics) and the recovery element
+    /// extended over it, so the whole broken run becomes one placeholder.
+    /// Bounded by the element nesting cap, like any nested element.
+    fn absorb_element_after_interrupted_close(
+        &mut self,
+        shape: &closing::ClosingTagShape,
+        end: usize,
+    ) -> usize {
+        let closing::ClosingTagShape::InterruptedByLt { lt, .. } = *shape else {
+            return end;
+        };
+        if self.jsx_depth >= diag::MAX_NESTING {
+            return end;
+        }
+        match disambiguate::classify(self.source, lt) {
+            Classification::Rust => end,
+            classification => {
+                self.jsx_depth += 1;
+                let (_, after) = self.parse_jsx_element(lt, classification);
+                self.jsx_depth -= 1;
+                after
+            }
+        }
     }
 
     /// Parses a named JSX element, guarding against unbounded recursion

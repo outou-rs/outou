@@ -77,6 +77,40 @@ pub fn eof_in_island() -> String {
     "unexpected end of file, expected `}` to close this expression".to_string()
 }
 
+/// `incomplete signature for function `{name}`, expected `{closer}` to close this `{opener}``
+pub fn incomplete_signature_unclosed_delimiter(name: &str, opener: char, closer: char) -> String {
+    format!(
+        "incomplete signature for function `{name}`, expected `{closer}` to close this `{opener}`"
+    )
+}
+
+/// `incomplete signature for function `{name}`, expected a body or `;``
+pub fn incomplete_signature(name: &str) -> String {
+    format!("incomplete signature for function `{name}`, expected a body or `;`")
+}
+
+/// `unclosed body of function `{name}`, expected `}` to close this `{``
+pub fn unclosed_function_body(name: &str) -> String {
+    format!("unclosed body of function `{name}`, expected `}}` to close this `{{`")
+}
+
+/// How many unclosed function bodies one file may have cut at the next
+/// item (grammar §9). Each cut re-parses the swallowed range once, so the
+/// cap bounds the extra work at a constant number of passes over the file;
+/// beyond it a broken function swallows the rest of the file as before.
+pub const MAX_RECOVERY_CUTS: u32 = 16;
+
+/// Rewords the end-of-file diagnostics of a function body that was cut at
+/// the next item: the parser saw the cut as end of input, but the file goes
+/// on, so `unexpected end of file …` becomes `unexpected start of the next
+/// item …`. Any other message is returned unchanged.
+pub fn reword_end_of_file_as_next_item(message: &str) -> String {
+    match message.strip_prefix("unexpected end of file") {
+        Some(rest) => format!("unexpected start of the next item{rest}"),
+        None => message.to_string(),
+    }
+}
+
 /// `fragments are not supported in Phase 0`
 pub fn fragments_not_supported() -> String {
     "fragments are not supported in Phase 0".to_string()

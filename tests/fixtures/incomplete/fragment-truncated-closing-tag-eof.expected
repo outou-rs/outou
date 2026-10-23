@@ -1,0 +1,4 @@
+error: fragments are not supported in Phase 0
+ --> fragment-truncated-closing-tag-eof.rsx:5:5
+error: unexpected end of file inside closing tag, expected `>`
+ --> fragment-truncated-closing-tag-eof.rsx:6:1

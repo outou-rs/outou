@@ -12,22 +12,40 @@ use super::super::diag;
 use super::super::Parser;
 use super::{is_jsx_name_byte, pos_span, skip_ws, CloseResolution};
 
+/// How far a `</...` scan got. Every shape but `Named` is a truncated
+/// closing tag; those carry the byte range of the tag name scanned before
+/// the interruption (`None` when none was reached, as in `</` + EOF).
 pub(super) enum ClosingTagShape {
-    Eof,
-    InterruptedByLt { lt: usize },
-    InterruptedByRbrace,
-    Named { name_start: usize, name_end: usize },
+    Eof {
+        name: Option<(usize, usize)>,
+    },
+    InterruptedByLt {
+        lt: usize,
+        name: Option<(usize, usize)>,
+    },
+    InterruptedByRbrace {
+        name: Option<(usize, usize)>,
+    },
+    Named {
+        name_start: usize,
+        name_end: usize,
+    },
 }
 
 impl ClosingTagShape {
+    /// The tag name text: the full name for `Named`, the partially-scanned
+    /// one for a truncated shape, `None` when no name was scanned at all.
     pub(super) fn name_text(&self, source: &str) -> Option<String> {
-        match self {
+        let (start, end) = match self {
             ClosingTagShape::Named {
                 name_start,
                 name_end,
-            } => Some(source[*name_start..*name_end].to_string()),
-            _ => None,
-        }
+            } => (*name_start, *name_end),
+            ClosingTagShape::Eof { name }
+            | ClosingTagShape::InterruptedByLt { name, .. }
+            | ClosingTagShape::InterruptedByRbrace { name } => (*name)?,
+        };
+        Some(source[start..end].to_string())
     }
 }
 
@@ -56,22 +74,17 @@ impl<'s> Parser<'s> {
         _current_name: &str,
     ) -> CloseResolution {
         let (shape, shape_end) = self.scan_closing_tag_shape(at);
+        self.diagnose_truncated_closing_tag(at, &shape, shape_end);
         match shape {
-            ClosingTagShape::Eof => {
-                self.push_diag_at(pos_span(at), diag::eof_inside_closing_tag());
-                CloseResolution::Terminated { end: shape_end }
-            }
-            ClosingTagShape::InterruptedByLt { lt } => {
-                self.push_diag_at(pos_span(lt), diag::lt_inside_closing_tag());
+            ClosingTagShape::Eof { .. } => CloseResolution::Terminated { end: shape_end },
+            ClosingTagShape::InterruptedByLt { lt, .. } => {
                 let close = incomplete_tag(at, lt, None, "`>`");
                 CloseResolution::Resolved {
                     close: Some(close),
                     end: lt,
                 }
             }
-            ClosingTagShape::InterruptedByRbrace => {
-                self.push_diag_at(pos_span(shape_end), diag::rbrace_inside_closing_tag());
-                self.terminator_diagnosed_at = Some(shape_end);
+            ClosingTagShape::InterruptedByRbrace { .. } => {
                 // Mirrors the EOF case: `end` is `shape_end` (the `}`
                 // itself), not `at` (the closing tag's own `<`), so this
                 // element's span covers the truncated closing tag instead
@@ -148,17 +161,44 @@ impl<'s> Parser<'s> {
         }
     }
 
+    /// Reports the diagnostic for a truncated `</...` (end of file, a `<`
+    /// or a `}` before the closing `>`); a no-op for `Named`. Shared by
+    /// [`Self::resolve_closing_tag`] and the top-level recoveries
+    /// (`recover_stray_close`, `recover_fragment`'s trailing close), so
+    /// every place a closing tag can be cut short words it identically.
+    pub(super) fn diagnose_truncated_closing_tag(
+        &mut self,
+        at: usize,
+        shape: &ClosingTagShape,
+        shape_end: usize,
+    ) {
+        match shape {
+            ClosingTagShape::Eof { .. } => {
+                self.push_diag_at(pos_span(at), diag::eof_inside_closing_tag());
+            }
+            ClosingTagShape::InterruptedByLt { lt, .. } => {
+                self.push_diag_at(pos_span(*lt), diag::lt_inside_closing_tag());
+            }
+            ClosingTagShape::InterruptedByRbrace { .. } => {
+                self.push_diag_at(pos_span(shape_end), diag::rbrace_inside_closing_tag());
+                self.terminator_diagnosed_at = Some(shape_end);
+            }
+            ClosingTagShape::Named { .. } => {}
+        }
+    }
+
     /// Scans the shape of a `</...` construct starting at `at` (the `<`),
     /// without consulting the open-name stack. Shared by real closing
     /// tags and by the top-level "stray close" recovery.
     pub(super) fn scan_closing_tag_shape(&self, at: usize) -> (ClosingTagShape, usize) {
         let mut pos = at + 2; // past `</`
         pos = skip_ws(self.bytes, pos);
+        let mut name: Option<(usize, usize)> = None;
         loop {
             match self.bytes.get(pos).copied() {
-                None => return (ClosingTagShape::Eof, pos),
-                Some(b'<') => return (ClosingTagShape::InterruptedByLt { lt: pos }, pos),
-                Some(b'}') => return (ClosingTagShape::InterruptedByRbrace, pos),
+                None => return (ClosingTagShape::Eof { name }, pos),
+                Some(b'<') => return (ClosingTagShape::InterruptedByLt { lt: pos, name }, pos),
+                Some(b'}') => return (ClosingTagShape::InterruptedByRbrace { name }, pos),
                 Some(b'>') => {
                     // No name was ever found; treat as an empty name.
                     return (
@@ -172,6 +212,8 @@ impl<'s> Parser<'s> {
                 Some(c) if is_jsx_name_byte(c) => {
                     let name_start = pos;
                     let name_end = scan_jsx_name(self.bytes, pos);
+                    // Keep the first name: `</div class` reports `div`.
+                    name.get_or_insert((name_start, name_end));
                     pos = skip_ws(self.bytes, name_end);
                     match self.bytes.get(pos).copied() {
                         Some(b'>') => {
@@ -183,9 +225,11 @@ impl<'s> Parser<'s> {
                                 pos + 1,
                             )
                         }
-                        Some(b'<') => return (ClosingTagShape::InterruptedByLt { lt: pos }, pos),
-                        Some(b'}') => return (ClosingTagShape::InterruptedByRbrace, pos),
-                        None => return (ClosingTagShape::Eof, pos),
+                        Some(b'<') => {
+                            return (ClosingTagShape::InterruptedByLt { lt: pos, name }, pos)
+                        }
+                        Some(b'}') => return (ClosingTagShape::InterruptedByRbrace { name }, pos),
+                        None => return (ClosingTagShape::Eof { name }, pos),
                         Some(_) => {
                             pos += 1; // best-effort: skip stray bytes and keep looking for `>`
                         }

@@ -13,9 +13,9 @@
 //! this crate lowers lives inside `::outou::__private::rsx! { … }`. A
 //! recovery-mode output can pass `syn::parse_file` and still fail to
 //! `cargo check` — reproduced with `unclosed-island-mid-file.rsx` below,
-//! whose swallowed tail (`fn After`, absorbed into a JSX text child by
-//! the parser's own recovery, issue #4) becomes unparseable Rust once
-//! `rsx!` actually expands it. [`every_incomplete_fixture_compiles_with_no_parse_errors`]
+//! as it stood before issue #18: its swallowed tail (`fn After`,
+//! absorbed into a JSX text child by the parser's own recovery, issue #4)
+//! became unparseable Rust once `rsx!` actually expands it. [`every_incomplete_fixture_compiles_with_no_parse_errors`]
 //! is the real compile gate this crate needs: it reuses
 //! `tests/compile_check.rs`'s throwaway-crate machinery to run a genuine
 //! `cargo check` over each fixture's recovery output and asserts "no
@@ -37,15 +37,15 @@
 //! before, a `fn After` after) rather than at the literal end of input,
 //! so a real edit session — broken syntax with more of the file typed
 //! below it — is exercised, not just "stopped typing at EOF".
-//! `unclosed-island-mid-file.rsx` is the one that actually demonstrates
-//! the symbol-loss HIGH-4 describes: `fn After` is not dropped as an
-//! `Item` (nothing this crate's codegen decides to drop) — the *parser*
-//! itself, recovering from the unclosed `{items.iter()…}` island, folds
-//! `fn After`'s entire text into a `JsxText` child of `App`'s `<ul>`
-//! before codegen ever sees the file, so the symbol is unrecoverable by
-//! construction, not by a codegen choice. This is issue #4's
-//! element-runs-to-EOF recovery, not something `outou-backend-dioxus`
-//! can fix; it is documented here, not fixed here.
+//! Those two fixtures used to demonstrate the swallowed-tail limitation
+//! (HIGH-4, LOW-17): the parser's own recovery folded `fn After` into the
+//! broken function's signature or JSX text before codegen ever saw the
+//! file, so the symbol was unrecoverable by construction. Issue #18 fixed
+//! that in the parser (a broken signature stops, and an unclosed body that
+//! runs to end of input is cut, at the next column-0 item head); the dedicated test
+//! `swallowed_tail_fixtures_keep_the_item_after_the_broken_construct`
+//! asserts `fn After` is its own item, the broken construct is diagnosed
+//! and `fn After` is in the recovery output.
 
 mod support;
 
@@ -176,6 +176,69 @@ fn every_incomplete_fixture_produces_parseable_analyzable_rust() {
             !generated.rust.contains("dioxus"),
             "{}: recovery output contains the substring \"dioxus\":\n{}",
             path.display(),
+            generated.rust
+        );
+    }
+}
+
+/// The swallowed-tail fixtures (issue #18, gate A2): the item after the
+/// broken construct must survive as its own `Item::Function`, the broken
+/// construct must be diagnosed, and the recovery output must still carry
+/// `fn After` verbatim so rust-analyzer can resolve the symbol.
+#[test]
+fn swallowed_tail_fixtures_keep_the_item_after_the_broken_construct() {
+    // Every `*-mid-file` fixture has a `fn After` below its broken construct.
+    let mid_file: Vec<_> = fixture_paths()
+        .into_iter()
+        .filter(|path| {
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .is_some_and(|stem| stem.ends_with("-mid-file"))
+        })
+        .collect();
+    assert!(
+        mid_file.len() >= 4,
+        "expected the four *-mid-file fixtures, found {mid_file:?}"
+    );
+    for path in mid_file {
+        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
+        let source =
+            fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        let parsed = outou_syntax::parse(&source);
+
+        let after = parsed
+            .file
+            .items
+            .iter()
+            .find_map(|item| match item {
+                ast::Item::Function(f) if f.name.name == "After" => Some(f),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                panic!("{name}: `fn After` is not its own item: {:#?}", parsed.file)
+            });
+        assert!(after.is_component, "{name}: `fn After` lost #[component]");
+        assert!(
+            after.body.close.is_some(),
+            "{name}: `fn After` lost its body"
+        );
+        assert!(
+            !parsed.diagnostics.is_empty(),
+            "{name}: the truncated construct is not diagnosed"
+        );
+        let after_text = &source[after.span.start as usize..after.span.end as usize];
+        assert!(
+            after_text.trim_start().starts_with("#[component]") && after_text.ends_with('}'),
+            "{name}: `fn After` span is wrong: {after_text:?}"
+        );
+
+        let opts = GenerateOptions::new(Uri::new("file:///gen.rs"), Uri::new("file:///a.rsx"));
+        let generated = DioxusBackend
+            .generate(&parsed, &source, Mode::Recovery, &opts)
+            .unwrap_or_else(|e| panic!("{name}: recovery generation must never fail: {e}"));
+        assert!(
+            generated.rust.contains("fn After() -> Element {"),
+            "{name}: `fn After` is missing from recovery output:\n{}",
             generated.rust
         );
     }

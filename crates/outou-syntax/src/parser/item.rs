@@ -25,6 +25,7 @@ use crate::ast;
 use crate::lexer::opaque;
 use crate::lexer::rust_token::{self, RtKind, RtTok};
 
+use super::boundary::HeadContext;
 use super::diag;
 use super::region::operand_sentinel;
 use super::Parser;
@@ -48,8 +49,17 @@ enum SignatureEnd {
     /// Position right after a depth-0 `;` that ended a body-less
     /// signature.
     Semicolon(usize),
-    /// End of input reached before either.
-    Eof,
+    /// End of input reached before either. `open` is the innermost
+    /// delimiter still unclosed there, as `(byte, position)`.
+    Eof { open: Option<(u8, usize)> },
+    /// Stopped before end of input at `at`, which is left unconsumed: a
+    /// column-0 item head (the next item starts here) or a closing
+    /// delimiter that does not match the innermost open one (typically
+    /// the `}` of the enclosing `mod`). `open` is as for `Eof`.
+    Stopped {
+        open: Option<(u8, usize)>,
+        at: usize,
+    },
 }
 
 impl<'s> Parser<'s> {
@@ -139,7 +149,7 @@ impl<'s> Parser<'s> {
                 if is_fn_item {
                     self.flush_rust_run(&mut parts, chunk_start, pos);
                     self.finish_rust_run(&mut items, &mut parts, run_start, pos);
-                    let (function, end) = self.parse_function(attrs, pos, head);
+                    let (function, end) = self.parse_function_bounded(attrs, pos, head);
                     items.push(ast::Item::Function(function));
                     pos = end;
                     chunk_start = end;
@@ -219,7 +229,10 @@ impl<'s> Parser<'s> {
                         self.finish_rust_run(&mut items, &mut parts, run_start, tok.start);
                         return (items, tok.end);
                     }
-                    depth -= 1;
+                    // A `}` with nothing open is a stray one (the unconsumed
+                    // `}` a broken signature stopped at, say); it must not
+                    // push the depth negative and so hide every later item.
+                    depth = (depth - 1).max(0);
                     prev = Some(tok);
                     pos = tok.end;
                 }
@@ -290,7 +303,7 @@ impl<'s> Parser<'s> {
 
     /// Collects consecutive leading attributes (`#[...]`, `#![...]`) and
     /// doc comments (`///`, `//!`) starting at `pos`.
-    fn scan_leading_attributes(&self, mut pos: usize) -> (Vec<ast::RustSource>, usize) {
+    pub(super) fn scan_leading_attributes(&self, mut pos: usize) -> (Vec<ast::RustSource>, usize) {
         let mut attrs = Vec::new();
         loop {
             while matches!(self.bytes.get(pos), Some(b) if b.is_ascii_whitespace()) {
@@ -331,6 +344,67 @@ impl<'s> Parser<'s> {
         (attrs, pos)
     }
 
+    /// Skips `pub` / `pub(crate|self|super)` / `pub(in path)` at `pos`, if
+    /// present. A `(` after `pub` that does not open one of those forms is
+    /// left alone: the group is checked token by token, up to its own
+    /// `)`, instead of being skipped as a balanced group, so a column-0
+    /// `pub(` that never closes cannot send a scan to the end of input
+    /// (one such scan per line was quadratic, issue #18).
+    pub(super) fn skip_visibility(&self, mut pos: usize) -> usize {
+        let vis = rust_token::next_significant(self.bytes, pos);
+        if vis.kind == RtKind::Ident && vis.text(self.source) == "pub" {
+            pos = vis.end;
+            let paren = rust_token::next_significant(self.bytes, pos);
+            if paren.kind == RtKind::OpenDelim && self.bytes.get(paren.start) == Some(&b'(') {
+                if let Some(end) = self.visibility_restriction_end(paren.end) {
+                    pos = end;
+                }
+            }
+        }
+        pos
+    }
+
+    /// The end of the `crate)`, `self)`, `super)` or `in a::b)` remainder
+    /// of a visibility restriction starting right after its `(`, or `None`
+    /// when the text is not one of them.
+    fn visibility_restriction_end(&self, after_paren: usize) -> Option<usize> {
+        let first = rust_token::next_significant(self.bytes, after_paren);
+        if first.kind != RtKind::Ident {
+            return None;
+        }
+        let mut pos = first.end;
+        match first.text(self.source) {
+            "crate" | "self" | "super" => {}
+            "in" => pos = self.visibility_path_end(pos)?,
+            _ => return None,
+        }
+        let close = rust_token::next_significant(self.bytes, pos);
+        let is_close = close.kind == RtKind::CloseDelim && self.bytes[close.start] == b')';
+        is_close.then_some(close.end)
+    }
+
+    /// The end of the `a::b::c` path (a leading `::` allowed) at `pos`, or
+    /// `None` when no segment follows. Stops at the first token that
+    /// continues neither a segment nor a `::`.
+    fn visibility_path_end(&self, mut pos: usize) -> Option<usize> {
+        let mut expect_segment = true;
+        let mut saw_segment = false;
+        loop {
+            let tok = rust_token::next_significant(self.bytes, pos);
+            let is_separator = tok.kind == RtKind::Punct && tok.text(self.source) == "::";
+            if expect_segment && matches!(tok.kind, RtKind::Ident | RtKind::RawIdent) {
+                saw_segment = true;
+                expect_segment = false;
+                pos = tok.end;
+            } else if is_separator && (!expect_segment || !saw_segment) {
+                expect_segment = true;
+                pos = tok.end;
+            } else {
+                return (saw_segment && !expect_segment).then_some(pos);
+            }
+        }
+    }
+
     /// Skips a visibility/qualifier prefix that may sit between an item's
     /// attributes and its `fn`/`mod` keyword — `pub`, `pub(...)`, and any
     /// run of `default`, `const`, `async`, `unsafe`, `extern "abi"?` — so
@@ -338,15 +412,8 @@ impl<'s> Parser<'s> {
     /// `fn`/`mod` correctly regardless of them (HIGH-1, issue #4 fix list
     /// item 2). Phase 0 does not need to validate that the qualifiers
     /// appear in a legal order or combination; rustc already does that.
-    fn skip_item_qualifiers(&self, mut pos: usize) -> usize {
-        let vis = rust_token::next_significant(self.bytes, pos);
-        if vis.kind == RtKind::Ident && vis.text(self.source) == "pub" {
-            pos = vis.end;
-            let paren = rust_token::next_significant(self.bytes, pos);
-            if paren.kind == RtKind::OpenDelim && self.bytes.get(paren.start) == Some(&b'(') {
-                pos = rust_token::skip_balanced_group(self.bytes, paren.start);
-            }
-        }
+    pub(super) fn skip_item_qualifiers(&self, pos: usize) -> usize {
+        let mut pos = self.skip_visibility(pos);
         loop {
             let tok = rust_token::next_significant(self.bytes, pos);
             if tok.kind != RtKind::Ident {
@@ -388,7 +455,7 @@ impl<'s> Parser<'s> {
     }
 
     /// Parses a `fn` item: `head` is the already-located `fn` token.
-    fn parse_function(
+    pub(super) fn parse_function(
         &mut self,
         attrs: Vec<ast::RustSource>,
         item_start: usize,
@@ -402,8 +469,35 @@ impl<'s> Parser<'s> {
         };
 
         let mut pos = name_tok.end.max(head.end);
-        let mut depth: i32 = 0;
+        let mut open_delims: Vec<(u8, usize)> = Vec::new();
+        // Item heads before this position were already checked (and
+        // failed) as part of an attribute run; skipping them keeps a long
+        // run of doc comments from being rescanned at every token.
+        let mut head_checked_until = pos;
         let signature_end = loop {
+            let tok = rust_token::next_token(self.bytes, pos);
+            // The next item starts at column 0: a signature that has not
+            // reached its body or `;` by then is incomplete, and what
+            // follows is not part of it. A valid signature never has such
+            // a head at column 0 ([`HeadContext::Signature`]).
+            if tok.start >= head_checked_until && self.starts_line(tok.start) {
+                let (is_head, resume) = self.item_head_at(tok, HeadContext::Signature);
+                if is_head {
+                    break SignatureEnd::Stopped {
+                        open: open_delims.last().copied(),
+                        at: tok.start,
+                    };
+                }
+                head_checked_until = resume.max(tok.end);
+            }
+            // A comment is consumed on its own, before the opaque-region
+            // lookahead below: that lookahead walks past a whole run of
+            // comments to the next real token, which made a long run of
+            // them quadratic when attempted at every comment (HIGH-3).
+            if matches!(tok.kind, RtKind::LineComment | RtKind::BlockComment) {
+                pos = tok.end;
+                continue;
+            }
             // A function *signature* (parameters, generics, return type)
             // is bounded and short in practice, unlike a statement-level
             // path (M12); `prev_is_path_continuation: false` here always
@@ -413,22 +507,47 @@ impl<'s> Parser<'s> {
                 pos = end;
                 continue;
             }
-            let tok = rust_token::next_token(self.bytes, pos);
             if tok.start == tok.end {
-                break SignatureEnd::Eof;
+                break SignatureEnd::Eof {
+                    open: open_delims.last().copied(),
+                };
             }
             match tok.kind {
-                RtKind::OpenDelim if self.bytes[tok.start] == b'{' && depth == 0 => {
+                RtKind::OpenDelim if self.bytes[tok.start] == b'{' && open_delims.is_empty() => {
                     break SignatureEnd::Body(tok.start)
                 }
-                RtKind::OpenDelim => depth += 1,
-                RtKind::CloseDelim => depth = (depth - 1).max(0),
+                RtKind::OpenDelim => open_delims.push((self.bytes[tok.start], tok.start)),
+                RtKind::CloseDelim => match open_delims.last() {
+                    Some(&(opener, _))
+                        if closing_delimiter(opener) as u8 == self.bytes[tok.start] =>
+                    {
+                        open_delims.pop();
+                    }
+                    // A closer that does not match the innermost opener
+                    // (the `}` of the enclosing `mod` closing an
+                    // unfinished `(`) ends the signature and is left for
+                    // the caller, which it would otherwise be swallowed
+                    // from.
+                    Some(_) => {
+                        break SignatureEnd::Stopped {
+                            open: open_delims.last().copied(),
+                            at: tok.start,
+                        }
+                    }
+                    None if self.bytes[tok.start] == b'}' => {
+                        break SignatureEnd::Stopped {
+                            open: None,
+                            at: tok.start,
+                        }
+                    }
+                    None => {}
+                },
                 // A body-less declaration (`fn foo();`, as inside an
                 // `extern` block) ends its signature at its own `;`
                 // instead of continuing to hunt for the next `{` —
                 // which used to belong to a completely unrelated
                 // following item (LOW-11, issue #4 fix list item 8).
-                RtKind::Punct if self.bytes[tok.start] == b';' && depth == 0 => {
+                RtKind::Punct if self.bytes[tok.start] == b';' && open_delims.is_empty() => {
                     break SignatureEnd::Semicolon(tok.end)
                 }
                 _ => {}
@@ -482,12 +601,26 @@ impl<'s> Parser<'s> {
                     end,
                 )
             }
-            SignatureEnd::Eof => {
+            SignatureEnd::Eof { open } | SignatureEnd::Stopped { open, .. } => {
                 // No body and no terminating `;` found before end of
-                // input: an incomplete signature. Recovery: an empty body
-                // at end of input, no panic. Not one of the required
-                // fixtures.
-                let end = self.bytes.len();
+                // input, the next item or an unmatched closer: an
+                // incomplete signature. Diagnosed, and recovered as an
+                // empty body where the signature stopped.
+                match open {
+                    Some((opener, at)) => self.push_diag(
+                        Span::new(at as u32, at as u32 + 1),
+                        diag::incomplete_signature_unclosed_delimiter(
+                            &name.name,
+                            opener as char,
+                            closing_delimiter(opener),
+                        ),
+                    ),
+                    None => self.push_diag(name.span, diag::incomplete_signature(&name.name)),
+                }
+                let end = match signature_end {
+                    SignatureEnd::Stopped { at, .. } => at,
+                    _ => self.bytes.len(),
+                };
                 let signature = ast::RustSource {
                     span: Span::new(head.start as u32, end as u32),
                     text: self.source[head.start..end].to_string(),
@@ -579,6 +712,15 @@ impl<'s> Parser<'s> {
         );
         let end = rust_token::skip_balanced_group(self.bytes, open_brace_pos);
         (head_parts.into_module(item_start, end, None), end)
+    }
+}
+
+/// The delimiter that closes `opener` (`(`, `[` or `{`).
+fn closing_delimiter(opener: u8) -> char {
+    match opener {
+        b'(' => ')',
+        b'[' => ']',
+        _ => '}',
     }
 }
 

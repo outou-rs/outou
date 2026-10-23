@@ -1,0 +1,4 @@
+error: unexpected `}` inside closing tag, expected `>`
+ --> stray-closing-tag-interrupted-by-rbrace.rsx:6:1
+error: closing tag `</div>` has no matching opening tag
+ --> stray-closing-tag-interrupted-by-rbrace.rsx:5:5

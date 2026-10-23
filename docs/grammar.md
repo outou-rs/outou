@@ -70,7 +70,7 @@ On either, the parser closes every open JSX frame implicitly in the AST, innermo
 - one diagnostic for the innermost open construct — a tag, an island, or a closing tag — naming the terminator (``unexpected end of file …`` or ``unexpected `}` …``);
 - ``missing closing tag `</X>` `` for each open frame that had become an element (that is, whose `>` was seen), at its opening tag.
 
-A `}` terminator is then re-examined in the mode active before the outermost `<`, so it still closes the enclosing Rust block and the rest of the file parses. Enclosing Rust blocks left open at end of input are closed implicitly in the AST as well; that is a Rust-level recovery, not an Outou diagnostic.
+A `}` terminator is then re-examined in the mode active before the outermost `<`, so it still closes the enclosing Rust block and the rest of the file parses. Enclosing Rust blocks left open at end of input are closed implicitly in the AST as well; that is a Rust-level recovery, not an Outou diagnostic, with one exception: the next column-0 item is a recovery boundary. A function body that is still open when an item head starts in column 0 is closed there, so the items after it survive, and the cut is diagnosed (§9, "Cutting an unclosed function body"). Earlier revisions left every unclosed Rust-level block to `rustc`.
 
 This changes one earlier rule deliberately: a stray `}` in `JsxText` is a terminator, not literal text kept for recovery. Keeping it as text would lose every enclosing Rust block after an unclosed element, which breaks the Gate 1 promise in `tests/fixtures/incomplete/README.md` that recovery-mode codegen must emit Rust in which every complete Rust expression is still analyzable. Uniform unwinding costs one case (`<div>a } b</div>`, already an error in Babel) and buys block-structure survival plus a single rule for both modes.
 
@@ -311,6 +311,10 @@ At minimum the following MUST recover with the rest of the file intact, each wit
 | Mismatched closing tag | `diagnostics/mismatched-closing-tag.rsx` | ``closing tag `</span>` does not match opening tag `<div>` `` |
 | Stray closing tag | `diagnostics/stray-closing-tag.rsx` | ``closing tag `</div>` has no matching opening tag`` |
 | Truncated closing tag at end of input | `incomplete/truncated-closing-tag-eof.rsx` | ``unexpected end of file inside closing tag, expected `>` `` |
+| Truncated closing tag, top level | `incomplete/stray-truncated-closing-tag-eof.rsx` | the truncated-closing-tag message at the `<`, then ``closing tag `</div>` has no matching opening tag`` naming the partially-scanned tag |
+| Truncated `</` right after a reserved fragment | `incomplete/fragment-truncated-closing-tag-eof.rsx` | ``fragments are not supported in Phase 0`` at `<>`, then the truncated-closing-tag message at the `</` |
+| Incomplete function signature | `incomplete/bodyless-fn-mid-file.rsx` | ``incomplete signature for function `App`, expected `)` to close this `(` `` (or ``expected a body or `;` `` when no delimiter is open) |
+| Unclosed function body, next item follows | `incomplete/class-attribute-value-mid-file.rsx`, `incomplete/unclosed-island-mid-file.rsx` | ``unclosed body of function `App`, expected `}` to close this `{` `` at the body's `{`; the diagnostics of a construct cut off there say ``unexpected start of the next item …`` where they would say ``unexpected end of file …`` at a real end of input |
 | Closing tag interrupted by `<` | `diagnostics/closing-tag-interrupted-by-lt.rsx` | ``unexpected `<` inside closing tag, expected `>` `` |
 | Unterminated attribute value (string) | `incomplete/unterminated-string-swallows-block-close.rsx` | ``unterminated string in attribute value`` |
 | Unterminated attribute value (island) | `incomplete/unterminated-attribute-value.rsx` | ``unexpected end of file, expected `}` to close the value of attribute `name` `` |
@@ -322,6 +326,21 @@ At minimum the following MUST recover with the rest of the file intact, each wit
 | Inline `mod` nested more than 128 levels deep | — | ``modules are nested too deeply (Outou supports at most 128 levels)`` |
 
 Each fixture under `tests/fixtures/incomplete/` and `tests/fixtures/diagnostics/` has a sibling `.expected` with these strings verbatim; the fixture, not this table, is the ground truth for issue #4.
+
+**Cutting an unclosed function body.** A `fn` item is the unit of recovery. Two rules keep the items after a broken function from being swallowed into it (the swallowed tail, issue #18).
+
+- *Signature.* A signature scan that has not reached its body `{` or `;` stops at the first column-0 item head, or at a closing delimiter that does not match the innermost open one (the `}` of the enclosing `mod` closing an unfinished `(`; it is left unconsumed). It is diagnosed as an incomplete signature and the function ends there with an empty body.
+- *Body.* A function body that reaches end of input without its closing `}` is cut at the first column-0 item head after the body's `{`; the body is re-parsed as if the input ended there, the items from the cut on parse normally, and the cut is **always** diagnosed with ``unclosed body of function `Name`, expected `}` to close this `{` `` at the body's `{` (the span convention above), even when nothing else in the function was wrong. A body-less `fn name(...);` is not an unclosed body. A function whose body closes is never cut, however item-like its text.
+
+An *item head* is a token in **column 0** (first byte of its line) that starts, after any attributes, doc comments and `pub`/qualifiers (`default const async unsafe extern "abi"`), one of `fn <name>`, `struct`, `enum`, `trait`, `mod`, `use`, `static` or `type`; for a body also `impl` and `const NAME:`. A signature does not treat a bare `impl` or `const` as a head, since `fn f<\nconst N: usize>()` and an `-> impl Trait` on its own line are valid. Indented code is never a boundary.
+
+The boundary is found by walking Rust tokens from the body's `{`, so an item-looking line inside a string, raw string, character literal or comment is not seen. A body cut also requires the head to lie after the earliest diagnostic the first parse reported for that function, so item-looking text before the real error (a code sample in JSX text, say) is not taken for a boundary. At most 16 bodies per file are cut (each cut re-parses the swallowed range once); beyond that a broken function swallows the rest of the file as it did before, with the diagnostics of that parse.
+
+Known limits: JSX text, attribute strings and `<pre>` content that contain a column-0 item head *after* the real error can still be taken for a boundary; a function nested in an indented `mod` is not a boundary candidate; a body with more than one unclosed Rust block is closed once by the generated Rust and leaves the rest to `rustc`; a stray `"` or `'` in JSX text turns the rest of the walk into one string token, so no cut is found and the old swallow applies.
+
+- **L1.** The cut is taken only when the next column-0 item head lies after the earliest diagnostic of the broken function's first parse. When that earliest diagnostic sits inside a *later* item (an error the swallowing parse found past where the function should have ended), the cut is late or does not happen, and the old swallow applies to the range before it.
+- **L2.** A closing delimiter left over after a cut, or after a signature stops at an item head, is not consumed: it passes through to the top level as item-level Rust and reaches the generated Rust verbatim, where `rustc` reports it (a mismatched `</span>` followed by an extra `}` leaves that `}` in Recovery output).
+- **L3.** The same holds for text the recovery of a truncated construct stops short of: in `let x = <>\n</;\n}` the truncated `</` read of the closing tag skips the `;`. No code change is planned for L2 or L3; both only degrade Recovery output that `rustc` already rejects.
 
 A backend's parser MUST never see broken JSX, and its errors MUST never be shown for `.rsx` files.
 

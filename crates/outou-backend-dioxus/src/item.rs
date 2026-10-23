@@ -76,22 +76,23 @@ fn lower_item(writer: &mut Writer, source: &str, item: &Item, opts: &GenerateOpt
 /// codegen switch). Attributes and the signature are copied verbatim; only
 /// the body's JSX is lowered.
 ///
-/// A function whose signature never reached a body or a body-less `;`
-/// before end of input (`body.span.start == body.span.end`, no real `{` at
-/// all — see [`outou_syntax::ast::Block::close`]'s doc) cannot be
-/// reconstructed as a valid Rust item at all: its parameter list is
-/// truncated mid-token.
+/// A function with no body (`body.span.start == body.span.end`, no real
+/// `{` at all — see [`outou_syntax::ast::Block::close`]'s doc) is one of
+/// two shapes. A declaration ending in its own `;` (`fn Decl(x: i32);`,
+/// as in an `extern` block) is valid Rust with no diagnostic, and in
+/// [`Mode::Strict`] it is emitted verbatim like any other source. A
+/// signature that never reached a body or a `;` (it hit end of input, the
+/// next item, or an unmatched closing delimiter) is diagnosed by the
+/// parser, so [`outou_codegen::reject_syntax_errors_in_strict_mode`]
+/// already refused Strict generation and only [`Mode::Recovery`] gets
+/// here with it; the placeholder below keeps its symbol.
 ///
-/// [`Mode::Strict`] MUST NOT drop source bytes here: the parser does not
-/// always raise an error diagnostic for this shape (a body-less `fn App(`
-/// mid-file swallows the rest of the file into its own signature text
-/// with zero diagnostics — CRITICAL-1, issue #6), so
-/// [`outou_codegen::reject_syntax_errors_in_strict_mode`] cannot be
-/// relied on to have already refused generation. Splicing
-/// `source[function.span]` verbatim instead keeps every byte and lets
-/// `rustc` report the real error (an unclosed delimiter) at the right
-/// place, rather than silently compiling a truncated file with the rest
-/// of it missing.
+/// Strict mode MUST NOT drop source bytes for the first shape, and the
+/// verbatim branch is also the defense in depth if a zero-diagnostic
+/// truncated signature ever reaches codegen again (CRITICAL-1, issue #6):
+/// splicing `source[function.span]` keeps every byte and lets `rustc`
+/// report the real error at the right place instead of silently compiling
+/// a file with the rest of it missing.
 ///
 /// [`Mode::Recovery`] instead keeps the *symbol* (MEDIUM-14, issue #6 fix
 /// list item 7): the function's name is known even though its parameter

@@ -1,2 +1,4 @@
 error: missing closing tag `</ul>`
  --> unclosed-island-mid-file.rsx:10:5
+error: unclosed body of function `App`, expected `}` to close this `{`
+ --> unclosed-island-mid-file.rsx:9:36

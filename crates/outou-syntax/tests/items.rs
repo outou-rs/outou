@@ -215,3 +215,40 @@ fn generic_rust_produces_no_jsx() {
         );
     }
 }
+
+/// The swallowed-tail cut (issue #18) only ever applies to a function that
+/// is already broken: a well-formed last function whose JSX text happens to
+/// contain an item-looking line at column 0 must stay one item.
+#[test]
+fn item_looking_text_in_a_well_formed_function_is_not_cut() {
+    let source = "fn App() -> Element {\n    <pre>\nfn sample\n    </pre>\n}";
+    let parsed = outou_syntax::parse(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let functions = parsed
+        .file
+        .items
+        .iter()
+        .filter(|item| matches!(item, ast::Item::Function(_)))
+        .count();
+    assert_eq!(functions, 1, "{:#?}", parsed.file);
+}
+
+/// A broken function followed by another at column 0: both survive, and
+/// the broken signature is diagnosed at its unclosed `(`.
+#[test]
+fn incomplete_signature_does_not_swallow_the_next_function() {
+    let source = "fn App(\n\nfn After() -> Element {\n    <p/>\n}\n";
+    let parsed = outou_syntax::parse(source);
+    let names: Vec<_> = parsed
+        .file
+        .items
+        .iter()
+        .filter_map(|item| match item {
+            ast::Item::Function(f) => Some(f.name.name.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(names, ["App", "After"], "{:#?}", parsed.file);
+    assert_eq!(parsed.diagnostics.len(), 1, "{:?}", parsed.diagnostics);
+    assert_eq!(parsed.diagnostics[0].span.start, 6);
+}

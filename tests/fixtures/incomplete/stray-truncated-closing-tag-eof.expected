@@ -1,0 +1,4 @@
+error: unexpected end of file inside closing tag, expected `>`
+ --> stray-truncated-closing-tag-eof.rsx:5:5
+error: closing tag `</div>` has no matching opening tag
+ --> stray-truncated-closing-tag-eof.rsx:5:5

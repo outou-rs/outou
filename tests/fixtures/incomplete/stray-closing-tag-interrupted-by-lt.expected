@@ -1,0 +1,4 @@
+error: unexpected `<` inside closing tag, expected `>`
+ --> stray-closing-tag-interrupted-by-lt.rsx:5:11
+error: closing tag `</div>` has no matching opening tag
+ --> stray-closing-tag-interrupted-by-lt.rsx:5:5

@@ -11,14 +11,17 @@
 //!
 //! This is checked for every fixture under `tests/fixtures/{formatting,
 //! incomplete,modules}` (recursively) and `examples/phase0-app`, plus
-//! `tests/fixtures/incomplete/bodyless-fn-mid-file.rsx`, which is the
-//! actual regression case for CRITICAL-1: a body-less `fn App(` mid-file
-//! that swallows the rest of the file into its own signature text, with
-//! *no* parser diagnostic at all (`bodyless-fn-mid-file.expected` is
-//! empty) — so the `Mode::Strict` gate (`reject_syntax_errors_in_strict_mode`)
-//! does not refuse generation, and codegen itself was the only thing
-//! standing between this input and silently losing every function after
-//! `App`.
+//! `tests/fixtures/incomplete/bodyless-fn-mid-file.rsx`, the original
+//! CRITICAL-1 regression case: a body-less `fn App(` mid-file used to
+//! swallow the rest of the file into its own signature text with *no*
+//! parser diagnostic at all, so the `Mode::Strict` gate
+//! (`reject_syntax_errors_in_strict_mode`) did not refuse generation and
+//! codegen itself was the only thing standing between this input and
+//! silently losing every function after `App`. Since issue #18 the parser
+//! diagnoses that shape and keeps `fn After` as its own item, so the gate
+//! now refuses Strict generation up front; the codegen-level splice
+//! guarantee stays as defense in depth for any zero-diagnostic shape that
+//! reaches it.
 //!
 //! A fixture whose diagnostics *do* include an error (most of
 //! `incomplete/`, several of `modules/`) makes `DioxusBackend::generate`
@@ -186,26 +189,59 @@ fn strict_mode_never_drops_source_bytes() {
         assert_splice_invariant(&label, &source);
         if path.ends_with("bodyless-fn-mid-file.rsx") {
             checked_bodyless_regression = true;
-            // The whole point of this fixture: no parser diagnostic at
-            // all, so the Strict gate does not refuse generation, and
-            // `Before`/`App`/`After` must all still be present verbatim.
+            // The shape is diagnosed now (issue #18), so Strict generation is
+            // refused rather than reaching codegen, and all three functions
+            // are their own items instead of one swallowed signature.
             let parsed = outou_syntax::parse(&source);
             assert!(
-                parsed.diagnostics.is_empty(),
-                "bodyless-fn-mid-file.rsx unexpectedly has diagnostics: {:?}",
-                parsed.diagnostics
+                !parsed.diagnostics.is_empty(),
+                "bodyless-fn-mid-file.rsx must be diagnosed"
             );
             let opts = GenerateOptions::new(Uri::new("file:///gen.rs"), Uri::new("file:///a.rsx"));
-            let generated = DioxusBackend
-                .generate(&parsed, &source, Mode::Strict, &opts)
-                .expect("strict generation must succeed: no error diagnostics were emitted");
-            assert!(generated.rust.contains("fn Before"), "{}", generated.rust);
-            assert!(generated.rust.contains("fn App"), "{}", generated.rust);
-            assert!(generated.rust.contains("fn After"), "{}", generated.rust);
+            assert!(matches!(
+                DioxusBackend.generate(&parsed, &source, Mode::Strict, &opts),
+                Err(Error::SyntaxErrors { .. })
+            ));
+            let names: Vec<_> = parsed
+                .file
+                .items
+                .iter()
+                .filter_map(|item| match item {
+                    ast::Item::Function(f) => Some(f.name.name.as_str()),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(names, ["Before", "App", "After"]);
         }
     }
     assert!(
         checked_bodyless_regression,
         "tests/fixtures/incomplete/bodyless-fn-mid-file.rsx was not found"
+    );
+}
+
+/// A top-level body-less declaration (`fn Decl(x: i32);`) has zero
+/// diagnostics and an empty body span, so it reaches `lower_function`'s
+/// Strict verbatim branch (`src/item.rs`): the declaration must come out
+/// byte for byte, not be dropped or turned into a placeholder.
+#[test]
+fn strict_mode_emits_a_bodyless_declaration_verbatim() {
+    let source = "fn Decl(x: i32);\n\n#[component]\nfn App() -> Element {\n    <p/>\n}\n";
+    assert_splice_invariant("bodyless declaration", source);
+
+    let parsed = outou_syntax::parse(source);
+    assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+    let Some(ast::Item::Function(decl)) = parsed.file.items.first() else {
+        panic!("{:#?}", parsed.file);
+    };
+    assert_eq!(decl.body.span.start, decl.body.span.end);
+    let opts = GenerateOptions::new(Uri::new("file:///gen.rs"), Uri::new("file:///a.rsx"));
+    let generated = DioxusBackend
+        .generate(&parsed, source, Mode::Strict, &opts)
+        .expect("no diagnostics, so Strict generation succeeds");
+    assert!(
+        generated.rust.contains("fn Decl(x: i32);\n"),
+        "{}",
+        generated.rust
     );
 }

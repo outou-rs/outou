@@ -18,6 +18,7 @@
 //! `panic!`, `unwrap()` on attacker-controlled data, or an out-of-bounds
 //! index.
 
+mod boundary;
 mod diag;
 mod item;
 mod jsx;
@@ -77,6 +78,18 @@ struct Parser<'s> {
     /// tag" (grammar §9's "one diagnostic for the innermost open
     /// construct").
     terminator_diagnosed_at: Option<usize>,
+    /// How many unclosed function bodies this parse has cut at the next
+    /// item so far, bounded by [`diag::MAX_RECOVERY_CUTS`].
+    recovery_cuts: u32,
+}
+
+/// See [`Parser::recovery_snapshot`].
+struct RecoverySnapshot {
+    diagnostics_len: usize,
+    open_names: Vec<(String, Span)>,
+    jsx_depth: u32,
+    mod_depth: u32,
+    terminator_diagnosed_at: Option<usize>,
 }
 
 impl<'s> Parser<'s> {
@@ -89,7 +102,28 @@ impl<'s> Parser<'s> {
             jsx_depth: 0,
             mod_depth: 0,
             terminator_diagnosed_at: None,
+            recovery_cuts: 0,
         }
+    }
+
+    /// The mutable parse state a speculative re-parse of one item must
+    /// restore (see `item::Parser::parse_function_bounded`).
+    fn recovery_snapshot(&self) -> RecoverySnapshot {
+        RecoverySnapshot {
+            diagnostics_len: self.diagnostics.len(),
+            open_names: self.open_names.clone(),
+            jsx_depth: self.jsx_depth,
+            mod_depth: self.mod_depth,
+            terminator_diagnosed_at: self.terminator_diagnosed_at,
+        }
+    }
+
+    fn restore_recovery_snapshot(&mut self, snapshot: RecoverySnapshot) {
+        self.diagnostics.truncate(snapshot.diagnostics_len);
+        self.open_names = snapshot.open_names;
+        self.jsx_depth = snapshot.jsx_depth;
+        self.mod_depth = snapshot.mod_depth;
+        self.terminator_diagnosed_at = snapshot.terminator_diagnosed_at;
     }
 
     fn push_diag(&mut self, span: Span, message: String) {

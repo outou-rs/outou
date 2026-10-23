@@ -1,0 +1,4 @@
+error: fragments are not supported in Phase 0
+ --> fragment-closing-tag-interrupted-by-rbrace.rsx:5:5
+error: unexpected `}` inside closing tag, expected `>`
+ --> fragment-closing-tag-interrupted-by-rbrace.rsx:6:1
