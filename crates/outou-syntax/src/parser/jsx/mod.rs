@@ -223,6 +223,30 @@ impl<'s> Parser<'s> {
         }
     }
 
+    /// at expression level, a tag ended by a following tag's `<`
+    /// takes the following element(s) as children so no `<` is left to Rust.
+    pub(in crate::parser) fn absorb_after_terminated_tag(
+        &mut self,
+        mut element: ast::JsxElement,
+        mut pos: usize,
+    ) -> (ast::JsxElement, usize) {
+        let mut last_terminated = is_terminated_at_lt(&element, pos, self.bytes);
+        while last_terminated && self.jsx_depth < diag::MAX_NESTING {
+            let classification = disambiguate::classify(self.source, pos);
+            if matches!(classification, Classification::Rust) {
+                break;
+            }
+            self.jsx_depth += 1;
+            let (child, after) = self.parse_jsx_element(pos, classification);
+            self.jsx_depth -= 1;
+            last_terminated = is_terminated_at_lt(&child, after, self.bytes);
+            element.children.push(ast::JsxChild::Element(child));
+            element.span = Span::new(element.span.start, after as u32);
+            pos = after;
+        }
+        (element, pos)
+    }
+
     /// Parses a named JSX element, guarding against unbounded recursion
     /// (decision D4, H7): every recursive descent into a child element
     /// goes through this one entry point ([`Parser::parse_nested_child_element`]
@@ -266,4 +290,9 @@ impl<'s> Parser<'s> {
     fn push_diag_at(&mut self, span: Span, message: String) {
         self.push_diag(span, message);
     }
+}
+
+fn is_terminated_at_lt(element: &ast::JsxElement, pos: usize, bytes: &[u8]) -> bool {
+    let no_gt = matches!(&element.open, ast::JsxTag::Named { span, name } if *span == name.span);
+    no_gt && element.close.is_none() && bytes.get(pos) == Some(&b'<')
 }

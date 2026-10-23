@@ -316,6 +316,7 @@ At minimum the following MUST recover with the rest of the file intact, each wit
 | Incomplete function signature | `incomplete/bodyless-fn-mid-file.rsx` | ``incomplete signature for function `App`, expected `)` to close this `(` `` (or ``expected a body or `;` `` when no delimiter is open) |
 | Unclosed function body, next item follows | `incomplete/class-attribute-value-mid-file.rsx`, `incomplete/unclosed-island-mid-file.rsx` | ``unclosed body of function `App`, expected `}` to close this `{` `` at the body's `{`; the diagnostics of a construct cut off there say ``unexpected start of the next item …`` where they would say ``unexpected end of file …`` at a real end of input |
 | Closing tag interrupted by `<` | `diagnostics/closing-tag-interrupted-by-lt.rsx` | ``unexpected `<` inside closing tag, expected `>` `` |
+| Missing attribute value before the next tag | `incomplete/attribute-value-missing-before-sibling.rsx` | ``attribute values must be double-quoted strings or `{…}` expressions`` at the next tag's `<` |
 | Unterminated attribute value (string) | `incomplete/unterminated-string-swallows-block-close.rsx` | ``unterminated string in attribute value`` |
 | Unterminated attribute value (island) | `incomplete/unterminated-attribute-value.rsx` | ``unexpected end of file, expected `}` to close the value of attribute `name` `` |
 | Empty attribute-value island | `incomplete/class-attribute-value-mid-file.rsx` | ``expected an expression for the value of attribute `name` `` |
@@ -326,6 +327,10 @@ At minimum the following MUST recover with the rest of the file intact, each wit
 | Inline `mod` nested more than 128 levels deep | — | ``modules are nested too deeply (Outou supports at most 128 levels)`` |
 
 Each fixture under `tests/fixtures/incomplete/` and `tests/fixtures/diagnostics/` has a sibling `.expected` with these strings verbatim; the fixture, not this table, is the ground truth for issue #4.
+
+**Unfinished tags end at the next tag.** Attributes never contain `<`. Inside an opening tag, a `<` that begins a tag (`<Name`, `<>`, `</`) ends that tag: it is diagnosed once, as the missing attribute value when the `<` follows an `=` (``attribute values must be double-quoted strings or `{…}` expressions``) and otherwise as ``unexpected `<` inside tag `<div>`, expected an attribute or `>` ``, and the `<` is left unconsumed for the enclosing content. So `<div class=` followed by `<Greeting name="Outou" />` recovers as a `div` with one attribute (`class`, no value) and a sibling `Greeting`, not as `div { Greeting, name }` (issue #19). A `<` that does not begin a tag (`<div a < b>`) is still a stray byte inside the tag.
+
+Two refinements keep the recovery output valid Rust and the enclosing tags balanced. (1) When the tag was ended by a `<` and what follows is `</Name>` with the tag's own name, that closing tag closes it (`<div class=` then `</div>`, the shape an editor's closing-tag auto-completion produces), so the enclosing `</section>` still matches. (2) At the start of a JSX expression in Rust (a function body, a `let` initializer, an attribute or child island), an element ended this way takes the JSX that follows it as its children, so no `<Greeting />` or `</div>` is left behind for Rust to carry verbatim into the output. Inside an element's children the following JSX stays a sibling, as above. A following fragment `<>` is not covered: fragments are still unsupported (`TODO(alpha)`).
 
 **Cutting an unclosed function body.** A `fn` item is the unit of recovery. Two rules keep the items after a broken function from being swallowed into it (the swallowed tail, issue #18).
 

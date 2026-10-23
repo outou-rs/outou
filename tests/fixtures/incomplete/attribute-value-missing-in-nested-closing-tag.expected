@@ -1,0 +1,2 @@
+error: attribute values must be double-quoted strings or `{…}` expressions
+ --> attribute-value-missing-in-nested-closing-tag.rsx:7:9

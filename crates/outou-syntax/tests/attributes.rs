@@ -167,3 +167,74 @@ fn missing_or_unquoted_attribute_value_is_diagnosed() {
         assert_eq!(matching, 1, "source: {source}: {:?}", parsed.diagnostics);
     }
 }
+
+/// Issue #19: a sibling element after an attribute whose value is missing
+/// must stay its own node, not be folded into the broken tag's attributes.
+#[test]
+fn sibling_after_missing_attribute_value_is_not_folded_into_the_broken_tag() {
+    let source = "fn f() {\n    <section>\n        <div class=\n        <Greeting name=\"Outou\" />\n    </section>\n}\n";
+    let parsed = outou_syntax::parse(source);
+    let section = find_jsx_element(&parsed.file).expect("section element");
+    let elements: Vec<&ast::JsxElement> = section
+        .children
+        .iter()
+        .filter_map(|child| match child {
+            ast::JsxChild::Element(element) => Some(element),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(elements.len(), 2, "{:#?}", section.children);
+    let names: Vec<&str> = elements[0]
+        .attributes
+        .iter()
+        .map(|a| a.name.name.as_str())
+        .collect();
+    assert_eq!(names, ["class"], "broken tag swallowed its sibling");
+    assert!(elements[0].children.is_empty());
+    match &elements[1].open {
+        ast::JsxTag::Named { name, .. } => assert_eq!(name.name, "Greeting"),
+        other => panic!("expected `Greeting`, got {other:?}"),
+    }
+    let greeting: Vec<&str> = elements[1]
+        .attributes
+        .iter()
+        .map(|a| a.name.name.as_str())
+        .collect();
+    assert_eq!(greeting, ["name"]);
+}
+
+/// Issue #19 follow-up: a tag ended by `<` must not leave JSX behind for
+/// the function body's Rust text to carry verbatim (the Recovery output
+/// would not parse). The full-output check is the `incomplete/` fixtures'.
+#[test]
+fn tag_ended_by_a_following_tag_leaves_no_jsx_in_rust_text() {
+    let sources = [
+        "fn f() {\n    <div class=\n    <Greeting />\n}\n",
+        "fn f() {\n    <div class=\n    </div>\n}\n",
+        "fn f() {\n    let x = <div class=\n    <Greeting />;\n    x\n}\n",
+        "fn f() {\n    <section>\n        <div class=\n        </div>\n    </section>\n}\n",
+    ];
+    for source in sources {
+        let parsed = outou_syntax::parse(source);
+        assert_eq!(
+            parsed.diagnostics.len(),
+            1,
+            "{source}: {:?}",
+            parsed.diagnostics
+        );
+        for item in &parsed.file.items {
+            let ast::Item::Function(f) = item else {
+                continue;
+            };
+            for expr in f.body.statements.iter().chain(f.body.tail.as_deref()) {
+                if let ast::Expr::Rust(rust) = expr {
+                    assert!(
+                        !rust.text.contains("</") && !rust.text.contains("/>"),
+                        "{source}: JSX leaked into Rust text {:?}",
+                        rust.text
+                    );
+                }
+            }
+        }
+    }
+}

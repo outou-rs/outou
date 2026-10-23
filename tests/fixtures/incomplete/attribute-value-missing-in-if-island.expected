@@ -1,0 +1,2 @@
+error: attribute values must be double-quoted strings or `{…}` expressions
+ --> attribute-value-missing-in-if-island.rsx:6:5

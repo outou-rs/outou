@@ -140,6 +140,14 @@ impl<'s> Parser<'s> {
                         pos + 1,
                     );
                 }
+                Some(b'<') if self.starts_jsx_tag_at(pos) => {
+                    // Attributes never contain `<`, so it begins the next
+                    // sibling or the parent's closing tag: end this tag
+                    // here and leave the `<` for the enclosing content
+                    // (grammar §9, "Unfinished tags end at the next tag").
+                    self.push_diag_at(pos_span(pos), diag::unexpected_inside_tag("<", tag_name));
+                    return (attributes, errors, self.outcome_at_lt(pos, tag_name), pos);
+                }
                 Some(b'{') => {
                     let end = crate::lexer::rust_token::skip_balanced_group(self.bytes, pos);
                     self.push_diag_at(pos_span(pos), diag::spread_attribute_not_supported());
@@ -181,6 +189,9 @@ impl<'s> Parser<'s> {
                         value,
                     });
                     pos = after;
+                    if terminated && self.bytes.get(pos) == Some(&b'<') {
+                        return (attributes, errors, self.outcome_at_lt(pos, tag_name), pos);
+                    }
                     if terminated {
                         return (attributes, errors, TagOutcome::Terminated, pos);
                     }
@@ -197,6 +208,35 @@ impl<'s> Parser<'s> {
                     pos += 1;
                 }
             }
+        }
+    }
+
+    /// `</OwnName>` right after a broken opening tag closes it.
+    fn outcome_at_lt(&self, pos: usize, tag_name: &str) -> TagOutcome {
+        if self.bytes[pos..].starts_with(b"</") {
+            if let (
+                super::closing::ClosingTagShape::Named {
+                    name_start,
+                    name_end,
+                },
+                _,
+            ) = self.scan_closing_tag_shape(pos)
+            {
+                if &self.source[name_start..name_end] == tag_name {
+                    return TagOutcome::Opened { tag_end: pos };
+                }
+            }
+        }
+        TagOutcome::Terminated
+    }
+
+    /// Whether the `<` at `pos` begins an opening tag, a fragment, or a
+    /// closing tag (`<Name`, `<>`, `</`), as opposed to a stray `<`.
+    fn starts_jsx_tag_at(&self, pos: usize) -> bool {
+        match self.bytes.get(pos + 1).copied() {
+            Some(b'>') | Some(b'/') => true,
+            Some(c) => is_jsx_name_byte(c),
+            None => false,
         }
     }
 
@@ -226,6 +266,21 @@ impl<'s> Parser<'s> {
                 )
             }
             Some(b'{') => self.parse_attribute_value_island(attr_name, pos),
+            // A missing value right before the next tag (`<div class=` then
+            // `<Greeting />` or `</section>`): the tag ends here, so the
+            // next tag survives as its own node instead of becoming a
+            // chain of bogus attributes on this one (issue #19).
+            Some(b'<') if self.starts_jsx_tag_at(pos) => {
+                self.push_diag_at(pos_span(pos), diag::invalid_attribute_value());
+                (
+                    Some(ast::JsxAttributeValue::Error(ast::ErrorNode {
+                        span: Span::new(pos as u32, pos as u32),
+                        expected: None,
+                    })),
+                    pos,
+                    true,
+                )
+            }
             Some(_) => self.parse_string_or_invalid_attribute_value(pos),
             None => {
                 self.push_diag_at(

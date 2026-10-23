@@ -91,18 +91,6 @@ const HTML_ELEMENTS: &[&str] = &[
     "video",
 ];
 
-// TODO(phase0) (issue #9 Gate 3 review, "Recovery quality for `<div
-// class=`" SKIP item): the recovery parser swallows a following sibling
-// element into a broken tag's own attributes (`<div class=` followed by
-// `<Greeting name="Outou" />` recovers as `div { Greeting: true, name:
-// "Outou" }`), so there is nothing meaningful at that cursor for even
-// this module's own classifier to find — `classify` falls through to
-// `Cursor::Expression`, and it is `crate::response`'s cursor-containment
-// filter (M4) that keeps the resulting forwarded completion from
-// corrupting the buffer, not a correct classification here. Improving
-// the recovery shape itself is a parser/codegen question for a follow-up
-// to issue #7, out of scope for this module.
-
 /// Where the cursor sits inside an `.rsx` file's own (recovery) parse
 /// tree, for the purpose of deciding whether this server or
 /// rust-analyzer should answer a completion request.
@@ -123,6 +111,19 @@ enum Cursor {
         partial: String,
         /// Span of the partial name, for the completion's `textEdit`.
         span: outou_sourcemap::Span,
+    },
+    /// Right after an attribute's `=` with no value typed yet
+    /// (`<div class=` and the next tag, or `}`). There is nothing to
+    /// complete: the value must be a string or a `{…}` island, neither of
+    /// which exists yet, so this module answers with an empty list rather
+    /// than forwarding a position rust-analyzer cannot answer (issue #19).
+    /// Forwarding was tried against a real rust-analyzer and answered
+    /// `null` in every case: an attribute with an error value is dropped
+    /// whole from Recovery codegen, so no generated position corresponds
+    /// to the cursor.
+    AttrValue {
+        /// End of the attribute name, to check an `=` precedes the cursor.
+        name_end: u32,
     },
     /// Anywhere else: an ordinary Rust expression position (`user.`, an
     /// attribute value, plain Rust). Forward to rust-analyzer as before.
@@ -164,6 +165,13 @@ pub fn local_completion(
                 &partial,
                 range,
             ))
+        }
+        Cursor::AttrValue { name_end } => {
+            // Only after the `=`; before it (`user ‸  =`) the cursor is
+            // still in the attribute name's neighbourhood: forward as before.
+            let text = doc.line_index.text();
+            let between = text.get(name_end as usize..offset as usize)?;
+            between.contains('=').then(Vec::new)
         }
         Cursor::Expression => None,
     }
@@ -401,6 +409,18 @@ fn classify_attribute(
             partial: prefix_before_cursor(&attribute.name, offset),
             span: attribute.name.span,
         });
+    }
+    if let Some(ast::JsxAttributeValue::Error(missing)) = &attribute.value {
+        // A zero-width error value is a value that was never typed
+        // (`class=` then the next tag): the cursor sits after the `=`.
+        // `local_completion` further requires an `=` between the name and
+        // the cursor, so `user ‸  =` stays an expression position.
+        let is_missing = missing.span.start == missing.span.end;
+        if is_missing && offset > attribute.name.span.end && touches(attribute.span, offset) {
+            return Some(Cursor::AttrValue {
+                name_end: attribute.name.span.end,
+            });
+        }
     }
     if let Some(ast::JsxAttributeValue::Expression(island)) = &attribute.value {
         for part in &island.parts {
@@ -642,11 +662,34 @@ mod tests {
     }
 
     #[test]
-    fn classify_treats_an_attribute_value_position_as_expression() {
+    fn classify_treats_a_missing_attribute_value_as_attr_value() {
         let source = "#[component]\nfn App() -> Element {\n    <div class=\n}\n";
         let parsed = outou_syntax::parse(source);
         let offset = source.find("class=").unwrap() as u32 + "class=".len() as u32;
-        assert!(matches!(classify(&parsed.file, offset), Cursor::Expression));
+        assert!(matches!(
+            classify(&parsed.file, offset),
+            Cursor::AttrValue { .. }
+        ));
+    }
+
+    /// Issue #19: a sibling element after `<div class=` used to be folded
+    /// into the broken tag's attributes, so nothing meaningful sat at the
+    /// cursor and `classify` fell back to `Cursor::Expression`.
+    #[test]
+    fn classify_finds_the_missing_attribute_value_before_a_sibling_element() {
+        let source = "#[component]\nfn App() -> Element {\n    <section>\n        <div class=\n        <Greeting name=\"Outou\" />\n    </section>\n}\n";
+        let parsed = outou_syntax::parse(source);
+        let offset = source.find("class=").unwrap() as u32 + "class=".len() as u32;
+        assert!(matches!(
+            classify(&parsed.file, offset),
+            Cursor::AttrValue { .. }
+        ));
+        // The sibling is still its own element: its tag name classifies.
+        let greeting = source.find("<Greeting").unwrap() as u32 + "<Gre".len() as u32;
+        match classify(&parsed.file, greeting) {
+            Cursor::TagName { partial, .. } => assert_eq!(partial, "Gre"),
+            _ => panic!("expected a TagName cursor on the sibling"),
+        }
     }
 
     /// H1: a *closing* tag's own name is a tag-name position too, not
@@ -737,6 +780,37 @@ mod tests {
             "file:///app/src/main.rsx",
             expr_position
         ));
+    }
+
+    fn local_completion_at(source: &str, offset: usize) -> Option<Vec<Value>> {
+        let workspace = workspace_with(source);
+        let doc = workspace.rsx.get("file:///app/src/main.rsx").unwrap();
+        let offset = offset as u32;
+        let position = mapping::to_lsp_range(
+            doc.line_index
+                .span_to_range(outou_sourcemap::Span::new(offset, offset)),
+        )
+        .start;
+        local_completion(&workspace, "file:///app/src/main.rsx", position)
+    }
+
+    /// Issue #19: right after `class=` the answer is an empty list (not a
+    /// forward to rust-analyzer, which answers `null` there).
+    #[test]
+    fn local_completion_answers_an_empty_list_after_a_missing_attribute_value() {
+        let source = "#[component]\nfn App() -> Element {\n    <section>\n        <div class=\n        <Greeting />\n    </section>\n}\n";
+        let offset = source.find("class=").unwrap() + "class=".len();
+        assert_eq!(local_completion_at(source, offset), Some(Vec::new()));
+    }
+
+    /// Whitespace before the `=` is not an attribute-value position.
+    #[test]
+    fn local_completion_does_not_claim_the_whitespace_before_the_equals_sign() {
+        let source = "#[component]\nfn App() -> Element {\n    <section>\n        <UserCard user   =\n        <Greeting />\n    </section>\n}\n";
+        let before_equals = source.find("user").unwrap() + "user ".len();
+        assert_eq!(local_completion_at(source, before_equals), None);
+        let after_equals = source.find('=').unwrap() + 1;
+        assert_eq!(local_completion_at(source, after_equals), Some(Vec::new()));
     }
 
     fn workspace_with(source: &str) -> Workspace {

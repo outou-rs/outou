@@ -1,0 +1,2 @@
+error: unexpected `<` inside tag `<div>`, expected an attribute or `>`
+ --> attribute-name-only-before-sibling.rsx:6:5

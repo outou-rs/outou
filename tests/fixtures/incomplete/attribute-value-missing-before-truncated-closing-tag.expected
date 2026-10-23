@@ -1,0 +1,6 @@
+error: attribute values must be double-quoted strings or `{…}` expressions
+ --> attribute-value-missing-before-truncated-closing-tag.rsx:6:5
+error: unexpected `}` inside closing tag, expected `>`
+ --> attribute-value-missing-before-truncated-closing-tag.rsx:7:1
+error: closing tag `</>` has no matching opening tag
+ --> attribute-value-missing-before-truncated-closing-tag.rsx:6:5

@@ -200,6 +200,7 @@ impl<'s> Parser<'s> {
             disambiguate::Classification::Rust => None,
             classification => {
                 let (element, new_pos) = self.parse_jsx_element(tok.start, classification);
+                let (element, new_pos) = self.absorb_after_terminated_tag(element, new_pos);
                 self.check_postfix_on_jsx(new_pos);
                 Some((ast::Expr::Jsx(element), new_pos))
             }
