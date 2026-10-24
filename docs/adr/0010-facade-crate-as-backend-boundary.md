@@ -48,4 +48,15 @@ The runtime decision ([0014](0014-dioxus-continues-as-backend-not-as-specificati
 | Event argument types | Handler arguments (row 9). |
 | `VirtualDom` | Needed by tests that render a component without a renderer (row 36). |
 
-The state and launch re-exports of the A4 amendment above (`use_signal`, `Signal`, `use_context_provider`, `use_context`, `ReadableExt`, `WritableExt`, `launch`) are replaced by Outou-named wrappers (`State<T>`, `use_state`, `provide_context`, `use_context`, `launch`) in the state API issue; the old names are removed, not deprecated. A test pins the prelude's list of names.
+**Final form (issue #29).** The state and launch re-exports of the A4 amendment above are gone. The table in the A4 section is the history; this is what `outou::prelude` exports now, pinned by `crates/outou-cli/tests/prelude_names.rs`:
+
+| A4 re-export | A5 result |
+|---|---|
+| `use_signal` | removed; `use_state(|| init)` returns an Outou-defined `State<T>` |
+| `Signal` | removed; `State<T>` is a newtype over it with `Copy` / `Clone` / `PartialEq` / `Debug` written by hand, so it can be a prop |
+| `ReadableExt`, `WritableExt` | removed; `State<T>` has `get`, `with`, `set` and `update`, all on `&self`. No `read()` or `write()` exists, so no guard can be held, and `state.set(T { .., ..state.read().clone() })` (F4) cannot be written |
+| `use_context_provider` | removed; `provide_context(\|\| value)` |
+| `use_context` | kept as a name, now an Outou function: `use_context::<T>()` (`T: Clone`) |
+| `launch` | kept as a name, now an Outou function `launch(app: fn() -> Element)` (only with the `launch` / `web` features; `web` is the only supported public one) |
+
+The old names were removed without deprecation: the alpha is not public and the only users were `examples/dogfood-board` and `examples/phase0-app` (the latter used none). The prelude now exports exactly: `Element`, `component`, `State`, `use_state`, `provide_context`, `use_context`, `launch` (with the feature) and the hidden `dioxus_core`, `dioxus_elements`, `dioxus_signals`, `Props`. The remaining direct backend exports are only `component`, `Element` and the four hidden macro-hygiene names; event argument types and `VirtualDom` are allowed by the exception list above but are not exported (a test reaches `VirtualDom` through the hidden `dioxus_core`). Subscription is the backend's: `get` and `with` subscribe the running component, `set` and `update` notify. A `State<T>` is also a JSX child when `T` is (`IntoChild`, ledger row 44).

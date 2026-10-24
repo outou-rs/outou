@@ -24,20 +24,21 @@ pub mod prelude {
     #[doc(hidden)]
     pub use crate::__private::{dioxus_core, dioxus_elements, dioxus_signals, Props};
 
-    // Alpha gate A4 (issue #22): the temporary backend's existing state and
-    // launch APIs, re-exported unchanged so an application can be
-    // interactive. Not Outou-owned hooks or signals: the alpha decides the
-    // runtime, it does not build one. Each name is a backend leakage
-    // recorded in ADR 0010 and `docs/backend-leakage.md` rows 31-32.
-    pub use crate::__private::{
-        use_context, use_context_provider, use_signal, ReadableExt, Signal, WritableExt,
-    };
+    // Alpha gate A5 (issue #29, ADR 0014): the state API under Outou's own
+    // names. These are Outou-defined items that wrap the backend's, not
+    // re-exports of them.
+    pub use crate::state::{provide_context, use_context, use_state, State};
 
     /// Starts the application in the browser with `app` as the root
     /// component. Needs the `web` feature of `outou`.
     #[cfg(feature = "launch")]
-    pub use crate::__private::launch;
+    pub use crate::runtime::launch;
 }
+
+mod state;
+
+#[cfg(feature = "launch")]
+mod runtime;
 
 pub mod jsx {
     //! Types that JSX syntax gives a meaning to: the `key` of a JSX element
@@ -85,11 +86,14 @@ pub mod jsx {
     /// - an iterator of text: map each item to an element first;
     /// - `&String`, `&&str`, `Arc<str>`, `Rc<str>`, `Cow<str>`, `Box<str>`:
     ///   `{s.as_str()}` or `{s.to_string()}`;
-    /// - a `Signal<usize>`: read it first (the state API is issue #29).
     ///
-    /// TODO(alpha): the `&String`/`&&str`/smart-pointer strings, the `Option`
-    /// of a number and a `Signal` of a displayable value are gaps to close
-    /// or to keep deliberately, see `docs/grammar.md` (Child types).
+    /// A [`State`](crate::prelude::State) of any of these is a child too:
+    /// `<p>{count}</p>` with `count: State<usize>` renders the current value
+    /// and renders it again when the state changes (issue #29).
+    ///
+    /// TODO(alpha): the `&String`/`&&str`/smart-pointer strings and the
+    /// `Option` of a number are gaps to close or to keep deliberately, see
+    /// `docs/grammar.md` (Child types).
     ///
     /// **`bool` is not a child.** Rust has no `cond && <x />` that keeps its
     /// type, so a condition is written with `if` or with `Option`:
@@ -114,7 +118,8 @@ pub mod jsx {
         label = "this is not text, a number, an element, an `Option` of text or an element, or an iterator of elements",
         note = "a JSX child can be text (`&str`, `String`), a number, a `char`, an element, an `Option` of text or of an element, or an iterator of elements",
         note = "`bool` is not a child; write a conditional child with `if` or `Option`, for example `{{if ready {{ <b>done</b> }} else {{ <i>wait</i> }}}}` or `{{ready.then(|| <b>done</b>)}}`",
-        note = "convert any other value to text first, for example with `.to_string()`; an `Option` of a number needs `.map(|n| n.to_string())`"
+        note = "convert any other value to text first, for example with `.to_string()`; an `Option` of a number needs `.map(|n| n.to_string())`",
+        note = "a `State<T>` is a child only when `T` is one; for any other `T`, such as a `State<Vec<_>>`, read the value first with `.with(|value| ..)` or `.get()`"
     )]
     pub trait IntoChild<M>: sealed::SealedChild<M> {
         /// The child as a backend node. Generated code only; not public API.
@@ -126,6 +131,24 @@ pub mod jsx {
     impl<T: IntoDynNode<A>, A> IntoChild<Delegated<A>> for T {
         fn into_child(self) -> DynamicNode {
             self.into_dyn_node()
+        }
+    }
+
+    /// Marker for a [`State`](crate::prelude::State) whose value is itself a
+    /// child. `M` is the marker of the value's own `IntoChild` impl.
+    #[doc(hidden)]
+    pub struct Stateful<M>(std::marker::PhantomData<M>);
+
+    // `{count}` with `count: State<usize>` renders the current value and,
+    // because `get` subscribes the component that is rendering, renders it
+    // again when the state changes.
+    impl<T: IntoChild<M> + Clone + 'static, M> sealed::SealedChild<Stateful<M>>
+        for crate::prelude::State<T>
+    {
+    }
+    impl<T: IntoChild<M> + Clone + 'static, M> IntoChild<Stateful<M>> for crate::prelude::State<T> {
+        fn into_child(self) -> DynamicNode {
+            self.get().into_child()
         }
     }
 
@@ -380,13 +403,7 @@ pub mod jsx {
 #[doc(hidden)]
 pub mod __private {
     pub use dioxus::dioxus_core;
-    pub use dioxus::prelude::{
-        component, dioxus_elements, dioxus_signals, rsx, use_context, use_context_provider,
-        use_signal, Element, Props, ReadableExt, Signal, WritableExt,
-    };
-
-    #[cfg(feature = "launch")]
-    pub use dioxus::launch;
+    pub use dioxus::prelude::{component, dioxus_elements, dioxus_signals, rsx, Element, Props};
 
     /// Turns the value of a JSX `key` into the string the backend takes.
     /// Generated code binds each key with this before the element's own

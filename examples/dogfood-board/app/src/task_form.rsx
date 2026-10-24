@@ -9,10 +9,10 @@ use crate::state::{use_app_state, Panel};
 #[component]
 pub fn TaskForm(editing: Option<u32>) -> Element {
     let app = use_app_state();
-    let mut board = app.board;
-    let mut panel = app.panel;
+    let board = app.board;
+    let panel = app.panel;
     let initial = editing
-        .and_then(|id| app.board.read().get(id).cloned())
+        .and_then(|id| app.board.with(|b| b.get(id).cloned()))
         .map(|task| TaskDraft {
             title: task.title,
             assignee: task.assignee,
@@ -21,36 +21,39 @@ pub fn TaskForm(editing: Option<u32>) -> Element {
         })
         .unwrap_or_default();
 
-    let mut draft = use_signal(|| initial);
-    let mut errors = use_signal(Vec::<DraftError>::new);
-    let current = draft.read().clone();
+    let draft = use_state(|| initial);
+    let errors = use_state(Vec::<DraftError>::new);
+    let current = draft.get();
     let heading = if editing.is_some() {
         "Edit task"
     } else {
         "New task"
     };
-    let title_error = errors
-        .read()
-        .iter()
-        .find(|e| matches!(e, DraftError::TitleEmpty | DraftError::TitleTooLong))
-        .map(DraftError::message);
-    let assignee_error = errors
-        .read()
-        .iter()
-        .find(|e| matches!(e, DraftError::AssigneeTooLong))
-        .map(DraftError::message);
+    let title_error = errors.with(|found| {
+        found
+            .iter()
+            .find(|e| matches!(e, DraftError::TitleEmpty | DraftError::TitleTooLong))
+            .map(DraftError::message)
+    });
+    let assignee_error = errors.with(|found| {
+        found
+            .iter()
+            .find(|e| matches!(e, DraftError::AssigneeTooLong))
+            .map(DraftError::message)
+    });
 
     <form
         class="form"
         onsubmit={
             move |event| {
                 event.prevent_default();
+                let current_board = board.get();
+                let current_draft = draft.get();
                 let result = match editing {
-                    Some(id) => board
-                        .read()
-                        .update(id, &draft.read())
+                    Some(id) => current_board
+                        .update(id, &current_draft)
                         .map(|next| (next, id)),
-                    None => board.read().add(&draft.read()).map(|next| {
+                    None => current_board.add(&current_draft).map(|next| {
                         let id = next.tasks().last().map_or(0, |task| task.id);
                         (next, id)
                     }),
@@ -71,15 +74,7 @@ pub fn TaskForm(editing: Option<u32>) -> Element {
             Title
             <input
                 value={current.title.clone()}
-                oninput={
-                    move |event| {
-                        let next = TaskDraft {
-                            title: event.value(),
-                            ..draft.read().clone()
-                        };
-                        draft.set(next);
-                    }
-                }
+                oninput={move |event| draft.update(|d| d.title = event.value())}
             />
         </label>
         {title_error.map(|message| <p class="error" role="alert">{message}</p>)}
@@ -87,15 +82,7 @@ pub fn TaskForm(editing: Option<u32>) -> Element {
             Assignee
             <input
                 value={current.assignee.clone()}
-                oninput={
-                    move |event| {
-                        let next = TaskDraft {
-                            assignee: event.value(),
-                            ..draft.read().clone()
-                        };
-                        draft.set(next);
-                    }
-                }
+                oninput={move |event| draft.update(|d| d.assignee = event.value())}
             />
         </label>
         {assignee_error.map(|message| <p class="error" role="alert">{message}</p>)}
@@ -106,11 +93,7 @@ pub fn TaskForm(editing: Option<u32>) -> Element {
                 onchange={
                     move |event| {
                         if let Some(priority) = Priority::from_label(&event.value()) {
-                            let next = TaskDraft {
-                                priority,
-                                ..draft.read().clone()
-                            };
-                            draft.set(next);
+                            draft.update(|d| d.priority = priority);
                         }
                     }
                 }
@@ -124,15 +107,7 @@ pub fn TaskForm(editing: Option<u32>) -> Element {
             Notes
             <textarea
                 value={current.notes.clone()}
-                oninput={
-                    move |event| {
-                        let next = TaskDraft {
-                            notes: event.value(),
-                            ..draft.read().clone()
-                        };
-                        draft.set(next);
-                    }
-                }
+                oninput={move |event| draft.update(|d| d.notes = event.value())}
             >
             </textarea>
         </label>

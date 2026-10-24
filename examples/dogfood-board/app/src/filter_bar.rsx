@@ -1,4 +1,4 @@
-use board_core::{Filter, Status};
+use board_core::Status;
 use outou::prelude::*;
 
 use crate::state::use_app_state;
@@ -6,24 +6,16 @@ use crate::state::use_app_state;
 #[component]
 pub fn FilterBar() -> Element {
     let app = use_app_state();
-    let mut filter = app.filter;
-    let current = filter.read().clone();
-    let board = app.board.read().clone();
+    let filter = app.filter;
+    let current = filter.get();
+    let board = app.board.get();
 
     <div class="filter-bar">
         <input
             type="search"
             placeholder="Search title or assignee"
             value={current.query.clone()}
-            oninput={
-                move |event| {
-                    let next = Filter {
-                        query: event.value(),
-                        ..filter.read().clone()
-                    };
-                    filter.set(next);
-                }
-            }
+            oninput={move |event| filter.update(|f| f.query = event.value())}
         />
         <div class="chips">
             <button
@@ -34,25 +26,14 @@ pub fn FilterBar() -> Element {
                         "chip"
                     }
                 }
-                onclick={
-                    move |_| {
-                        let next = Filter {
-                            status: None,
-                            ..filter.read().clone()
-                        };
-                        filter.set(next);
-                    }
-                }
+                onclick={move |_| filter.update(|f| f.status = None)}
             >
                 All ({board.tasks().len()})
             </button>
             {Status::ALL.into_iter().map(|status| <button
                 key={status.label()}
                 class={if current.status == Some(status) { "chip active" } else { "chip" }}
-                onclick={move |_| {
-                    let next = Filter { status: Some(status), ..filter.read().clone() };
-                    filter.set(next);
-                }}
+                onclick={move |_| filter.update(|f| f.status = Some(status))}
             >
                 {status.label()} ({board.count(status)})
             </button>)}

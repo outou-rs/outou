@@ -6,9 +6,9 @@ use crate::state::{use_app_state, Panel};
 #[component]
 pub fn TaskDetail(id: u32) -> Element {
     let app = use_app_state();
-    let mut board = app.board;
-    let mut panel = app.panel;
-    let found = app.board.read().get(id).cloned();
+    let board = app.board;
+    let panel = app.panel;
+    let found = app.board.with(|b| b.get(id).cloned());
 
     {
         match found {
@@ -46,8 +46,7 @@ pub fn TaskDetail(id: u32) -> Element {
                         onchange={
                             move |event| {
                                 if let Some(status) = Status::from_label(&event.value()) {
-                                    let updated = board.read().set_status(id, status);
-                                    board.set(updated);
+                                    board.update(|b| *b = b.set_status(id, status));
                                 }
                             }
                         }
@@ -63,8 +62,7 @@ pub fn TaskDetail(id: u32) -> Element {
                         class="danger"
                         onclick={
                             move |_| {
-                                let updated = board.read().remove(id);
-                                board.set(updated);
+                                board.update(|b| *b = b.remove(id));
                                 panel.set(Panel::Empty);
                             }
                         }

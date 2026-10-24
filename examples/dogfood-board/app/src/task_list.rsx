@@ -6,9 +6,9 @@ use crate::state::{use_app_state, Panel};
 #[component]
 pub fn TaskList() -> Element {
     let app = use_app_state();
-    let board = app.board.read().clone();
-    let filter = app.filter.read().clone();
-    let selected = *app.panel.read();
+    let board = app.board.get();
+    let filter = app.filter.get();
+    let selected = app.panel.get();
     let rows: Vec<Task> = board.visible(&filter).into_iter().cloned().collect();
 
     <section class="list">
@@ -33,8 +33,8 @@ pub fn TaskList() -> Element {
 #[component]
 fn TaskRow(task: Task, selected: bool) -> Element {
     let app = use_app_state();
-    let mut board = app.board;
-    let mut panel = app.panel;
+    let board = app.board;
+    let panel = app.panel;
     let id = task.id;
     let done = task.status == Status::Done;
 
@@ -57,8 +57,7 @@ fn TaskRow(task: Task, selected: bool) -> Element {
                     } else {
                         Status::Todo
                     };
-                    let updated = board.read().set_status(id, next);
-                    board.set(updated);
+                    board.update(|b| *b = b.set_status(id, next));
                 }
             }
         />

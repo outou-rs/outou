@@ -21,22 +21,22 @@ pub enum Panel {
 #[derive(Clone, Copy)]
 pub struct AppState {
     /// All tasks.
-    pub board: Signal<Board>,
+    pub board: State<Board>,
     /// Current list filter.
-    pub filter: Signal<Filter>,
+    pub filter: State<Filter>,
     /// Current side panel.
-    pub panel: Signal<Panel>,
+    pub panel: State<Panel>,
 }
 
 /// Creates the state and makes it available to descendants. Call once, in
 /// the root component.
 pub fn provide_state() -> AppState {
     let state = AppState {
-        board: use_signal(Board::sample),
-        filter: use_signal(Filter::default),
-        panel: use_signal(|| Panel::Empty),
+        board: use_state(Board::sample),
+        filter: use_state(Filter::default),
+        panel: use_state(|| Panel::Empty),
     };
-    use_context_provider(|| state)
+    provide_context(|| state)
 }
 
 /// The state provided by [`provide_state`].

@@ -163,12 +163,12 @@ fn child(level: &str, text: &str, spans: Vec<Value>) -> Value {
 /// A span in a file outside the workspace (a registry dependency).
 fn external_span(label: Option<&str>) -> Value {
     json!({
-        "file_name": "/home/u/.cargo/registry/src/index.crates.io-1/dioxus-hooks-0.7.10/src/use_signal.rs",
+        "file_name": "/home/u/.cargo/registry/src/index.crates.io-1/outou-0.0.1/src/state.rs",
         "byte_start": 0, "byte_end": 4, "line_start": 39, "line_end": 39,
         "column_start": 1, "column_end": 5, "is_primary": false, "label": label,
         "suggested_replacement": null, "suggestion_applicability": null,
         "expansion": null,
-        "text": [{"text": "pub fn use_signal<T: 'static>(f: impl FnOnce() -> T) {", "highlight_start": 1, "highlight_end": 5}],
+        "text": [{"text": "pub fn use_state<T: 'static>(init: impl FnOnce() -> T) -> State<T> {", "highlight_start": 1, "highlight_end": 5}],
     })
 }
 
@@ -542,7 +542,7 @@ const RECORDED_LEAKS: &[&str] = &[
     "component_property",
     "the return type of this call",
     "the full name for the type",
-    "required by a bound in `outou::prelude::use_signal`",
+    "required by a bound in `outou::prelude::use_state`",
 ];
 
 #[test]
@@ -653,13 +653,13 @@ fn a_dependency_note_and_a_macro_note_are_not_shown_for_plain_rust() {
         "expected an `FnOnce()` closure, found `{integer}`",
         vec![
             primary,
-            external_span(Some("required by this bound in `use_signal`")),
+            external_span(Some("required by this bound in `use_state`")),
         ],
         vec![
             child("note", "a plain note", vec![]),
             child(
                 "note",
-                "required by a bound in `outou::prelude::use_signal`",
+                "required by a bound in `outou::prelude::use_state`",
                 vec![external_span(Some("required by this bound"))],
             ),
         ],
@@ -667,7 +667,7 @@ fn a_dependency_note_and_a_macro_note_are_not_shown_for_plain_rust() {
     // rustc's own rendering names the dependency and prints its source.
     let mut value: Value = serde_json::from_str(&rendered_leak).unwrap();
     value["message"]["rendered"] = json!(
-        "error[E0277]: expected an `FnOnce()` closure\n --> src/components/button.rs:1:1\n  |\n  = note: required by a bound in `use_signal`\n --> /home/u/.cargo/registry/src/index.crates.io-1/dioxus-hooks-0.7.10/src/use_signal.rs:39:1\n   |\n39 | pub fn use_signal<T: 'static>(f: impl FnOnce() -> T) {\n"
+        "error[E0277]: expected an `FnOnce()` closure\n --> src/components/button.rs:1:1\n  |\n  = note: required by a bound in `use_state`\n --> /home/u/.cargo/registry/src/index.crates.io-1/outou-0.0.1/src/state.rs:39:1\n   |\n39 | pub fn use_state<T: 'static>(init: impl FnOnce() -> T) -> State<T> {\n"
     );
     rendered_leak = value.to_string();
     fixture.set_cargo_stdout(&[rendered_leak]);
@@ -675,7 +675,7 @@ fn a_dependency_note_and_a_macro_note_are_not_shown_for_plain_rust() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("src/components/button.rs:"), "{stderr}");
     assert!(stderr.contains("a plain note"), "{stderr}");
-    for leak in ["registry", "dioxus-", "use_signal"] {
+    for leak in ["registry", "outou-0.0.1", "use_state"] {
         assert!(!stderr.contains(leak), "{leak:?} leaked:\n{stderr}");
     }
     assert_no_backend_text(&output);

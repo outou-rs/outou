@@ -102,15 +102,15 @@ fn MultipleFalse() -> Element {
 }
 
 thread_local! {
-    static CURRENT: std::cell::RefCell<Option<Signal<String>>> =
+    static CURRENT: std::cell::RefCell<Option<State<String>>> =
         const { std::cell::RefCell::new(None) };
 }
 
 #[component]
 fn Controlled() -> Element {
-    let current = use_signal(|| String::from("a"));
+    let current = use_state(|| String::from("a"));
     CURRENT.with(|cell| *cell.borrow_mut() = Some(current));
-    <select value={current()}>
+    <select value={current.get()}>
         <option value="a">A</option>
         <option value="b">B</option>
     </select>
@@ -138,7 +138,6 @@ fn rerender_after_a_state_change() -> (Vec<bool>, Vec<bool>) {
     let first = selected_flags(dom.rebuild_to_vec().edits);
     let signal = CURRENT.with(|cell| cell.borrow().expect("the component ran"));
     dom.in_runtime(|| {
-        let mut signal = signal;
         signal.set(String::from("b"));
     });
     dom.mark_dirty(outou::prelude::dioxus_core::ScopeId::APP);
