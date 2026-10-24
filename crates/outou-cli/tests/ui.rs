@@ -27,22 +27,29 @@
 //!   cargo test -p outou-cli --test ui -- --ignored --nocapture
 //!   ```
 //!
-//! TODO(phase0): the semantic/backend mapping+rendering machinery below
-//! lives only in this test harness, not behind an `outou check
-//! --semantic` flag — the task that requested it left that decision
-//! open ("add that flag only if it is small; otherwise the harness-only
-//! function is fine"), and wiring a second, real compiler invocation
-//! into the `outou` binary itself is not a small change. Revisit if a
-//! later phase needs this from the command line.
+//! The semantic/backend mapping and translation machinery is no longer
+//! test-only: it lives in `outou_cli::diagnostics` and is what `outou cargo
+//! <build|check|clippy|test>` (issue #25) uses on a real Cargo run. This
+//! harness feeds it the same `cargo check --message-format=json` stream, so
+//! "there is one compiler" (`AGENTS.md`) holds for these layers too. The
+//! harness keeps the compact `error: ... --> file:L:C` format for
+//! `expected.stderr`; `outou cargo` prints a richer one.
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::rc::Rc;
 
 use outou_backend_dioxus::DioxusBackend;
+use outou_cli::diagnostics::translate::SourceFile;
+use outou_cli::diagnostics::{
+    classify_line, suppress_untranslated_duplicates, translate, CargoLine, CompilerMessage,
+    Location, Resolved, Resolver, Unit,
+};
 use outou_codegen::{Backend, GenerateOptions, Mode};
-use outou_sourcemap::{NarrowOutcome, SourceMap, Span, Uri};
-use outou_syntax::{vocabulary, Diagnostic, Severity};
+use outou_sourcemap::Uri;
+use outou_syntax::{Diagnostic, Severity};
 
 /// Marker file (empty) that flags a case directory as needing a real
 /// `cargo check` rather than the fast in-process syntax layer.
@@ -178,7 +185,29 @@ struct BuildCase {
     ident: String,
     rsx_source: String,
     generated_rust: String,
-    source_map: SourceMap,
+    /// The generated file as the shared translation library sees it.
+    unit: Rc<Unit>,
+}
+
+/// The generated file name rustc reports for a case, relative to the
+/// throwaway crate (`src/<ident>.rs`).
+fn generated_file_name(ident: &str) -> String {
+    format!("src/{ident}.rs")
+}
+
+/// Resolves a rustc file name to a case's in-memory [`Unit`]; there are
+/// no source maps on disk in the throwaway crate.
+struct HarnessResolver {
+    units: HashMap<String, Rc<Unit>>,
+}
+
+impl Resolver for HarnessResolver {
+    fn resolve(&mut self, file_name: &str, _manifest_path: &Path) -> Resolved {
+        match self.units.get(file_name) {
+            Some(unit) => Resolved::Unit(Rc::clone(unit)),
+            None => Resolved::NotGenerated,
+        }
+    }
 }
 
 /// Generates every build case's Rust and returns it, without writing or
@@ -218,33 +247,24 @@ fn generate_build_cases() -> Vec<BuildCase> {
                 .generate(&parsed, &rsx_source, Mode::Strict, &opts)
                 .unwrap_or_else(|e| panic!("{}: generation failed: {e}", case_dir.display()));
 
+            let unit = Rc::new(Unit {
+                id: generated_file_name(&ident),
+                generated_text: generated.rust.clone(),
+                source_map: generated.source_map,
+                sources: vec![SourceFile {
+                    display: input_path.display().to_string(),
+                    text: rsx_source.clone(),
+                }],
+            });
             BuildCase {
                 case_dir,
                 ident,
                 rsx_source,
                 generated_rust: generated.rust,
-                source_map: generated.source_map,
+                unit,
             }
         })
         .collect()
-}
-
-/// One `cargo check --message-format=json` diagnostic, in the shape this
-/// harness needs from it.
-struct RustcMessage {
-    /// Rustc's own short message text (`message.message`), before
-    /// translation.
-    message: String,
-    /// `"error"` or `"warning"`; anything else is dropped.
-    level: String,
-    /// Byte range of the primary span inside the generated file it
-    /// belongs to.
-    span: Span,
-    /// The generated file's path, exactly as rustc reports it
-    /// (`"src/<ident>.rs"`, relative to the crate root `cargo check` ran
-    /// in), so a message can be routed back to the [`BuildCase`] that
-    /// produced it.
-    file_name: String,
 }
 
 /// Writes every case's generated Rust into one throwaway crate (a
@@ -269,7 +289,7 @@ struct RustcMessage {
 /// test` invocations regardless of the caller's own `RUSTFLAGS`/
 /// `CARGO_ENCODED_RUSTFLAGS` (`CARGO_ENCODED_RUSTFLAGS` takes precedence
 /// over `RUSTFLAGS` when both are set, so both must be cleared).
-fn write_and_check_build_crate(cases: &[BuildCase]) -> Vec<RustcMessage> {
+fn write_and_check_build_crate(cases: &[BuildCase]) -> Vec<CompilerMessage> {
     let root = repo_root();
     let outou_path = root.join("crates/outou");
     let temp_dir = root.join("target/outou-ui-build-check");
@@ -325,149 +345,13 @@ fn write_and_check_build_crate(cases: &[BuildCase]) -> Vec<RustcMessage> {
         .output()
         .expect("running `cargo check` on the UI build-case crate");
 
-    parse_rustc_messages(&output.stdout)
-}
-
-/// Extracts every error/warning [`RustcMessage`] with a primary span from
-/// `cargo check --message-format=json`'s stdout, in emission order.
-/// Mirrors `outou-backend-dioxus/tests/recovery.rs`'s own JSON-line
-/// parsing.
-fn parse_rustc_messages(stdout: &[u8]) -> Vec<RustcMessage> {
-    let mut out = Vec::new();
-    for line in String::from_utf8_lossy(stdout).lines() {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        if value.get("reason").and_then(|r| r.as_str()) != Some("compiler-message") {
-            continue;
-        }
-        let Some(message) = value.get("message") else {
-            continue;
-        };
-        let Some(level) = message.get("level").and_then(|l| l.as_str()) else {
-            continue;
-        };
-        if level != "error" && level != "warning" {
-            continue;
-        }
-        let Some(spans) = message.get("spans").and_then(|s| s.as_array()) else {
-            continue;
-        };
-        let Some(primary) = spans
-            .iter()
-            .find(|span| span.get("is_primary").and_then(|p| p.as_bool()) == Some(true))
-        else {
-            continue;
-        };
-        let (Some(file_name), Some(byte_start), Some(byte_end)) = (
-            primary.get("file_name").and_then(|f| f.as_str()),
-            primary.get("byte_start").and_then(|b| b.as_u64()),
-            primary.get("byte_end").and_then(|b| b.as_u64()),
-        ) else {
-            continue;
-        };
-        let Some(text) = message.get("message").and_then(|m| m.as_str()) else {
-            continue;
-        };
-        out.push(RustcMessage {
-            message: text.to_string(),
-            level: level.to_string(),
-            span: Span::new(byte_start as u32, byte_end as u32),
-            file_name: file_name.to_string(),
-        });
-    }
-    out
-}
-
-/// Maps a byte span in generated Rust back to its `.rsx` source span, in
-/// up to three steps. This harness has no `Workspace`/`Registry` to call
-/// into, so it calls the shared span-mapping primitives directly against a
-/// bare [`SourceMap`] instead:
-///
-/// 1. [`SourceMap::narrow`]: the containing mapping has exactly one
-///    source, same-length as its generated span (the common case,
-///    `Writer::verbatim`) — scale the query proportionally within it.
-///    Necessary because one mapping frequently covers a whole spliced
-///    Rust run (every plain-Rust statement between two JSX elements in a
-///    component body is one mapping): without this step, every
-///    diagnostic inside such a run would land at the run's very first
-///    byte, regardless of which statement in it actually erred. A
-///    [`NarrowOutcome::LengthMismatch`] (a transformed mapping, e.g. an
-///    escaped string literal) is treated as unmapped here too, exactly
-///    like `outou-lsp`'s own caller (`mapping::generated_location_to_source`)
-///    — this harness used to fall through to step 2's coarser answer
-///    instead for that case, which let a `tests/ui/*/expected.stderr`
-///    encode a position the editor would never actually show for the same
-///    input (issue #12 corpus review, F4/HIGH). Both callers now share one
-///    `SourceMap::narrow` and one `LengthMismatch` decision — "there is
-///    one compiler" (`AGENTS.md`) extends to "there is one narrowing".
-/// 2. [`SourceMap::map_range`]'s coarser whole-span answer, when step 1
-///    does not apply (several sources, or no containing mapping at all).
-/// 3. The nearest mapped position, when the span is unmapped altogether
-///    (synthesized code, e.g. inside the `rsx!` macro's own expansion
-///    scaffolding) — the same "never drop a hard error just because its
-///    span has no direct mapping" rule
-///    `outou-lsp`'s `mapping::nearest_source_position` uses.
-fn map_generated_span_to_source(source_map: &SourceMap, generated_span: Span) -> Span {
-    match source_map.narrow(generated_span) {
-        NarrowOutcome::Exact { span, .. } => return span,
-        NarrowOutcome::LengthMismatch | NarrowOutcome::NotApplicable => {}
-    }
-    let mapped = source_map.map_range(generated_span);
-    if let Some(first) = mapped.sources.first() {
-        return first.span;
-    }
-    source_map
-        .mappings
-        .iter()
-        .filter(|mapping| !mapping.sources.is_empty())
-        .min_by_key(|mapping| generated_distance(mapping.generated, generated_span))
-        .map(|mapping| mapping.sources[0].span)
-        .unwrap_or(Span::new(0, 0))
-}
-
-/// Byte distance between two spans: `0` when they overlap or touch,
-/// otherwise the gap between the closer pair of endpoints.
-fn generated_distance(a: Span, b: Span) -> u32 {
-    if a.end <= b.start {
-        b.start.saturating_sub(a.end)
-    } else if b.end <= a.start {
-        a.start.saturating_sub(b.end)
-    } else {
-        0
-    }
-}
-
-/// F21 (issue #12 corpus review, `docs/backend-leakage.md` row 27): a
-/// missing required prop produces *two* rustc diagnostics for one `.rsx`
-/// mistake — the already-translated deprecated-`build`-method warning,
-/// and a second, distinct, untranslated error (`` this method takes 1
-/// argument but 0 arguments were supplied ``) at the exact same mapped
-/// span, naming no `BACKEND_MARKERS` substring at all so
-/// `translate_message` leaves it untouched. A user who writes
-/// `<UserCard />` would see that second, backend-shaped-in-substance
-/// message as the thing that actually fails their build.
-///
-/// Rather than a general "smarter than substring" classifier (out of
-/// scope, per row 27's own note), this drops any *untranslated*
-/// diagnostic whose mapped span exactly matches a diagnostic that *was*
-/// translated: the translated one already explains the mistake in Outou
-/// vocabulary, so the untranslated second message at the same position
-/// adds nothing but confusion. A translated diagnostic, and any
-/// untranslated diagnostic at a span no translated one shares, are always
-/// kept.
-fn suppress_untranslated_duplicates(candidates: Vec<(Diagnostic, bool)>) -> Vec<Diagnostic> {
-    let translated_spans: std::collections::HashSet<Span> = candidates
-        .iter()
-        .filter(|(_, was_translated)| *was_translated)
-        .map(|(diagnostic, _)| diagnostic.span)
-        .collect();
-    candidates
-        .into_iter()
-        .filter(|(diagnostic, was_translated)| {
-            *was_translated || !translated_spans.contains(&diagnostic.span)
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(classify_line)
+        .filter_map(|line| match line {
+            CargoLine::Message(message) => Some(*message),
+            CargoLine::Other | CargoLine::BuildFinished => None,
         })
-        .map(|(diagnostic, _)| diagnostic)
         .collect()
 }
 
@@ -499,34 +383,31 @@ fn ui_build_cases_match_expected_stderr() {
          `cargo check` may have failed for an unrelated reason (see stderr above)"
     );
 
+    let mut resolver = HarnessResolver {
+        units: cases
+            .iter()
+            .map(|case| (generated_file_name(&case.ident), Rc::clone(&case.unit)))
+            .collect(),
+    };
+    let translated = suppress_untranslated_duplicates(
+        messages
+            .iter()
+            .filter_map(|message| translate(message, &mut resolver))
+            .collect(),
+    );
+
     let mut failures = Vec::new();
     for case in &cases {
-        let generated_file_name = format!("src/{}.rs", case.ident);
         let input_path = case.case_dir.join("input.rsx");
         let file_name = input_path.display().to_string();
 
-        let diagnostics: Vec<Diagnostic> = suppress_untranslated_duplicates(
-            messages
-                .iter()
-                .filter(|m| m.file_name == generated_file_name)
-                .map(|m| {
-                    let translated_message = vocabulary::translate_message(&m.message);
-                    let was_translated = translated_message != m.message;
-                    (
-                        Diagnostic {
-                            span: map_generated_span_to_source(&case.source_map, m.span),
-                            message: translated_message,
-                            severity: if m.level == "error" {
-                                Severity::Error
-                            } else {
-                                Severity::Warning
-                            },
-                        },
-                        was_translated,
-                    )
-                })
-                .collect(),
-        );
+        let diagnostics: Vec<Diagnostic> = translated
+            .iter()
+            .filter(
+                |t| matches!(&t.location, Location::Source { unit, .. } if unit.id == case.unit.id),
+            )
+            .map(|t| t.diagnostic.clone())
+            .collect();
 
         let rendered =
             outou_syntax::render::render_diagnostics(&diagnostics, &case.rsx_source, &file_name);

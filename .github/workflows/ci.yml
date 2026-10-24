@@ -105,6 +105,8 @@ jobs:
       - run: cargo test -p outou-cli --test build_compile -- --ignored
       - run: cargo test -p outou-backend-dioxus -- --ignored
       - run: cargo test -p outou-cli --test ui -- --ignored
+      # `outou cargo` against the real compiler (issue #25).
+      - run: cargo test -p outou-cli --test cargo_cli_real -- --ignored
 
   dogfood-board:
     name: dogfood board builds with cargo build alone
@@ -134,6 +136,10 @@ jobs:
       - run: cargo test
         working-directory: examples/dogfood-board
       - run: cargo clippy --all-targets -- -D warnings
+        working-directory: examples/dogfood-board
+      # `outou cargo` (issue #25) must pass a clean board, and its exit
+      # code is Cargo's.
+      - run: cargo run --manifest-path ../../Cargo.toml -p outou-cli -- cargo clippy -- -D warnings
         working-directory: examples/dogfood-board
       # What `dx serve` compiles for the browser, minus the bundling.
       - run: cargo check --target wasm32-unknown-unknown

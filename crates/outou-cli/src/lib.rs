@@ -8,7 +8,9 @@
 //! same [`build::build`] this library exposes.
 
 pub mod build;
+pub mod cargo;
 pub mod check;
+pub mod diagnostics;
 pub mod fmt;
 pub mod package;
 mod rsx_files;

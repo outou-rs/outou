@@ -92,7 +92,7 @@ In this order, if the alpha needs to shed scope before A5:
 
 1. Leftover `TODO(phase0)` items classified LOW during triage.
 2. HTML entity decoding (`docs/grammar.md`, "HTML entities" row: not decoded, "may be added in a later phase").
-3. `outou check --semantic` as a real subcommand (`crates/outou-cli/tests/ui.rs` — today the semantic/backend mapping machinery is test-only).
+3. `outou check --semantic` as a real subcommand (`crates/outou-cli/tests/ui.rs` — today the semantic/backend mapping machinery is test-only). Superseded by issue #25: the machinery now lives in `outou_cli::diagnostics`, shared by the harness and `outou cargo`.
 4. A3, the Phase 0 budget misses.
 5. A4, the dogfood application. It is cut last because it supplies A5's evidence.
 

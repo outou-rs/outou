@@ -10,6 +10,7 @@ use std::process::ExitCode;
 use clap::{Parser, Subcommand};
 
 use outou_cli::build::{self, BuildOptions};
+use outou_cli::cargo::{self, CargoSubcommand};
 use outou_cli::check;
 use outou_cli::fmt;
 use outou_cli::package;
@@ -32,7 +33,29 @@ enum Command {
         manifest_dir: Option<PathBuf>,
     },
     /// Parse every `.rsx` file and report Outou syntax diagnostics.
+    ///
+    /// This checks `.rsx` syntax only and never runs the Rust compiler:
+    /// type errors, borrow errors and lints are not found. To get those
+    /// at their `.rsx` positions, use `outou cargo check`.
     Check,
+    /// Generate Rust, run a Cargo command, and report the compiler's
+    /// diagnostics at their `.rsx` line and column.
+    ///
+    /// `outou cargo check` runs `outou build`, then `cargo check`, and
+    /// prints type errors, borrow errors and lints for `.rsx` code where
+    /// the code is written, not in `src/.generated/`. Unlike `outou
+    /// check`, which only parses `.rsx` files, this runs the Rust
+    /// compiler. The exit code is Cargo's. Other arguments are passed to
+    /// Cargo (`outou cargo clippy -- -D warnings`). `--fix` and
+    /// `--message-format` are refused: see `crates/outou-cli/README.md`.
+    Cargo {
+        /// The Cargo command to run.
+        #[arg(value_enum)]
+        subcommand: CargoSubcommand,
+        /// Arguments for Cargo, passed through unchanged.
+        #[arg(allow_hyphen_values = true, trailing_var_arg = true)]
+        args: Vec<String>,
+    },
     /// Format `.rsx` files: placeholder JSX regions, `rustfmt` for the
     /// Rust around them, then a JSX-aware pretty printer
     /// (`outou-fmt`, `docs/phase0/issues/13-formatter.md`).
@@ -75,6 +98,14 @@ fn main() -> ExitCode {
     match cli.command {
         Command::Build { manifest_dir } => run_build(manifest_dir),
         Command::Check => check::run(),
+        // clap swallows the first `--` of a trailing argument list, but
+        // `outou cargo clippy -- -D warnings` needs it forwarded. `args` is
+        // only there for the help text and the arity check; the arguments
+        // that reach Cargo are the raw ones after `cargo <subcommand>`.
+        Command::Cargo { subcommand, .. } => {
+            let forwarded: Vec<String> = std::env::args().skip(3).collect();
+            cargo::run(subcommand, &forwarded)
+        }
         Command::Fmt { paths, check } => fmt::run(&paths, check),
         Command::Package {
             manifest_dir,

@@ -1,6 +1,6 @@
 # outou-cli
 
-The `outou` command: `build`, `check` and `package`. `outou package` generates Rust and includes it in the published crate so that consumers need only `cargo build`.
+The `outou` command: `build`, `check`, `cargo`, `fmt` and `package`. `outou package` generates Rust and includes it in the published crate so that consumers need only `cargo build`.
 
 Phase 0: Weeks 4–6.
 
@@ -28,7 +28,57 @@ Resolves the module graph at `DIR` (default: the current directory) with `outou-
 
 ## `outou check`
 
-Parses every `.rsx` file under the current crate's `src/` directory (recursively, in sorted order — a dot-directory such as `src/.generated/` is never descended into, and a symlink is never followed) with `outou_syntax::parse` — the same front end `build`'s generation step and the language server use — and prints Outou's own rendered diagnostics for any file that has one: `error: <message>` for an error-severity diagnostic, `warning: <message>` for a warning-severity one, each followed by ` --> <path>:<line>:<col>`. Exits `1` if any file has an error-severity diagnostic, `0` otherwise (warnings alone do not fail the check).
+Parses every `.rsx` file under the current crate's `src/` directory (recursively, in sorted order — a dot-directory such as `src/.generated/` is never descended into, and a symlink is never followed) with `outou_syntax::parse` — the same front end `build`'s generation step and the language server use — and prints Outou's own rendered diagnostics for any file that has one: `error: <message>` for an error-severity diagnostic, `warning: <message>` for a warning-severity one, each followed by ` --> <path>:<line>:<col>`. Exits `1` if any file has an error-severity diagnostic, `0` otherwise (warnings alone do not fail the check). When no file has an error it prints one summary line (`outou check: checked N `.rsx` files, no errors`, or `no `.rsx` files found under `src``), so a clean run is distinguishable from a run that checked nothing (dogfood friction F16).
+
+`outou check` is **syntax only**: it never runs the Rust compiler, so type errors, borrow errors and lints are not found. Use `outou cargo check` for those.
+
+## `outou cargo` (issue #25, ledger row 39)
+
+```
+outou cargo <build|check|clippy|test> [cargo args...]
+```
+
+`outou cargo check` is `outou build` followed by `cargo check`, with the compiler's diagnostics reported at the `.rsx` line and column instead of at `src/.generated/<file>.rs`:
+
+```
+error[E0308]: mismatched types
+  --> app/src/task_list.rsx:39:22
+   |
+39 |     let wrong: u32 = "oops";
+   |                      ^^^^^^ expected `u32`, found `&str`
+   = note: expected due to this (app/src/task_list.rsx:39:16)
+```
+
+1. It generates Rust for the crate (or workspace) in the current directory, or the one holding `--manifest-path`, exactly like `outou build`: always Strict, so an Outou syntax error stops here in Outou's own words and Cargo never runs.
+2. It runs `$CARGO` (else `cargo`) `<sub> --message-format=json-diagnostic-rendered-ansi <args>`. `RUSTC_WORKSPACE_WRAPPER` is not used: clippy ignores it. The JSON stream is the one interface `build`, `check`, `clippy` and `test` share.
+3. Each `compiler-message` line is translated (below) and printed to **standard error**. Every other line of Cargo's standard output is test output: lines that are not a JSON object with a `reason` key pass through to **standard output** byte for byte, and Cargo's own records (`compiler-artifact`, `build-script-executed`, `build-finished`) are not printed. Only those four `reason`s are Cargo's: a line with any other `reason` is the program's. After `build-finished`, every line is the program's output, however much it looks like a Cargo record (`outou cargo test -- --nocapture` can print JSON of its own). Cargo's own standard error (`Compiling ...`, `error: could not compile`) is inherited.
+4. The exit code is Cargo's; when a signal ended Cargo (Unix) it is `128 + N`, like a shell reports. A refused command line exits `2`; a generation failure exits `1`.
+
+Everything after the subcommand goes to Cargo unchanged, including `--` (`outou cargo clippy -- -D warnings`, `outou cargo test -- --nocapture`). Two flags are refused before anything is generated or run, when they appear before `--`:
+
+- `--fix`: a fix would rewrite `src/.generated/`, which the next `outou build` overwrites. Edit the `.rsx` file.
+- `--message-format` (either spelling): `outou cargo` needs the JSON form to find the spans. It fails with a clear message instead of silently picking one of the two. Run `cargo` directly when another format is wanted.
+
+A toolchain override (`cargo +nightly ...`) cannot be given, since the first argument is the subcommand: use `RUSTUP_TOOLCHAIN=nightly outou cargo check`. `TODO(alpha)`: Windows is out of scope for the alpha (CI and the documentation target Unix), and path handling for `C:\...` file names in rustc's prose is not implemented.
+
+`outou cargo` differs from `outou check` in what it runs: `check` parses `.rsx` files and never starts the compiler; `outou cargo check` runs the Rust compiler on the generated code.
+
+### What is translated, and what is not
+
+The translation lives in `outou_cli::diagnostics` and is shared with the UI test harness (`tests/ui.rs`): "there is one compiler". The rules, in order:
+
+1. **A generated file with a source map** (`<file>.rs.map.json` next to it): the primary span is mapped to the `.rsx` file, line and column. The same narrowing `outou-lsp` uses is applied first (`SourceMap::narrow`), then the whole-span answer, then the nearest mapped position.
+2. **A span of 15 or more lines** (rustc reports the whole `rsx!` call for some errors) is first narrowed as a whole: when it narrows exactly (a long closure inside a spliced Rust run) the range is kept, carets and all. Otherwise it is mapped by its start only, so the diagnostic points at the start of the nearest element or statement; no range is invented.
+3. **A synthesized span with no mapping** (the `{}` of a numeric child) uses the nearest mapped position rather than dropping a hard error.
+4. **Secondary spans** (`expected due to this`) are shown as notes only when they map exactly into a `.rsx` file. A span that carries a macro expansion points at the backend's macro (`expansion.def_site_span` names a file in the Cargo registry) and is always dropped. So is a `note:` / `help:` child that has a span in a file outside the workspace (an absolute path: a registry dependency, the standard library) or from a macro expansion (`method defined here`, `required by a bound in ...`), and the pair of notes that say a long type name was written to a file in the build directory.
+5. **A suggested replacement** (clippy's `help: try`) is shown as `replace `old` with `new` (file:L:C)` (`insert `new`` when the original text is empty) only when the generated text under the span is byte for byte the `.rsx` text it maps to. Otherwise the help message is kept without the replacement.
+6. **A plain `.rs` file** (`src/.generated/../state.rs`, a module reached through `#[path]`) needs no map. Its path is normalised and rustc's own rendering is printed (colour only when standard error is a terminal and `NO_COLOR` is unset), but only when that rendering is safe: it names no registry or dependency path, has no span from a macro expansion and no backend vocabulary. Otherwise `outou cargo` renders the diagnostic itself, from the workspace spans only.
+7. **A generated file whose map cannot be read** keeps the message and drops the location, so no `.generated` path is ever printed.
+8. **Backend vocabulary** in a message is rewritten by `outou_syntax::vocabulary::translate_message` (the table `outou-lsp` uses). A label or note that would need rewriting is dropped, since it repeats the message. The backend vocabulary scan of `tests/leak.rs` covers this output.
+9. **An untranslated twin** of a translated missing-prop diagnostic (ledger row 27) is dropped: only the `this method takes N argument` error whose label names a `Missing_required_field` type, and only at the same generated byte range as an already shown translated diagnostic. Another diagnostic that merely maps to the same `.rsx` span (a `#[deprecated]` warning on the component) is kept. The batch (UI harness) and the stream (`outou cargo`) are one implementation; both rely on rustc reporting the translated one first, and a twin without it is shown rather than lost. The `Some errors have detailed explanations: ...` and `For more information ...` notes then list only the codes that were shown.
+10. **Text that names the generated directory** (a closure type `{closure@src/.generated/x.rs:15:14: 15:22}`, `` couldn't read `src/.generated/x.txt` ``) is cleaned in every message, label and note: a position in generated code is mapped to the `.rsx` position (`<generated code>` when it cannot be); a bare path shows as `<generated directory>/x.txt`, with a note that relative paths in `include_str!` resolve from the generated Rust's directory (ledger row 40).
+
+Not translated: output of the program under test (a panic's `src/.generated/x.rs:33:5`, a backtrace), because it is not a compiler message; and plain `cargo` itself, which still prints generated paths (use `outou cargo`). `outou cargo` generates only the crate or workspace it is run in, like `outou build`.
 
 ## `outou package` (issue #15)
 
@@ -56,6 +106,8 @@ After `outou build`, the rest of the ordinary Cargo workflow — `cargo build`/`
 
 ## Tests
 
+- `tests/cargo_cli.rs` (issue #25): the `outou` binary with `$CARGO` pointing at a shell script that prints canned `--message-format=json` built from the real generated `mixed` fixture. Covers the position of a translated error, recorded real rustc messages (`tests/fixtures/cargo-json/`, which must show no generated path, dependency or backend text), closure positions in prose, the `include_str!` path, plain-file renderings that name a dependency, twin suppression, the explanation notes, exit codes (including a signal), test output after `build-finished`, the arguments Cargo receives (`--message-format=json-diagnostic-rendered-ansi` first, the rest unchanged), generation before Cargo (a syntax error stops it), pass-through of test output, rejection of `--fix` and `--message-format`, plain-path normalisation, dropping of registry/expansion spans, backend-vocabulary translation, that `outou build` never runs Cargo, and the help text. Unix only. The modules under `src/diagnostics/` have their own unit tests.
+- `tests/cargo_cli_real.rs` (issue #25, `#[ignore]`d: a cold Dioxus build): `outou cargo clippy -- -D warnings` passes on a copy of `examples/dogfood-board`, then a deliberate type error is reported at the `.rsx` line and column with no `.generated` path and no backend vocabulary. Run with `cargo test -p outou-cli --test cargo_cli_real -- --ignored`; CI runs it in the `example-app` job.
 - `tests/build_paths.rs`, `tests/build_cli.rs`, `tests/build_compile.rs` (split out of one `tests/build.rs`, issue #8 fix list step 10; shared temp-directory helpers in `tests/support.rs`): together, build every required build-pipeline fixture (`tests/fixtures/modules/{mixed,cfg,cfg-duplicate,raw-ident,root-name,inline,inline-dup,inline-dup-rs}`) and `examples/phase0-app` through `outou_cli::build::build`, asserting the exact generated file set, `#[path]`/`#[cfg]` fidelity, stale-file cleanup, atomic-write idempotency and transactionality, and (in `build_compile.rs`, mostly `#[ignore]`d — a cold `dioxus` build) that the result actually passes `cargo check`/`cargo test`/`cargo clippy`, including a probe that a user's own redundant braces still fail `cargo clippy -- -D warnings` in a file whose generated code carries no `#![allow(unused_braces)]` (`docs/backend-leakage.md` rows 21, 23). `build_cli.rs` also asserts the `outou` binary itself exits `1` and prints only Outou vocabulary for a `.rsx` syntax error, and rejects the removed `--mode` flag.
 - `tests/matrix.rs` (issue #10; no `mod support;` — see the file's own note): the Cargo command matrix described above. `outou_build_builds_every_workspace_member_in_one_pass` and `outou_build_regenerates_ui_kit_generated_output_byte_identically` are fast (no `cargo`/`rustc` invocation) and run as part of the normal suite; `example_app_doc_tests_cannot_run_because_there_is_no_library_target` is fast too (`cargo test --doc` fails at the manifest-check stage, before compiling anything). `example_app_cargo_matrix`, `workspace_fixture_cargo_matrix`, `outou_and_ui_kit_publish_dry_run_succeeds_together` and `outou_package_fails_when_generated_output_is_gitignored` (issue #15) are `#[ignore]`d (a cold `dioxus` build, one temp copy and one `outou build` per test, every Cargo command below it reusing that same build) — run explicitly with `cargo test -p outou-cli --test matrix -- --ignored`, wired into CI as the `cargo-matrix` job.
 - `tests/package_cli.rs` (issue #15): `outou package --check` against copies of `tests/fixtures/workspace/ui-kit` — a clean copy passes and changes nothing on disk; editing `.rsx` source or leaving a stale `.generated/*.rs` behind fails with the affected file named; two copies at different absolute paths both check clean and produce byte-identical generated output. Also: a workspace root is rejected (both `--check` and the non-`--check` path) before any build is attempted; passthrough args that would change `cargo package`'s own selection (`--workspace`, `-p` without the `--manifest-dir` crate's own name) are rejected before `outou package` calls `cargo` at all — both fast (no `.rsx` sources needed, since these checks run first).

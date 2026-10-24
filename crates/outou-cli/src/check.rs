@@ -83,15 +83,42 @@ pub fn run() -> ExitCode {
     }
 
     if had_errors {
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
+        return ExitCode::FAILURE;
+    }
+    // F16 (`examples/dogfood-board/README.md`): a clean run used to print
+    // nothing, indistinguishable from a run that checked nothing.
+    println!("{}", success_summary(files.len()));
+    ExitCode::SUCCESS
+}
+
+/// The line `outou check` prints when no file has an error.
+fn success_summary(file_count: usize) -> String {
+    match file_count {
+        0 => "outou check: no `.rsx` files found under `src`".to_string(),
+        1 => "outou check: checked 1 `.rsx` file, no errors".to_string(),
+        n => format!("outou check: checked {n} `.rsx` files, no errors"),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_success_summary_says_how_many_files_were_checked() {
+        assert_eq!(
+            success_summary(0),
+            "outou check: no `.rsx` files found under `src`"
+        );
+        assert_eq!(
+            success_summary(1),
+            "outou check: checked 1 `.rsx` file, no errors"
+        );
+        assert_eq!(
+            success_summary(7),
+            "outou check: checked 7 `.rsx` files, no errors"
+        );
+    }
 
     #[test]
     fn check_source_reports_no_error_and_empty_output_for_clean_input() {
