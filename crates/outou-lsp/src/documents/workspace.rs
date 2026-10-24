@@ -96,46 +96,13 @@ impl Workspace {
     /// Generates one unit fresh from disk and installs it (used at load
     /// time and whenever a full re-plan is required).
     ///
-    /// TODO(phase0) (issue #9 Gate 3 review, L15's SKIP item): this is a
-    /// near-duplicate of [`Self::load_unit_with_text`] below (read from
-    /// disk, then the same generate-and-install steps); it could be
-    /// `self.load_unit_with_text(unit, &fs::read_to_string(&unit.source_file)?)`
-    /// instead. Left as its own function for this pass — real
-    /// duplication, not gate-relevant on its own.
     fn load_unit(&mut self, unit: &PlannedUnit) -> Result<(), LoadError> {
         let source =
             fs::read_to_string(&unit.source_file).map_err(|source| LoadError::ReadSource {
                 path: unit.source_file.clone(),
                 source,
             })?;
-        let generated = generate_unit(unit, &source, Mode::Recovery)?;
-
-        let rsx_uri = outou_sourcemap::file_uri(&unit.source_file);
-        let generated_uri = outou_sourcemap::file_uri(&unit.generated_file);
-        let declared_modules = plan::declared_modules(&outou_syntax::parse(&source).file);
-
-        let line_index = LineIndex::new(&generated.rust);
-        self.rsx
-            .insert(rsx_uri.as_str().to_string(), RsxDocument::new(source, 0));
-        self.generated.insert(
-            generated_uri.as_str().to_string(),
-            GeneratedUnit {
-                planned: unit.clone(),
-                generated_uri: generated_uri.clone(),
-                rsx_uri: rsx_uri.clone(),
-                text: generated.rust,
-                line_index,
-                ra_version: 0,
-                last_ra_diagnostics: Vec::new(),
-                declared_modules,
-            },
-        );
-        self.rsx_to_generated.insert(
-            rsx_uri.as_str().to_string(),
-            generated_uri.as_str().to_string(),
-        );
-        self.registry = std::mem::take(&mut self.registry).with_map(generated.source_map);
-        Ok(())
+        self.load_unit_with_text(unit, &source)
     }
 
     /// Whether editing `rsx_uri` with `new_text` changes the declared
@@ -163,7 +130,7 @@ impl Workspace {
     /// `mod` line but no matching `#[path]` — non-compiling Rust. See
     /// [`Self::build_overlay`] for exactly which buffers are used.
     ///
-    /// TODO(phase0): if [`Self::load_unit`]/[`Self::load_unit_with_text`]
+    /// `TODO(alpha) (#31)`: if [`Self::load_unit`]/[`Self::load_unit_with_text`]
     /// fails for one unit *after* `self.generated`/`self.rsx` have
     /// already been cleared below, this returns `Err` with the workspace
     /// left emptied rather than restored to its pre-`replan` state. Not
@@ -216,14 +183,14 @@ impl Workspace {
     /// (the caller passes the edit's new text before storing it). Keys
     /// are canonicalized where possible so they line up with
     /// `outou_modules::resolve_with_overlay`'s own lookup identity.
-    /// TODO(phase0) (issue #9 Gate 3 review, HIGH-2's SKIP item): only
+    /// `TODO(alpha) (#31)` (issue #9 Gate 3 review, HIGH-2's SKIP item): only
     /// currently *open* documents (`RsxDocument::version != 0`) are
     /// overlaid; a file edited by some other tool while this server is
     /// running, without ever being opened in this editor session, is
     /// still read from disk. A full workspace virtual-filesystem
     /// abstraction (watching every `.rsx` file for external changes, not
-    /// only editor buffers) is out of scope for Phase 0's LSP feasibility
-    /// question.
+    /// only editor buffers) needs `workspace/didChangeWatchedFiles`, which is
+    /// not implemented.
     fn build_overlay(&self, rsx_uri: &str, override_text: &str) -> HashMap<PathBuf, String> {
         let mut overlay = HashMap::new();
         for (doc_uri, doc) in &self.rsx {

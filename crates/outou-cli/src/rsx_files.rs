@@ -3,14 +3,14 @@
 //! counts as a source file (a directory whose name starts with `.` is
 //! always skipped, so `.generated/` is never scanned by either).
 //!
-//! `TODO(phase0)`: a *file* that is itself a symlink (as opposed to the
+//! Accepted behavior (issue #24): a *file* that is itself a symlink (as opposed to the
 //! symlinked-directory loop [`collect_rsx_files`] already guards
 //! against) is collected like any other `.rsx` file — `outou fmt`, which
 //! writes through [`std::fs::write`], therefore writes through the
 //! symlink to whatever it points at, which is ordinary Unix `write`
-//! semantics but worth calling out since a formatter rewriting a file
-//! the user did not expect to be shared (e.g. a symlink into a vendored
-//! or generated tree) could surprise them.
+//! semantics. It is called out because a formatter rewriting a file the
+//! user did not expect to be shared (e.g. a symlink into a vendored or
+//! generated tree) could surprise them.
 
 use std::path::{Path, PathBuf};
 

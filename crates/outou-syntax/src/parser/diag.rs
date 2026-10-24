@@ -24,6 +24,18 @@ pub fn unexpected_inside_tag(what: &str, name: &str) -> String {
     format!("unexpected `{what}` inside tag `<{name}>`, expected an attribute or `>`")
 }
 
+/// `expected a tag name after `<``: a `<` in element content that begins no
+/// tag (`<div>a < b</div>`, `<div><3></div>`). `starts_comment` is set for
+/// `<!--`, which is how an HTML comment starts: JSX has no such comment.
+pub fn missing_tag_name_after_lt(starts_comment: bool) -> String {
+    if starts_comment {
+        "expected a tag name after `<`; write a comment as `{/* ... */}`".to_string()
+    } else {
+        "expected a tag name after `<`; write `{\"<\"}` to include a literal `<` in text"
+            .to_string()
+    }
+}
+
 /// `missing closing tag `</{name}>``
 pub fn missing_closing_tag(name: &str) -> String {
     format!("missing closing tag `</{name}>`")
@@ -110,6 +122,10 @@ pub fn reword_end_of_file_as_next_item(message: &str) -> String {
         None => message.to_string(),
     }
 }
+
+// `TODO(alpha) (#31)`: the five "not supported in Phase 0" messages below
+// still carry the phase name in user-facing text; the fixtures pin the
+// wording, so changing it is a coordinated edit.
 
 /// `fragments are not supported in Phase 0`
 pub fn fragments_not_supported() -> String {

@@ -340,8 +340,9 @@ const REJECTED_SELECTION_FLAGS: &[&str] = &["--manifest-path", "--workspace", "-
 /// (ADR 0008) — but only when the crate at `--manifest-dir` is itself one
 /// of the named packages; otherwise `cargo package` could ship a crate
 /// `outou package` never verified while silently skipping the one it did.
-/// Every other `-p` value (e.g. `outou`) is passed through unverified: see
-/// the `TODO(phase0)` in `crates/outou-cli/README.md`.
+/// Every other `-p` value (e.g. `outou`) is passed through unverified, by
+/// design: `outou package` verifies only the crate at `--manifest-dir`
+/// (`crates/outou-cli/README.md`, accepted in issue #24).
 fn validate_passthrough_args(manifest_dir: &Path, extra_args: &[String]) -> Result<(), String> {
     for arg in extra_args {
         let flag_name = arg.split('=').next().unwrap_or(arg.as_str());

@@ -3,13 +3,15 @@
 //! pass (issue #10 deliverable 3), instead of requiring one invocation
 //! per crate.
 //!
-//! **`TODO(phase0)`:** globbing is limited to a single trailing `/*`
-//! segment on one path component (`"crates/*"`), the only shape this
-//! repository's own fixtures need. A full glob (`"crates/**"`, bracket
-//! patterns, …) is out of scope for Phase 0; `cargo_metadata` was
-//! deliberately not pulled in for this (`crates/outou-cli/README.md`),
-//! so an unsupported pattern is silently treated as a literal path
-//! rather than expanded.
+//! Globbing is deliberately limited to a single trailing `/*` segment on
+//! one path component (`"crates/*"`); that is the permanent specification
+//! (issue #24), not a pending item. `cargo_metadata` was deliberately
+//! not pulled in for this (`crates/outou-cli/README.md`). Any other glob
+//! character (`"crates/**"`, `[ab]`, `?`) is refused with
+//! [`WorkspaceError::UnsupportedGlob`] rather than treated as a literal
+//! path, unless a directory of exactly that name holds a `Cargo.toml`
+//! (`lit/q?x`, `crates/foo*` are legal directory names, and Cargo builds
+//! them): then it is that literal member.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -34,6 +36,15 @@ pub enum WorkspaceError {
         /// Underlying error.
         #[source]
         source: std::io::Error,
+    },
+    /// A `members` entry uses a glob form other than a single trailing
+    /// `/*`.
+    #[error(
+        "workspace member `{pattern}` uses an unsupported glob; only a single trailing `/*` is supported (list the member paths explicitly)"
+    )]
+    UnsupportedGlob {
+        /// The `members` entry as written.
+        pattern: String,
     },
     /// A `[workspace]` table resolved to zero members after `exclude` and
     /// deduplication (issue #12 corpus review, F10/MEDIUM). `outou build`
@@ -68,19 +79,18 @@ pub enum WorkspaceError {
 /// than as a workspace with zero members.
 ///
 /// `[workspace] default-members` (issue #12 corpus review, F10/MEDIUM) is
-/// deliberately **not** read: Cargo only uses `default-members` to narrow
+/// deliberately **not** read (permanent behavior, issue #24): Cargo only uses `default-members` to narrow
 /// what a bare `cargo build`/`cargo test` at the workspace root builds
 /// when *no* `-p`/`--workspace` flag is given, but a plain member list is
 /// still what every other workspace-aware command (`cargo build
 /// --workspace`, `cargo metadata`, and this function's own callers,
 /// `cargo_matrix`'s full-workspace checks) needs. `outou build` has no
-/// per-package flag of its own in Phase 0, so it always builds every
+/// per-package flag of its own, so it always builds every
 /// member — the `--workspace` behavior, not the bare-invocation one —
 /// and reading `default-members` here would only be able to narrow that,
-/// never widen it back when a caller actually wants everything. Recorded
-/// as a `TODO(phase0)` rather than silently decided (`AGENTS.md`): a
-/// `--package`/`--workspace`-aware `outou build` that needs
-/// `default-members` for its own bare-invocation default is future work.
+/// never widen it back when a caller actually wants everything. `outou
+/// build` and the `outou cargo` commands therefore always cover every
+/// member, whatever `default-members` says.
 pub fn workspace_members(manifest_dir: &Path) -> Result<Option<Vec<PathBuf>>, WorkspaceError> {
     let manifest_path = manifest_dir.join("Cargo.toml");
     let Ok(text) = fs::read_to_string(&manifest_path) else {
@@ -100,9 +110,26 @@ pub fn workspace_members(manifest_dir: &Path) -> Result<Option<Vec<PathBuf>>, Wo
     let member_patterns = string_array(workspace, "members");
     let mut members = Vec::new();
     for pattern in member_patterns {
-        match pattern.strip_suffix("/*") {
-            Some(prefix) => members.extend(glob_star(manifest_dir, prefix)?),
-            None => members.push(manifest_dir.join(pattern)),
+        // A directory whose name really contains a glob character
+        // (`lit/q?x`, `crates/foo*`) is a literal member: Cargo builds it, so
+        // the existing manifest decides before the pattern is refused.
+        if pattern.contains(['*', '?', '[', ']'])
+            && manifest_dir.join(&pattern).join("Cargo.toml").is_file()
+        {
+            members.push(manifest_dir.join(&pattern));
+            continue;
+        }
+        let (literal, is_star) = match pattern.strip_suffix("/*") {
+            Some(prefix) => (prefix, true),
+            None => (pattern.as_str(), false),
+        };
+        if literal.contains(['*', '?', '[', ']']) {
+            return Err(WorkspaceError::UnsupportedGlob { pattern });
+        }
+        if is_star {
+            members.extend(glob_star(manifest_dir, literal)?);
+        } else {
+            members.push(manifest_dir.join(literal));
         }
     }
 
@@ -228,6 +255,57 @@ mod tests {
 
         fs::remove_dir_all(&dir).ok();
         assert_eq!(members, None);
+    }
+
+    #[test]
+    fn a_glob_other_than_a_trailing_star_is_refused() {
+        for pattern in ["crates/**", "crates/a?", "crates/[ab]", "*/x", "crates/*/*"] {
+            let dir = temp_dir("unsupported-glob");
+            write(
+                &dir,
+                "Cargo.toml",
+                &format!("[workspace]\nmembers = [\"{pattern}\"]\n"),
+            );
+
+            let result = workspace_members(&dir);
+
+            fs::remove_dir_all(&dir).ok();
+            assert!(
+                matches!(&result, Err(WorkspaceError::UnsupportedGlob { pattern: p }) if p == pattern),
+                "{pattern}: {result:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_member_directory_named_with_glob_characters_is_a_literal_path() {
+        let dir = temp_dir("literal-glob-chars");
+        let names = ["lit/q?x", "lit/[z]", "crates/foo*"];
+        for name in names {
+            write(
+                &dir,
+                &format!("{name}/Cargo.toml"),
+                "[package]\nname = \"m\"\n",
+            );
+        }
+        let members = names.map(|n| format!("\"{n}\"")).join(", ");
+        write(
+            &dir,
+            "Cargo.toml",
+            &format!("[workspace]\nmembers = [{members}]\n"),
+        );
+
+        let result = workspace_members(&dir);
+
+        let expected: Vec<PathBuf> = names.iter().map(|n| dir.join(n)).collect();
+        fs::remove_dir_all(&dir).ok();
+        let mut found = result
+            .expect("literal members resolve")
+            .expect("a workspace");
+        found.sort();
+        let mut expected = expected;
+        expected.sort();
+        assert_eq!(found, expected);
     }
 
     #[test]

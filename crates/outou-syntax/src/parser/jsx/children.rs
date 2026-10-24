@@ -142,11 +142,18 @@ impl<'s> Parser<'s> {
         let name_start = lt_pos + 1;
         let name_end = scan_jsx_name(self.bytes, name_start);
         if name_end == name_start {
-            // No valid name at all (`<3>`, `<<A/>`, …): recover by
-            // consuming just the `<` as an error and resuming text
-            // scanning right after it. Not one of the required fixtures;
-            // TODO(phase0): a byte-precise message for this shape is not
-            // specified by grammar §9.
+            // No valid name at all (`<3>`, `<<A/>`, `< span/>`, `a < b` in
+            // text): diagnose it, then recover by consuming just the `<` as
+            // an error and resuming text scanning right after it. Every
+            // incomplete tag carries a diagnostic (parser/mod.rs). A space
+            // after `<` is not accepted as an element here; whether it
+            // should be (it is at the top level) is `TODO(alpha) (#31)`.
+            self.push_diag(
+                Span::new(lt_pos as u32, lt_pos as u32 + 1),
+                super::super::diag::missing_tag_name_after_lt(
+                    self.bytes[lt_pos + 1..].starts_with(b"!--"),
+                ),
+            );
             return (
                 incomplete_element(lt_pos, lt_pos + 1, "a tag name"),
                 lt_pos + 1,

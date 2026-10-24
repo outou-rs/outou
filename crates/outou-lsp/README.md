@@ -243,10 +243,11 @@ In short: rust-analyzer's `$/progress` (and so the readiness signal it carries) 
 reaches editors that advertise `window.workDoneProgress` support,
 semantic diagnostics need a save (a rust-analyzer limitation, not this
 server's), a transformed (non-verbatim) source mapping returns `null`
-rather than a guess, and a handful of SKIP items recorded as
-`TODO(phase0)` at their own call sites (Windows/UNC file URIs, a
-multi-source diagnostic always using the first source,
-`completionItem/resolve` not being advertised).
+rather than a guess. Two items from that review are deliberate: a
+diagnostic whose generated span has several `.rsx` sources is shown at the
+first source only (ADR 0007's reverse-mapping rule asks for one location),
+and the Windows/UNC file URI limitation is `TODO(alpha) (#31)` at
+`crate::uri::to_path`.
 
 Semantic tokens/rename/references (issue #14 review):
 
@@ -255,15 +256,15 @@ Semantic tokens/rename/references (issue #14 review):
   (references) exactly like synthesized code, since its mapping is
   length-mismatched (`docs/backend-leakage.md` row 29, ADR 0013). No
   text-only fallback is implemented for this narrower shape.
-  `TODO(phase0)`.
+  `TODO(alpha) (#31)`.
 - **`prepareRename` on a closing tag's own name returns the opening
   tag's range**, not the closing tag's (`crate::mapping::generated_location_to_source`'s
   multi-source rule always resolves to the first source, shared with
   hover/definition) — the request is still answered correctly in
   substance, just highlighted at the wrong end of the element.
-  `TODO(phase0)` in `crate::rename::translate_prepare_rename_response`.
+  `TODO(alpha) (#31)` in `crate::rename::translate_prepare_rename_response`.
 - **URI comparisons throughout this crate are lexical**, not normalized
-  per RFC 3986 (`crate::uri`'s own `TODO(phase0)`): two differently-spelled
+  per RFC 3986 (`crate::uri`'s own `TODO(alpha) (#31)`): two differently-spelled
   but equivalent URIs would not match. Not reproduced against a real
   editor — every URI observed so far uses one canonical spelling — but a
   latent risk worth normalizing before relying on it more.

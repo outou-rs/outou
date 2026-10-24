@@ -41,7 +41,7 @@ pub(crate) fn dispatch_client_request(state: &mut State, connection: &Connection
 /// Rust rust-analyzer sees, and it is the exact same pipeline `outou fmt`
 /// uses (`docs/phase0/issues/13-formatter.md`: "one pipeline, not two").
 ///
-/// `TODO(phase0)`: this runs synchronously, inline in the single
+/// `TODO(alpha) (#31)`: this runs synchronously, inline in the single
 /// dispatch loop every other request also goes through, with no
 /// wall-clock budget — one `rustfmt` process per file plus one more per
 /// expression island (`crate::snippet`'s recursive placeholder passes),

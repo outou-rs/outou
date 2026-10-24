@@ -6,7 +6,7 @@
 //! codegen never has to branch on it.
 
 use outou_codegen::Writer;
-use outou_sourcemap::MappingKind;
+use outou_sourcemap::{MappingKind, Span};
 use outou_syntax::ast::{Island, JsxAttributeValue, JsxChild, JsxElement, JsxTag};
 
 use crate::attribute::{is_single_expression, lower_attribute};
@@ -63,7 +63,7 @@ fn lower_element_body(
     cx: Cx<'_>,
 ) {
     if is_broken(element) {
-        emit_recovery_element(writer, element.span);
+        emit_child_recovery_element(writer, element.span);
         return;
     }
 
@@ -108,6 +108,15 @@ fn lower_element_body(
     writer.raw(" }");
 }
 
+/// The recovery placeholder in child position. A bare path call there is not
+/// valid `rsx!` syntax (it expects `name {` or `{expr}`), so it is braced the
+/// way every other child expression is.
+fn emit_child_recovery_element(writer: &mut Writer, span: Span) {
+    writer.raw("{");
+    emit_recovery_element(writer, span);
+    writer.raw("}");
+}
+
 /// A JSX element is unrecoverable as element syntax only when its opening
 /// tag itself never resolved to a name (grammar §9). Everything else —
 /// including a missing or mismatched closing tag — is still fully
@@ -140,7 +149,7 @@ fn lower_child(
             writer.raw(",");
         }
         JsxChild::Error(error) => {
-            emit_recovery_element(writer, error.span);
+            emit_child_recovery_element(writer, error.span);
             writer.raw(",");
         }
     }

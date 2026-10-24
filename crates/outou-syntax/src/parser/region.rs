@@ -192,8 +192,16 @@ impl<'s> Parser<'s> {
         tok: RtTok,
         prev: Option<RtTok>,
     ) -> Option<(ast::Expr, usize)> {
+        // `</` followed by anything but a comment opener (`</*`, `<//`) is
+        // never Rust: no operand starts with `/`, so it cannot be a
+        // less-than whatever came before. It is a closing tag the enclosing
+        // Rust swallowed (an island that lost its `}`), and committing to JSX
+        // keeps `</ul>` out of the generated Rust.
+        let is_closing_tag_start = tok.end == tok.start + 1
+            && self.byte_at(tok.start + 1) == b'/'
+            && !matches!(self.byte_at(tok.start + 2), b'*' | b'/');
         let expr_pos = position::from_prev(prev.map(|t| (t, t.text(self.source))));
-        if !matches!(expr_pos, ExprPosition::Expr) {
+        if !is_closing_tag_start && !matches!(expr_pos, ExprPosition::Expr) {
             return None;
         }
         match disambiguate::classify(self.source, tok.start) {

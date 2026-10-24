@@ -20,31 +20,50 @@ pub(crate) fn run_rustfmt(input: &str, options: &FormatOptions) -> Result<String
         .spawn()
         .map_err(|source| FormatError::RustfmtUnavailable { source })?;
 
-    // This blocks until all of `input` is written, then only afterward
-    // reads stdout/stderr via `wait_with_output`. The realistic deadlock
-    // is not primarily "the input itself is huge" (a `.rsx` file's Rust
-    // content comfortably fits an OS pipe buffer): it is `rustfmt`
-    // writing enough to *its* stderr (or stdout) pipe to fill that
-    // buffer — plausible for a file with many warnings or an unusual
-    // error — while this process is still blocked writing stdin and so
-    // never reaches the point where it would drain rustfmt's stderr.
-    // Neither side can then make progress. `TODO(phase0)`: write stdin on
-    // a separate thread (or interleave writing/reading) if a real file
-    // ever deadlocks here.
-    child
-        .stdin
-        .take()
-        .expect("stdin was piped")
-        .write_all(input.as_bytes())
-        .map_err(|source| FormatError::RustfmtUnavailable { source })?;
+    // `stdin` is written on its own thread while this thread drains
+    // `rustfmt`'s stdout and stderr in `wait_with_output`. Writing it
+    // inline would deadlock as soon as `rustfmt` filled its output pipe
+    // while this process was still blocked writing input: neither side
+    // could make progress. Dropping the handle at the end of the thread
+    // closes the pipe so `rustfmt` sees end of input.
+    let mut stdin = child.stdin.take().expect("stdin was piped");
+    let bytes = input.as_bytes().to_vec();
+    let writer = std::thread::spawn(move || stdin.write_all(&bytes));
 
     let output = child
         .wait_with_output()
         .map_err(|source| FormatError::RustfmtUnavailable { source })?;
+    let write_result = match writer.join() {
+        Ok(result) => result,
+        Err(_) => {
+            return Err(FormatError::Internal(
+                "the thread writing to rustfmt's stdin panicked".to_string(),
+            ))
+        }
+    };
 
     if !output.status.success() {
+        // `rustfmt` can exit (a syntax error) before reading all of its
+        // input, so a broken pipe is expected here and the exit status is
+        // the real answer.
+        if let Err(source) = write_result {
+            if source.kind() != std::io::ErrorKind::BrokenPipe {
+                return Err(FormatError::RustfmtUnavailable { source });
+            }
+        }
         return Err(FormatError::RustfmtFailed {
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        });
+    }
+    // A successful exit that did not read all of its input produced output
+    // for a truncated file; accepting it would silently cut the user's code.
+    if let Err(source) = write_result {
+        return Err(if source.kind() == std::io::ErrorKind::BrokenPipe {
+            FormatError::Internal(
+                "rustfmt exited successfully without reading all of its input".to_string(),
+            )
+        } else {
+            FormatError::RustfmtUnavailable { source }
         });
     }
 
@@ -186,6 +205,102 @@ mod tests {
         let formatted = String::from_utf8(output.stdout).unwrap();
         assert!(!has_tab_indentation(&formatted), "{formatted:?}");
         assert_eq!(formatted, "fn main() {\n    let x = 1;\n}\n");
+    }
+
+    /// A program that echoes its input while still reading it fills its
+    /// stdout pipe long before the input is fully written. Writing stdin
+    /// inline deadlocked here; a watchdog turns a regression into a failure
+    /// instead of a hang.
+    #[cfg(unix)]
+    #[test]
+    fn a_large_input_does_not_deadlock_against_a_program_that_echoes_it() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        const ETXTBSY: i32 = 26;
+        let dir = std::env::temp_dir().join(format!(
+            "outou-fmt-echo-test-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("echo-rustfmt.sh");
+        std::fs::write(&script, "#!/bin/sh\nexec cat\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let options = FormatOptions {
+            rustfmt_program: script.to_string_lossy().into_owned(),
+            ..FormatOptions::default()
+        };
+        let input = "fn f() {}\n".repeat(400_000);
+
+        let (sender, receiver) = mpsc::channel();
+        let expected = input.clone();
+        std::thread::spawn(move || {
+            // Another thread forking while the script was open for writing
+            // can make the first spawn fail with ETXTBSY; retry.
+            let mut result = run_rustfmt(&input, &options);
+            for _ in 0..20 {
+                match &result {
+                    Err(FormatError::RustfmtUnavailable { source })
+                        if source.raw_os_error() == Some(ETXTBSY) =>
+                    {
+                        std::thread::sleep(Duration::from_millis(50));
+                        result = run_rustfmt(&input, &options);
+                    }
+                    _ => break,
+                }
+            }
+            sender.send(result).ok();
+        });
+        let result = receiver
+            .recv_timeout(Duration::from_secs(60))
+            .expect("run_rustfmt deadlocked on a large input");
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(result.expect("the echo program succeeds"), expected);
+    }
+
+    /// A program that closes stdin early and still exits 0 produced output
+    /// for a truncated file; that must be an error, not a success.
+    #[cfg(unix)]
+    #[test]
+    fn a_successful_exit_that_did_not_read_all_input_is_an_error() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::time::Duration;
+
+        const ETXTBSY: i32 = 26;
+        let dir = std::env::temp_dir().join(format!(
+            "outou-fmt-truncating-test-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("truncating-rustfmt.sh");
+        std::fs::write(&script, "#!/bin/sh\nhead -c 1\nexit 0\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let options = FormatOptions {
+            rustfmt_program: script.to_string_lossy().into_owned(),
+            ..FormatOptions::default()
+        };
+        let input = "fn f() {}\n".repeat(400_000);
+        let mut result = run_rustfmt(&input, &options);
+        for _ in 0..20 {
+            match &result {
+                Err(FormatError::RustfmtUnavailable { source })
+                    if source.raw_os_error() == Some(ETXTBSY) =>
+                {
+                    std::thread::sleep(Duration::from_millis(50));
+                    result = run_rustfmt(&input, &options);
+                }
+                _ => break,
+            }
+        }
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(
+            matches!(result, Err(FormatError::Internal(_))),
+            "a truncated output was accepted: {:?}",
+            result.map(|text| text.len())
+        );
     }
 
     #[test]

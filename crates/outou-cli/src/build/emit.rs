@@ -131,6 +131,9 @@ pub fn emit(plan: &Plan) -> Result<EmitOutput, EmitError> {
                 source,
             })?;
 
+        // `TODO(alpha) (#31)`: front-end warnings (the `<select value>`
+        // shapes Outou cannot rewrite) are not printed here; `outou check`
+        // and the language server show them (`docs/grammar.md` §5.1).
         let generated = generate_unit(unit, &source, Mode::Strict)?;
 
         let mut map_json = generated

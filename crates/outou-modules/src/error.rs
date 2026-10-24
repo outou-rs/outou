@@ -121,7 +121,8 @@ pub enum ModuleError {
     },
     /// An explicit `#[path = "…"]` resolves to a file outside the crate
     /// root (an absolute path, or enough `..` segments to escape it).
-    /// Phase 0 requires every module file to live under the crate root.
+    /// Every module file must live under the crate root. `TODO(alpha) (#31)`:
+    /// the message still says "Phase 0".
     #[error(
         "Outou module `{name}` declared in `{}` resolves to `{}`, outside the crate; Phase 0 requires module files under the crate root",
         declared_in.display(),

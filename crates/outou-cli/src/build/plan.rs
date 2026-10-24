@@ -55,13 +55,13 @@ pub enum PlanError {
     /// Module graph resolution failed.
     #[error(transparent)]
     Module(#[from] ModuleError),
-    /// A plain Rust file (`.rs`) declares a `.rsx` module directly. Phase
-    /// 0 never rewrites a `.rs` file's `mod` declaration (codegen only
+    /// A plain Rust file (`.rs`) declares a `.rsx` module directly. Outou
+    /// never rewrites a `.rs` file's `mod` declaration (codegen only
     /// touches generated `.rs` files under `src/.generated/`), so there
     /// is no way to point such a declaration at the `.rsx` child's
-    /// generated output.
+    /// generated output. This is a permanent rule (issue #24).
     #[error(
-        "module `{name}` is declared from the plain Rust file `{}`; Phase 0 requires `.rsx` modules to be declared from `.rsx` files or from the crate root",
+        "module `{name}` is declared from the plain Rust file `{}`; `.rsx` modules must be declared from `.rsx` files or from the crate root",
         declared_in.display()
     )]
     RustDeclaresRsxChild {

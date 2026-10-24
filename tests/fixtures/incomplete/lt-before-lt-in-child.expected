@@ -1,0 +1,2 @@
+error: expected a tag name after `<`; write `{"<"}` to include a literal `<` in text
+ --> lt-before-lt-in-child.rsx:5:10

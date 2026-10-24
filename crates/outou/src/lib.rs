@@ -91,7 +91,7 @@ pub mod jsx {
     /// `<p>{count}</p>` with `count: State<usize>` renders the current value
     /// and renders it again when the state changes (issue #29).
     ///
-    /// TODO(alpha): the `&String`/`&&str`/smart-pointer strings and the
+    /// `TODO(alpha) (#31)`: the `&String`/`&&str`/smart-pointer strings and the
     /// `Option` of a number are gaps to close or to keep deliberately, see
     /// `docs/grammar.md` (Child types).
     ///

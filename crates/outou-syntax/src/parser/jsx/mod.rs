@@ -138,8 +138,8 @@ impl<'s> Parser<'s> {
     /// `</...>` is left alone: it is not a truncation, and a fragment's
     /// body and close are not scanned (reserved syntax, grammar §10).
     //
-    // TODO(alpha): two fragment shapes are still not recovered (no owning
-    // issue yet; found while fixing #18). (1) A
+    // `TODO(alpha) (#31)`: two fragment shapes are still not recovered
+    // (found while fixing #18). (1) A
     // complete `</Name>` after a top-level `<>` is left to the caller and
     // reaches Recovery output as a `<` operator followed by invalid Rust.
     // (2) A fragment *body* before a truncated `</` (`<>\n<p/>\n</`) is

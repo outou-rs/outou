@@ -5,18 +5,12 @@
 //! TOML dependency, so a short hand parser is used instead of pulling one
 //! in for five fields (issue #12).
 //!
-//! **`TODO(phase0)`** (issue #12 corpus review, F15/LOW): `toml` is now a
-//! workspace dependency (`crates/outou-cli/src/build/workspace.rs` reads
-//! `[workspace] members`/`exclude` with it) and already sits in
-//! `Cargo.lock`, so the "this crate does not otherwise need a TOML
-//! dependency" justification above no longer holds, and this ~285-line
-//! hand parser (plus its own hand-rolled tests) could become a ~15-line
-//! `#[derive(Deserialize)]` struct. It also has a real, if narrow,
-//! divergence from actual TOML: [`parse_assignment`] rejects a trailing
-//! `# comment` on a value line, since it requires the entire remainder of
-//! the line to be a quoted string. Not fixed here — a clean win, but not
-//! on any Gate's path; do it opportunistically the next time this file is
-//! touched for another reason.
+//! Kept as a small hand-written parser (issue #24): `toml` is available
+//! elsewhere in the workspace (`crates/outou-cli/src/build/workspace.rs`),
+//! so the missing dependency is no longer the reason; the reason is that
+//! the parser works, is covered by its own tests, and belongs to an internal
+//! tool. A `# comment` after a value (`repo = "https://..." # mirror`) is
+//! accepted, as in TOML; the values never contain a `"` or an escape.
 
 use std::fmt;
 
@@ -176,12 +170,15 @@ fn parse_assignment(line: &str, line_number: usize) -> Result<(&str, String), St
     })?;
     let key = key.trim();
     let rest = rest.trim();
-    let value = rest
-        .strip_prefix('"')
-        .and_then(|s| s.strip_suffix('"'))
-        .ok_or_else(|| {
-            format!("corpus.lock:{line_number}: value for `{key}` must be a double-quoted string, found `{rest}`")
-        })?;
+    let invalid = || {
+        format!("corpus.lock:{line_number}: value for `{key}` must be a double-quoted string, found `{rest}`")
+    };
+    let after_open = rest.strip_prefix('"').ok_or_else(invalid)?;
+    let (value, tail) = after_open.split_once('"').ok_or_else(invalid)?;
+    let tail = tail.trim();
+    if !tail.is_empty() && !tail.starts_with('#') {
+        return Err(invalid());
+    }
     Ok((key, value.to_string()))
 }
 
@@ -287,6 +284,28 @@ branch = "main"
 "#;
         let error = parse(text).unwrap_err();
         assert!(error.contains("unknown key `branch`"), "{error}");
+    }
+
+    #[test]
+    fn accepts_a_trailing_comment_after_a_value() {
+        let text = r##"
+[[corpus]]
+name = "a" # the name
+repo = "https://example.invalid/a.git" # mirror
+path = "a#b"
+tag = "1.0.0"
+"##;
+        let entries = parse(text).expect("valid lock file");
+        assert_eq!(entries[0].name, "a");
+        assert_eq!(entries[0].repo, "https://example.invalid/a.git");
+        assert_eq!(entries[0].path, "a#b");
+    }
+
+    #[test]
+    fn rejects_text_after_a_value_that_is_not_a_comment() {
+        let text = "[[corpus]]\nname = \"a\" b\n";
+        let error = parse(text).unwrap_err();
+        assert!(error.contains("must be a double-quoted string"), "{error}");
     }
 
     #[test]

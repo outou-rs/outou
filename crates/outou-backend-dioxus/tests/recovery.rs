@@ -298,6 +298,8 @@ fn every_incomplete_fixture_compiles_with_no_parse_errors() {
     );
     fs::write(temp_dir.join("Cargo.toml"), manifest).expect("writing throwaway Cargo.toml");
 
+    let mut checked = 0usize;
+    let mut failures: Vec<String> = Vec::new();
     for path in fixture_paths() {
         let source =
             fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
@@ -323,20 +325,30 @@ fn every_incomplete_fixture_compiles_with_no_parse_errors() {
             .unwrap_or_else(|e| panic!("running `cargo check` for {}: {e}", path.display()));
 
         let parse_errors = parse_error_messages(&output.stdout);
-        assert!(
-            parse_errors.is_empty(),
-            "{}: recovery output has a parse error (type/name-resolution errors are \
-             permitted):\n{}\n---generated---\n{}",
-            path.display(),
-            parse_errors.join("\n---\n"),
-            generated.rust,
-        );
+        checked += 1;
+        if !parse_errors.is_empty() {
+            failures.push(format!(
+                "{}: recovery output has a parse error (type/name-resolution errors are \
+                 permitted):\n{}\n---generated---\n{}",
+                path.display(),
+                parse_errors.join("\n---\n"),
+                generated.rust,
+            ));
+        }
     }
+    println!("recovery compile gate: checked {checked} fixtures");
+    assert!(
+        failures.is_empty(),
+        "{} of {checked} fixtures failed:\n{}",
+        failures.len(),
+        failures.join("\n=====\n")
+    );
 }
 
 /// Extracts the rendered text of every `error`-level diagnostic from
-/// `cargo check --message-format=json` output whose rustc `code` field
-/// is absent — the signature of a *parse* error. A type or
+/// `cargo check --message-format=json` output whose rustc `code` is `null`
+/// (rustc always writes the key; a parse error has no code), except the
+/// `aborting due to` summary — the signature of a *parse* error. A type or
 /// name-resolution error (`E0308` mismatched types, `E0425` cannot find
 /// value, `E0599` no method named, …) is assigned an `E`-code almost
 /// without exception; the parser's own errors, reported before any code
@@ -358,8 +370,19 @@ fn parse_error_messages(stdout: &[u8]) -> Vec<String> {
         if message.get("level").and_then(|l| l.as_str()) != Some("error") {
             continue;
         }
-        if message.get("code").is_some() {
+        // rustc always emits the key, with a JSON `null` when there is no
+        // code, so presence of the key proves nothing (the gate used to
+        // skip every error that way).
+        if message.get("code").is_some_and(|code| !code.is_null()) {
             // Has an E-code: a type/name-resolution error, permitted.
+            continue;
+        }
+        let text = message
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("");
+        if text.starts_with("aborting due to") {
+            // The summary line has no code either; it is not a parse error.
             continue;
         }
         let rendered = message
@@ -369,4 +392,38 @@ fn parse_error_messages(stdout: &[u8]) -> Vec<String> {
         parse_errors.push(rendered.to_string());
     }
     parse_errors
+}
+
+fn recovery_output(source: &str) -> String {
+    let parsed = outou_syntax::parse(source);
+    let opts = GenerateOptions::new(Uri::new("file:///gen.rs"), Uri::new("file:///a.rsx"));
+    DioxusBackend
+        .generate(&parsed, source, Mode::Recovery, &opts)
+        .expect("recovery generation never fails")
+        .rust
+}
+
+/// `rsx!` accepts a child as `name { .. }` or `{expr}`, never as a bare call,
+/// so the placeholder must be braced in child position.
+#[test]
+fn recovery_element_in_child_position_is_braced() {
+    let rust = recovery_output("fn App() -> Element {\n    <div>a <3> b</div>\n}\n");
+    assert!(
+        rust.contains("{::outou::__private::recovery_element()}"),
+        "{rust}"
+    );
+}
+
+/// A closing tag swallowed by an island that lost its `}` must not leave a
+/// placeholder next to the operand it follows.
+#[test]
+fn swallowed_closing_tag_after_an_operand_leaves_no_placeholder() {
+    let source = "fn App(v: Vec<i32>) -> Element {\n    <ul>\n        {v.iter().map(|x| <li>{x}</li>)\n    </ul>\n}\n";
+    let rust = recovery_output(source);
+    assert!(!rust.contains("</ul>"), "{rust}");
+    assert!(
+        !rust.contains(") ::outou")
+            && !rust.contains(")\n    ::outou::__private::recovery_element"),
+        "{rust}"
+    );
 }

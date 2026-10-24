@@ -449,11 +449,11 @@ fn classify_child(child: &ast::JsxChild, offset: u32) -> Option<Cursor> {
 /// completion always reflects the current buffers rather than a plan-time
 /// snapshot.
 ///
-/// TODO(phase0) (issue #9 Gate 3 review, L15's SKIP item): this reparses
+/// `TODO(alpha) (#31)` (issue #9 Gate 3 review, L15's SKIP item): this reparses
 /// **every** `.rsx` file in the workspace on every tag/attribute-name
 /// keystroke (plus one further reparse of the current document inside
 /// `local_completion`, whose own `RsxDocument` already parsed it). Fine
-/// at Phase 0 scale (`examples/phase0-app`'s two files reparse in well
+/// at the current scale (`examples/phase0-app`'s two files reparse in well
 /// under a millisecond); caching each file's last parse (invalidated on
 /// its own edit) or reusing the current document's own parse is future
 /// work, not required for Gate 3.

@@ -1,0 +1,27 @@
+---
+title: "[Cross-cutting] Post-alpha backlog: owner of the deferred TODO(alpha) items"
+milestone: "Alpha"
+gate: "—"
+droppable: yes
+labels: [alpha, cross-cutting, droppable, todo-triage]
+---
+
+| | |
+|---|---|
+| **Gate** | none (cross-cutting; owner of every `TODO(alpha)` that was deferred past the alpha) |
+| **Droppable** | Yes. Nothing here blocks the alpha. |
+
+Owner of the items that issue #24 (triage of `TODO(phase0)`) and the A1–A5 gates re-tagged `TODO(alpha)` instead of fixing. Each item keeps its own `TODO(alpha) (#<this issue>)` marker in the source or docs; this issue is the single place to schedule them after the alpha. Nothing in this list is a gate condition.
+
+- [ ] **Formatter** (`outou fmt`): CRLF input; `max_width` is not read from `rustfmt.toml`; the fit check uses the line's indent instead of the placeholder's column (a 115-column line stays unwrapped); 4-space dedent assumption; cwd and edition are not forwarded to rustfmt (the edition defaults to 2021).
+- [ ] **Language server:** rename and references for keyword-named props (`type` to `r#type`, ledger row 29); `prepareRename` on a closing tag returns the opening tag's range; URIs are compared lexically (no RFC 3986 normalisation); Windows drive-letter URIs; tag and attribute-name completion re-parses every `.rsx` file per key (L15); `textDocument/formatting` runs synchronously with no deadline and ignores `options`; `replan` leaves the workspace empty if it fails part-way; external edits to files that are not open are not picked up (`didChangeWatchedFiles` is not implemented).
+- [ ] **Grammar and parser:** `#[react_import]` payload (React interop phase); fragments (`<>`); whether `< span/>` (a space after `<`) is accepted as an element in child position, as it is at the top level.
+- [ ] **Diagnostics wording:** "Phase 0" appears in user-facing messages (`crates/outou-modules/src/error.rs`, `crates/outou-syntax/src/parser/diag.rs`).
+- [ ] **Front-end warnings** (such as the `<select>` warnings) are shown by `outou check` and the language server but not by `outou build` or `outou cargo`.
+- [ ] **Children:** `&String`, `&&str`, `Arc<str>`, `Rc<str>`, `Cow<str>`, `Box<str>`, `Option<number>` and iterators of strings are not accepted as children.
+- [ ] **Windows** is out of scope for the alpha (see `crates/outou-cli/README.md`).
+- [ ] **Known test flakes:** `fmt::tests::run_calls_format_source_exactly_once_per_changed_file` (ETXTBSY) and three timing tests in `outou-syntax`'s perf and recovery suites under load.
+- [ ] **Other known gaps recorded in the ledger:** `r#key` and other raw identifiers in JSX attribute names are not normalised; `bare_rust_expr` treats a semicolon-free multi-statement attribute island as one expression; the case-insensitive-filesystem stale-file cleanup bug in `outou build` (`docs/alpha-results.md` A1 (f), from issue #20).
+- [ ] **Existing `TODO(alpha)` markers in the ledger** (`docs/backend-leakage.md` rows 35, 37, 38, 39, 40, 41, 42, 43 and 45): each row's open question is owned by this issue, see ledger row 50. Rows are not rewritten.
+- [ ] **State/Signal misuse messages:** the vocabulary of the errors for a `State<T>` or `Signal<T>` used as a child where `T` is not renderable, and for a non-`Send` state (`docs/alpha-results.md` A5, rows 42 and 45(b)); the wording is not yet Outou's.
+- [ ] **`outou fmt` writes in place, not atomically:** a failure part-way through the write (a full disk, reproducible with `ulimit -f`) can leave a `.rsx` file truncated. A temporary file next to the resolved target plus a rename fixes it and keeps a symlinked file a symlink.

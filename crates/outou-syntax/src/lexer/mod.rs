@@ -44,7 +44,7 @@ pub mod rust_token;
 /// never starts with a digit (M11). Non-ASCII bytes (`>= 0x80`) are
 /// accepted the same way [`rust_token`]'s own identifier scanner accepts
 /// them: Outou never needs to validate Unicode XID precisely (a
-/// deliberate `TODO(phase0)` — see [`scan_jsx_name`]'s doc).
+/// deliberate, accepted leniency — see [`scan_jsx_name`]'s doc).
 pub(crate) fn is_jsx_name_start_byte(b: u8) -> bool {
     b == b'_' || b.is_ascii_alphabetic() || b >= 0x80
 }
@@ -92,11 +92,13 @@ fn scan_jsx_name_segment(bytes: &[u8], pos: usize) -> usize {
 /// names), so every one of grammar §5's `JsxName` occurrences agrees on
 /// what counts as one name.
 ///
-/// `TODO(phase0)`: non-XID-continue bytes above 0x7F are accepted at
-/// every level (not just top-level vs. nested — that dependence was
-/// checked and rejected, see issue #4's fix list, item 19's "SKIP"
-/// entry); a full Unicode XID check is not worth the dependency in
-/// Phase 0.
+/// Accepted leniency (issue #24, grammar §5): non-XID-continue bytes
+/// above 0x7F are accepted at every level (not just top-level vs.
+/// nested — that dependence was checked and rejected, see issue #4's fix
+/// list, item 19's "SKIP" entry). A name with such a byte is passed to
+/// rustc, which rejects an invalid identifier at the `.rsx` position; a
+/// full Unicode XID check would add a dependency to turn one rustc error
+/// into one Outou error.
 pub(crate) fn scan_jsx_name(bytes: &[u8], mut pos: usize) -> usize {
     pos = scan_jsx_name_segment(bytes, pos);
     while bytes.get(pos) == Some(&b'-') {

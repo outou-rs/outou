@@ -1,6 +1,6 @@
 //! The line-width budget the JSX pretty printer wraps at.
 //!
-//! `TODO(phase0)`: read this from the project's `rustfmt.toml`
+//! `TODO(alpha) (#31)`: read this from the project's `rustfmt.toml`
 //! (`max_width`) when one is present and cheap to locate, rather than
 //! always using rustfmt's own default. The repository's own
 //! `rustfmt.toml` does not set `max_width`, so the default is exactly
@@ -8,7 +8,7 @@
 //! wraps JSX attributes at a different width than the option it set for
 //! plain Rust.
 //!
-//! `TODO(phase0)`: every [`fits`] call site is handed the *line's*
+//! `TODO(alpha) (#31)`: every [`fits`] call site is handed the *line's*
 //! leading indent (`crate::snippet::indent_of_line_containing`), not the
 //! placeholder's actual column on that line — deliberately, since the
 //! placeholder's exact column is not always meaningful (see that

@@ -6,12 +6,13 @@
 //! function `textDocument/formatting` in `outou-lsp` calls
 //! (`docs/phase0/issues/13-formatter.md`: "one pipeline, not two").
 //!
-//! `TODO(phase0)`: writing a formatted file (`std::fs::write` in
-//! [`format_one_file`]) is not atomic — a write-to-temp-file-then-rename
-//! would survive a crash or a full disk mid-write without corrupting the
-//! original, at the cost of an extra rename per file and needing to pick
-//! a temp path this process is guaranteed write access to next to the
-//! original.
+//! Writing a formatted file (`std::fs::write` in [`format_one_file`]) is
+//! in place and not atomic. That is accepted for the alpha (issue #24): a
+//! failure part-way through the write, such as a full disk, can leave the
+//! file truncated (reproducible with `ulimit -f`). Writing a temporary file
+//! next to the resolved target and renaming it over the target would fix
+//! that and still keep a symlinked `.rsx` file a symlink; it was left out of
+//! the alpha (`TODO(alpha) (#31)`).
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;

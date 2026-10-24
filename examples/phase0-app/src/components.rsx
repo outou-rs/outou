@@ -14,7 +14,8 @@ pub struct User {
 /// `cargo test --doc` requires a `[lib]` target to link the doctest
 /// against — a Cargo constraint independent of JSX or Outou, and a
 /// genuine Phase 0 finding (`crates/outou-cli/README.md`). Doc tests
-/// containing JSX are not required either way (`TODO(phase0)`);
+/// containing JSX are plain Rust by design and are never lowered
+/// (accepted in issue #24);
 /// `tests/fixtures/workspace/ui-kit` (a library crate) is where this
 /// same doc-comment shape is exercised for real, under
 /// `cargo test --doc -p ui-kit`.

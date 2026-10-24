@@ -203,16 +203,16 @@ pub fn generated_location_to_source(
     if resolved.is_empty() {
         return MappedLocation::Unmapped;
     }
-    // TODO(phase0) (issue #9 Gate 3 review, MEDIUM-15's SKIP item): a
+    // Accepted behavior (ADR 0007, issue #24): a
     // mapping with several sources (e.g. an element name coming from both
     // its opening and closing tag, ADR 0007's own example) always uses
     // only the *first* one here; a diagnostic whose generated span
     // legitimately belongs to more than one `.rsx` file — or more than
     // one position in the same file — is only ever shown at the first.
-    // ADR 0007 permits this ("if a `.rsx` file produced the location, map
-    // back to it" does not mandate showing every candidate), and no
-    // observed case in Gate 3's target program needs more; a proper fix
-    // is a per-source-file diagnostic union, deferred past Phase 0.
+    // ADR 0007's reverse-mapping rule ("if a `.rsx` file produced the
+    // location, map back to it") asks for one location, not a union of
+    // all candidates, so showing the diagnostic at the first source is the
+    // intended behavior (accepted in issue #24, not a pending item).
     let (source_uri, source_span) = resolved.remove(0);
     let Some(source_doc) = workspace.rsx.get(source_uri.as_str()) else {
         return MappedLocation::Unmapped;
@@ -346,7 +346,7 @@ pub fn generated_range_to_all_sources(
         outou_sourcemap::NarrowOutcome::Exact { source, span } => {
             vec![outou_sourcemap::SourceSpan::new(source, span)]
         }
-        // TODO(phase0) (docs/backend-leakage.md row 29): this correctly
+        // `TODO(alpha) (#31)` (docs/backend-leakage.md row 29): this correctly
         // refuses rather than guesses (a proportional guess across a
         // transformed mapping is confidently wrong more often than
         // right, ADR 0013), but it means a keyword-named prop (`type`,
@@ -434,12 +434,9 @@ mod tests {
     use outou_sourcemap::{file_uri, Mapping, MappingKind, SourceMap, SourceSpan};
     use std::path::Path;
 
-    // TODO(phase0) (issue #9 Gate 3 review, L15's SKIP item): this fixture
-    // is duplicated verbatim in `diagnostics.rs`'s own test module, and
-    // several other test modules in this crate hand-build a similar
-    // `Workspace { .. }` literal. A shared `#[cfg(test)] pub(crate) fn
-    // test_workspace()` beside `documents::test_generated_unit` would
-    // remove the duplication; not required for Gate 3.
+    // Several test modules in this crate hand-build a similar
+    // `Workspace { .. }` literal; this one is no longer a verbatim copy of
+    // another, and each test states its own sources.
     fn sample_workspace() -> (Workspace, lsp_types::Uri, lsp_types::Uri) {
         // Build a minimal registry/document pair by hand rather than
         // going through `Workspace::load` (which needs real files on

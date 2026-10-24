@@ -1,3 +1,5 @@
+error: closing tag `</ul>` has no matching opening tag
+ --> unclosed-island-mid-file.rsx:12:5
 error: missing closing tag `</ul>`
  --> unclosed-island-mid-file.rsx:10:5
 error: unclosed body of function `App`, expected `}` to close this `{`

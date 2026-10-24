@@ -61,7 +61,7 @@ pub struct UnmappableRename {
 /// its `range` mapped back to `.rsx` coordinates, or the whole response
 /// replaced with `null` (not renameable here) if that position has no
 /// source at all.
-/// TODO(phase0) (issue #14 review, MEDIUM-8): [`mapping::generated_location_to_source`]
+/// `TODO(alpha) (#31)` (issue #14 review, MEDIUM-8): [`mapping::generated_location_to_source`]
 /// always resolves a multi-source mapping to its *first* source (the
 /// opening tag, ADR 0007's own documented behavior, shared with hover/
 /// definition). A `prepareRename` request made with the cursor on a
@@ -474,7 +474,7 @@ mod tests {
         });
         translate_prepare_rename_response(&workspace, &generated_uri, &mut value);
         // Known limitation (issue #14 review, MEDIUM-8, see this
-        // function's own TODO(phase0)): reverse-maps to the first
+        // function's own `TODO(alpha) (#31)`): reverse-maps to the first
         // (opening tag) source per `generated_location_to_source`'s
         // multi-source rule, *even if* the original request's cursor was
         // on the closing tag — this test only exercises the generated

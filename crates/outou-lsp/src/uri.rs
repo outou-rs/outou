@@ -6,7 +6,7 @@
 //! this module is the one place that does it, so a future encoding change
 //! only has to be made here.
 //!
-//! TODO(phase0) (issue #14 review, LOW-14): every URI comparison in this
+//! `TODO(alpha) (#31)` (issue #14 review, LOW-14): every URI comparison in this
 //! crate (`HashMap<String, _>` keys built from [`to_outou`]'s output,
 //! `Registry::is_generated`, equality checks throughout `crate::rename`/
 //! `crate::references`/`crate::semantic_tokens`) is **lexical**, on the
@@ -58,10 +58,10 @@ pub fn outou_uri_str_to_path(uri: &str) -> Option<PathBuf> {
 /// [`outou_sourcemap::file_uri`]'s percent-encoding. Returns `None` for a
 /// non-`file` scheme (nothing this server would ever ask about).
 ///
-/// TODO(phase0) (issue #9 Gate 3 review, LOW-16): `strip_prefix("file://")`
+/// `TODO(alpha) (#31)` (issue #9 Gate 3 review, LOW-16): `strip_prefix("file://")`
 /// turns a Windows drive-letter URI (`file:///C:/...`) into `/C:/...`,
 /// which is not a valid Windows path. Not reachable on the platforms
-/// Phase 0 runs on (macOS/Linux); fixing it properly needs a URL crate
+/// the alpha runs on (macOS/Linux); fixing it properly needs a URL crate
 /// dependency this server does not otherwise have a reason to take.
 pub fn to_path(uri: &lsp_types::Uri) -> Option<PathBuf> {
     let text = uri.as_str();
