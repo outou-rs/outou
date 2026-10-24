@@ -8,5 +8,5 @@ use outou::prelude::*;
 /// source layout (`crates/outou-modules/README.md`).
 #[component]
 pub fn Circle(radius: f64) -> Element {
-    ::outou::__private::rsx! { div { class: "circle", {radius.to_string()}, } }
+    ::outou::__private::rsx! { div { class: "circle", {::outou::__private::child(radius.to_string())}, } }
 }

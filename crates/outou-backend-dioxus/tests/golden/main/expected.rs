@@ -8,12 +8,12 @@ use components::{Field, UserCard};
 
 #[component]
 fn Greeting(name: String) -> Element {
-    ::outou::__private::rsx! { h1 { "Hello ", {name}, } }
+    ::outou::__private::rsx! { h1 { "Hello ", {::outou::__private::child(name)}, } }
 }
 
 #[component]
 fn TagList(tags: Vec<String>) -> Element {
-    ::outou::__private::rsx! { ul { class: "tags", {tags.iter().map(|tag| { let __outou_key_0 = ::outou::__private::key(&(tag.clone())); ::outou::__private::rsx! { li { key: "{__outou_key_0}", {tag.clone()}, } } })}, } }
+    ::outou::__private::rsx! { ul { class: "tags", {::outou::__private::child(tags.iter().map(|tag| { let __outou_key_0 = ::outou::__private::key(&(tag.clone())); ::outou::__private::rsx! { li { key: "{__outou_key_0}", {::outou::__private::child(tag.clone())}, } } }))}, } }
 }
 
 #[component]
@@ -21,13 +21,13 @@ fn App() -> Element {
     let user = load_user();
     let tags = vec!["rust".to_string(), "jsx".to_string(), "phase0".to_string()];
 
-    ::outou::__private::rsx! { main { class: "app", Greeting { name: "Outou", }, {
+    ::outou::__private::rsx! { main { class: "app", Greeting { name: "Outou", }, {::outou::__private::child(
             if user.is_some() {
                 ::outou::__private::rsx! { UserCard { user: user.unwrap(), } }
             } else {
                 ::outou::__private::rsx! { p { "No user", } }
             }
-        }, TagList { tags: tags, }, form { Field { label: "Name", r#type: "text", }, }, } }
+        )}, TagList { tags: tags, }, form { Field { label: "Name", r#type: "text", }, }, } }
 }
 
 fn load_user() -> Option<components::User> {

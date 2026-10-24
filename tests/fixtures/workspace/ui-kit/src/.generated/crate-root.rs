@@ -33,7 +33,7 @@ pub fn add_one(x: i32) -> i32 {
 /// `#[path]` into a differently named source file.
 #[component]
 pub fn Card(title: String) -> Element {
-    ::outou::__private::rsx! { div { class: "card", h2 { {title}, }, Circle { radius: util::double(1) as f64, }, Button { label: "OK", }, } }
+    ::outou::__private::rsx! { div { class: "card", h2 { {::outou::__private::child(title)}, }, Circle { radius: util::double(1) as f64, }, Button { label: "OK", }, } }
 }
 
 #[cfg(test)]

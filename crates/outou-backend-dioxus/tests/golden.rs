@@ -43,6 +43,13 @@ fn cases() -> Vec<Case> {
                 .join("tests/golden/keys/input.rsx"),
             module_paths: vec![],
         },
+        // Issue #27: every shape of child expression, wrapped in `child(..)`.
+        Case {
+            name: "children".to_string(),
+            source_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/golden/children/input.rsx"),
+            module_paths: vec![],
+        },
     ];
 
     let formatting_dir = root.join("tests/fixtures/formatting");

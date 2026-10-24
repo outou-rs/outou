@@ -135,8 +135,9 @@ pub fn translate(message: &CompilerMessage, resolver: &mut dyn Resolver) -> Opti
         _ => return None,
     };
     let mut ctx = Context::new(message.manifest_path.as_path(), resolver);
-    let translated_message = vocabulary::translate_message(&message.message);
-    let was_translated = translated_message != message.message;
+    let named_message = name_the_element(&message.message);
+    let translated_message = vocabulary::translate_message(&named_message);
+    let was_translated = translated_message != named_message;
     let translated_message = ctx.clean(&translated_message);
 
     let all_spans = || {
@@ -170,7 +171,7 @@ pub fn translate(message: &CompilerMessage, resolver: &mut dyn Resolver) -> Opti
         message
             .children
             .iter()
-            .filter_map(|child| child_note(child, &mut ctx)),
+            .filter_map(|child| child_note(&message.message, child, &mut ctx)),
     );
 
     let span = match &location {
@@ -336,12 +337,55 @@ const TYPE_NAME_FILE_NOTES: &[&str] = &[
     "consider using `--verbose` to print the full type name",
 ];
 
+/// The message of the facade's child diagnostic (`outou::jsx::IntoChild`,
+/// issue #27). rustc follows it with helps that describe the trait's
+/// machinery rather than the user's mistake: the first, from the delegating
+/// implementation, says `Iterator` is not implemented for the type. It is
+/// dropped; the facade's own notes carry the advice. For a `Vec` it is the
+/// one real hint (a `Vec` is not an iterator), so it becomes [`VEC_HELP`].
+const CHILD_DIAGNOSTIC: &str = "cannot be rendered as a JSX child";
+
+/// The help that `Iterator` is not implemented for the child's type.
+const NOT_AN_ITERATOR_HELP: &str = "the trait `Iterator` is not implemented for";
+
+/// What to say instead of [`NOT_AN_ITERATOR_HELP`] when the child is a `Vec`.
+const VEC_HELP: &str =
+    "a `Vec` is not an iterator; use `.into_iter()` (or `.iter()`) to render its items";
+
+/// A note or help that names the facade's `IntoChild` trait or its marker
+/// types (`the following other types implement trait `IntoChild<M>``,
+/// `required for `X` to implement `IntoChild<outou::jsx::Delegated<_>>``).
+/// They describe the facade's implementation, never the mistake, and appear
+/// under every message the trait's bound can produce (E0277, E0283).
+const CHILD_TRAIT_MARKER: &str = "IntoChild<";
+
+/// rustc spells an `Element` as its alias target. Inside a child diagnostic
+/// that is the user's `Element`; left alone, the `VNode` in it would make
+/// the whole message read as backend vocabulary.
+const ELEMENT_EXPANSION: &str = "Result<VNode, RenderError>";
+
+/// The message with an `Element` named as such, for a child diagnostic.
+fn name_the_element(message: &str) -> String {
+    if message.contains(CHILD_DIAGNOSTIC) {
+        message.replace(ELEMENT_EXPANSION, "Element")
+    } else {
+        message.to_string()
+    }
+}
+
 /// A `note:` / `help:` child as a [`Note`]. A child with a span outside
 /// the workspace or from a macro expansion explains the backend's code
 /// (`method defined here`, `required by a bound in ...`), so it is
 /// dropped whole.
-fn child_note(child: &RawChild, ctx: &mut Context<'_>) -> Option<Note> {
-    if child.spans.iter().any(is_outside_the_workspace_or_expanded)
+fn child_note(message: &str, child: &RawChild, ctx: &mut Context<'_>) -> Option<Note> {
+    if message.contains(CHILD_DIAGNOSTIC) && child.message.starts_with(NOT_AN_ITERATOR_HELP) {
+        return message.starts_with("`Vec<").then(|| Note {
+            level: "help".to_string(),
+            text: VEC_HELP.to_string(),
+        });
+    }
+    if child.message.contains(CHILD_TRAIT_MARKER)
+        || child.spans.iter().any(is_outside_the_workspace_or_expanded)
         || TYPE_NAME_FILE_NOTES
             .iter()
             .any(|prefix| child.message.starts_with(prefix))
@@ -551,6 +595,54 @@ mod tests {
         assert_eq!(out.label, None);
         assert_eq!(out.notes.len(), 1);
         assert_eq!(out.notes[0].text, "a plain note");
+    }
+
+    #[test]
+    fn the_trait_helps_under_a_jsx_child_diagnostic_are_dropped_but_its_notes_stay() {
+        let primary = span_json("src/.generated/a.rs", 4, 9, true, "");
+        let helps = r#"{"level":"help","message":"the trait `Iterator` is not implemented for `bool`","spans":[]},
+               {"level":"note","message":"`bool` is not a child; use `if` or `Option`","spans":[]},
+               {"level":"help","message":"the following other types implement trait `IntoChild<M>`:\n  char\n  f32","spans":[]},
+               {"level":"note","message":"required for `Option<usize>` to implement `IntoChild<outou::jsx::Delegated<_>>`","spans":[]}"#;
+        let child = with(
+            "error",
+            "`bool` cannot be rendered as a JSX child",
+            std::slice::from_ref(&primary),
+            helps,
+        );
+        let out = translate(&child, &mut Fake(Some(unit()))).unwrap();
+        assert_eq!(out.notes.len(), 1, "{:?}", out.notes);
+        assert_eq!(
+            out.notes[0].text,
+            "`bool` is not a child; use `if` or `Option`"
+        );
+
+        // The `Iterator` help under any other message is not touched; the
+        // helps that name `IntoChild<..>` go under every message (E0283).
+        let other = with("error", "something else", &[primary], helps);
+        let out = translate(&other, &mut Fake(Some(unit()))).unwrap();
+        assert_eq!(out.notes.len(), 2, "{:?}", out.notes);
+    }
+
+    #[test]
+    fn a_vec_child_is_named_vec_of_element_and_told_to_use_into_iter() {
+        let primary = span_json("src/.generated/a.rs", 4, 9, true, "");
+        let helps = r#"{"level":"help","message":"the trait `Iterator` is not implemented for `Vec<Result<VNode, RenderError>>`","spans":[]}"#;
+        let child = with(
+            "error",
+            "`Vec<Result<VNode, RenderError>>` cannot be rendered as a JSX child",
+            &[primary],
+            helps,
+        );
+        let out = translate(&child, &mut Fake(Some(unit()))).unwrap();
+        assert_eq!(
+            out.diagnostic.message,
+            "`Vec<Element>` cannot be rendered as a JSX child"
+        );
+        assert!(!out.was_translated);
+        assert_eq!(out.notes.len(), 1, "{:?}", out.notes);
+        assert_eq!(out.notes[0].level, "help");
+        assert!(out.notes[0].text.contains(".into_iter()"));
     }
 
     #[test]

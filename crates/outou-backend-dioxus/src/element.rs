@@ -9,7 +9,7 @@ use outou_codegen::{Mode, Writer};
 use outou_sourcemap::MappingKind;
 use outou_syntax::ast::{Island, JsxAttributeValue, JsxChild, JsxElement, JsxTag};
 
-use crate::attribute::lower_attribute;
+use crate::attribute::{is_single_expression, lower_attribute};
 use crate::escape::rust_string_literal;
 use crate::expr::lower_parts;
 use crate::key::KeyBindings;
@@ -127,7 +127,7 @@ fn lower_child(
             writer.raw(",");
         }
         JsxChild::Expression(island) => {
-            lower_island(writer, source, island, mode);
+            lower_child_island(writer, source, island, mode);
             writer.raw(",");
         }
         JsxChild::Element(nested) => {
@@ -139,6 +139,29 @@ fn lower_child(
             writer.raw(",");
         }
     }
+}
+
+/// Lowers a child expression `{ … }` (issue #27) to
+/// `{::outou::__private::child(EXPR)}`, so the facade's `IntoChild`, not
+/// the backend's own conversion, decides what may be a child.
+///
+/// A single expression is passed as the argument as it is written
+/// (`child(count)`, `child(if c { <a/> } else { <b/> })`), with no braces of
+/// its own. A block would end the life of the temporaries in its tail early
+/// (2024 edition: `{String::from("a").as_str()}` is E0716), and a brace-less
+/// argument is only valid Rust for one expression, see
+/// [`crate::expr_shape`]. Every other shape (statements with or without a
+/// `;`, an item, an empty or comment-only island, a broken part) keeps its
+/// braces: `child({ … })`, where the block's value is the child and an empty
+/// block is the unit value, which renders nothing.
+fn lower_child_island(writer: &mut Writer, source: &str, island: &Island, mode: Mode) {
+    writer.raw(&format!("{{{PRIVATE_PATH}::child("));
+    if is_single_expression(island) {
+        lower_parts(writer, source, &island.parts, island.span, mode);
+    } else {
+        lower_island(writer, source, island, mode);
+    }
+    writer.raw(")}");
 }
 
 /// Lowers a `{ … }` island exactly as it was written: the braces are

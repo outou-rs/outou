@@ -255,11 +255,11 @@
       "generated": {
         "start": {
           "line": 10,
-          "character": 55
+          "character": 81
         },
         "end": {
           "line": 10,
-          "character": 73
+          "character": 99
         }
       },
       "sources": [
@@ -281,11 +281,11 @@
       "generated": {
         "start": {
           "line": 10,
-          "character": 77
+          "character": 104
         },
         "end": {
           "line": 10,
-          "character": 79
+          "character": 106
         }
       },
       "sources": [
@@ -307,7 +307,7 @@
       "generated": {
         "start": {
           "line": 10,
-          "character": 79
+          "character": 106
         },
         "end": {
           "line": 11,

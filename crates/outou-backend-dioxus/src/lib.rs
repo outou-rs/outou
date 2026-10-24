@@ -18,6 +18,7 @@ mod block;
 mod element;
 mod escape;
 mod expr;
+mod expr_shape;
 mod item;
 mod key;
 mod module;
@@ -153,9 +154,9 @@ mod tests {
         assert!(generated
             .rust
             .contains("fn Greeting(name: String) -> Element"));
-        assert!(generated
-            .rust
-            .contains("::outou::__private::rsx! { h1 { \"Hello \", {name}, } }"));
+        assert!(generated.rust.contains(
+            "::outou::__private::rsx! { h1 { \"Hello \", {::outou::__private::child(name)}, } }"
+        ));
     }
 
     /// Issue #8 fix list step 7, decision 4(b): a single bare Rust
@@ -213,7 +214,7 @@ mod tests {
         let generated = generate(source, Mode::Strict).expect("generation succeeds");
         assert!(
             generated.rust.contains(
-                "{ let __outou_key_0 = ::outou::__private::key(&(x.clone())); ::outou::__private::rsx! { li { key: \"{__outou_key_0}\", {x.clone()}, } } }"
+                "{ let __outou_key_0 = ::outou::__private::key(&(x.clone())); ::outou::__private::rsx! { li { key: \"{__outou_key_0}\", {::outou::__private::child(x.clone())}, } } }"
             ),
             "{}",
             generated.rust
@@ -281,8 +282,57 @@ mod tests {
     fn island_rsx_call_gets_its_own_key_block() {
         let source = "fn f() { <ul key={a}>{v.iter().map(|x| <li key={x}></li>)}</ul>; }";
         let generated = generate(source, Mode::Strict).expect("generation succeeds");
-        let expected = "{ let __outou_key_0 = ::outou::__private::key(&(a)); ::outou::__private::rsx! { ul { key: \"{__outou_key_0}\", {v.iter().map(|x| { let __outou_key_0 = ::outou::__private::key(&(x)); ::outou::__private::rsx! { li { key: \"{__outou_key_0}\", } } })}, } } }";
+        let expected = "{ let __outou_key_0 = ::outou::__private::key(&(a)); ::outou::__private::rsx! { ul { key: \"{__outou_key_0}\", {::outou::__private::child(v.iter().map(|x| { let __outou_key_0 = ::outou::__private::key(&(x)); ::outou::__private::rsx! { li { key: \"{__outou_key_0}\", } } }))}, } } }";
         assert!(generated.rust.contains(expected), "{}", generated.rust);
+    }
+
+    /// Issue #27: a child expression is wrapped in the facade's `child(..)`,
+    /// with no braces of its own when it is one expression, so Rust's
+    /// `unused_braces` has nothing to report.
+    #[test]
+    fn a_single_expression_child_is_wrapped_without_extra_braces() {
+        let source = "fn f() { <p>{n}{1 + 2}{if c { <b></b> } else { <i></i> }}</p>; }";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        let expected = "p { {::outou::__private::child(n)}, {::outou::__private::child(1 + 2)}, {::outou::__private::child(if c { ::outou::__private::rsx! { b { } } } else { ::outou::__private::rsx! { i { } } })}, }";
+        assert!(generated.rust.contains(expected), "{}", generated.rust);
+    }
+
+    #[test]
+    fn a_statement_child_keeps_the_braces_of_its_block() {
+        let source = "fn f() { <p>{let m = x.then(|| <b></b>); m}</p>; }";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        assert!(
+            generated.rust.contains(
+                "{::outou::__private::child({let m = x.then(|| ::outou::__private::rsx! { b { } }); m})}"
+            ),
+            "{}",
+            generated.rust
+        );
+    }
+
+    #[test]
+    fn a_semicolon_inside_a_nested_block_does_not_force_braces() {
+        let source = "fn f() { <p>{if c { let a = 1; a } else { 2 }}</p>; }";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        assert!(
+            generated
+                .rust
+                .contains("{::outou::__private::child(if c { let a = 1; a } else { 2 })}"),
+            "{}",
+            generated.rust
+        );
+    }
+
+    #[test]
+    fn a_child_expression_maps_to_its_source() {
+        let source = "fn f() { <p>{count}</p>; }";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        let start = source.find("count").unwrap() as u32;
+        let gen_start = generated.rust.find("child(count)").unwrap() as u32 + "child(".len() as u32;
+        let mapped = generated.source_map.mappings.iter().any(|m| {
+            m.generated.start == gen_start && m.sources.iter().any(|s| s.span.start == start)
+        });
+        assert!(mapped, "{:#?}", generated.source_map);
     }
 
     #[test]

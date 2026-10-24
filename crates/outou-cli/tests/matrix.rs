@@ -28,6 +28,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use outou_cli::build::{build, BuildOptions};
@@ -46,10 +47,15 @@ fn repo_root() -> PathBuf {
 /// for the same reason `support::copy_to_temp` is: `build()` canonicalizes
 /// its manifest directory internally, and macOS's `TMPDIR` is itself
 /// under a symlink).
+/// Distinguishes temp directories made in the same clock tick by tests that
+/// run in parallel (`SystemTime` has microsecond resolution on macOS).
+static TEMP_SEQUENCE: AtomicU32 = AtomicU32::new(0);
+
 fn copy_to_temp(src: &Path, label: &str) -> PathBuf {
     let dest = std::env::temp_dir().join(format!(
-        "outou-cli-matrix-{label}-{}-{}",
+        "outou-cli-matrix-{label}-{}-{}-{}",
         std::process::id(),
+        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -133,10 +139,20 @@ fn git(dir: &Path, args: &[&str]) -> Output {
 /// `dioxus` build only ever happens once per `cargo test` invocation, not
 /// once per test.
 fn cargo(dir: &Path, args: &[&str]) -> Output {
+    cargo_in_target(dir, &repo_root().join("target"), args)
+}
+
+/// [`cargo`] with an explicit `CARGO_TARGET_DIR`. The publish tests use their
+/// own temp workspace's `target/`: `cargo package` unpacks the `outou` crate
+/// into an overlay registry whose files carry a fixed (2006) mtime, so a
+/// target directory shared across runs can treat a stale `outou` rlib from an
+/// earlier run as newer than the freshly unpacked sources, and the build
+/// then fails against the old facade (`cannot find function child`).
+fn cargo_in_target(dir: &Path, target_dir: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO"))
         .args(args)
         .current_dir(dir)
-        .env("CARGO_TARGET_DIR", repo_root().join("target"))
+        .env("CARGO_TARGET_DIR", target_dir)
         .output()
         .unwrap_or_else(|e| {
             panic!(
@@ -514,7 +530,10 @@ fn workspace_fixture_cargo_matrix() {
 fn outou_and_ui_kit_publish_dry_run_succeeds_together() {
     let workspace_dir = make_standalone_publish_workspace(true);
 
+    let target_dir = workspace_dir.join("target");
+
     let package = Command::new(env!("CARGO_BIN_EXE_outou"))
+        .env("CARGO_TARGET_DIR", &target_dir)
         .arg("package")
         .arg("--manifest-dir")
         .arg(workspace_dir.join("ui-kit"))
@@ -549,8 +568,9 @@ fn outou_and_ui_kit_publish_dry_run_succeeds_together() {
         "the packaged .crate must ship the generated Rust (ADR 0008):\n{listed}"
     );
 
-    let publish = cargo(
+    let publish = cargo_in_target(
         &workspace_dir,
+        &target_dir,
         &[
             "publish",
             "--dry-run",
@@ -582,6 +602,7 @@ fn outou_package_fails_when_generated_output_is_gitignored() {
     let workspace_dir = make_standalone_publish_workspace(false);
 
     let package = Command::new(env!("CARGO_BIN_EXE_outou"))
+        .env("CARGO_TARGET_DIR", workspace_dir.join("target"))
         .arg("package")
         .arg("--manifest-dir")
         .arg(workspace_dir.join("ui-kit"))
@@ -618,8 +639,9 @@ fn outou_package_fails_when_generated_output_is_gitignored() {
 fn make_standalone_publish_workspace(negate_generated: bool) -> PathBuf {
     let root = repo_root();
     let dir = std::env::temp_dir().join(format!(
-        "outou-cli-matrix-publish-{}-{}",
+        "outou-cli-matrix-publish-{}-{}-{}",
         std::process::id(),
+        TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed),
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

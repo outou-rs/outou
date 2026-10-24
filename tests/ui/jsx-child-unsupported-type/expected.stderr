@@ -1,0 +1,6 @@
+error: `Price` cannot be rendered as a JSX child
+ --> $DIR/input.rsx:10:14
+error: `bool` cannot be rendered as a JSX child
+ --> $DIR/input.rsx:11:14
+error: `bool` cannot be rendered as a JSX child
+ --> $DIR/input.rsx:12:14

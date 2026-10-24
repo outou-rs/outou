@@ -13,6 +13,7 @@ Phase 0: Week 4 (Gate 2).
 ## Public API besides the prelude
 
 - `outou::jsx::IntoKey`: the sealed trait behind a JSX `key` (strings and integers; narrower than before #26, when any `Display` type was accepted: `char`, `bool`, floating point numbers and custom `Display` types are no longer keys). A key of any other type is a compile error in Outou's words, at the key in the `.rsx` file (issue #26, ADR 0014). `__private::key` is the generated-code entry point that binds each key.
+- `outou::jsx::IntoChild<M>`: the sealed trait behind a JSX child expression (`<p>{expr}</p>`), issue #27 and ADR 0014. Text, elements, `Option`s of text or of an element and iterators of elements are children as before; integers, floating point numbers and `char`, and references to them (`&usize`), now render as their `Display` text (`{count}` is `2`, without `.to_string()`). **`bool` is not a child** (use `if` or `Option`), nor is any other type, among them an `Option` of a number (`.map(|n| n.to_string())`), a `Vec<Element>` (`.into_iter()`), `&String`, `Arc<str>`/`Rc<str>`/`Cow<str>`/`Box<str>` and `Signal<usize>` (`TODO(alpha)`, issue #29): the error is Outou's, at the child in the `.rsx` file (``` `bool` cannot be rendered as a JSX child ```). `M` is a marker type that keeps the implementations apart; it is always inferred. `__private::child` is the generated-code entry point that wraps every child.
 
 ## Opt-in features
 

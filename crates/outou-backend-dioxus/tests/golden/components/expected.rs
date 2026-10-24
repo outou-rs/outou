@@ -29,7 +29,7 @@ pub fn initial(user: &User) -> Option<char> {
 
 #[component]
 pub fn UserCard(user: User) -> Element {
-    ::outou::__private::rsx! { div { class: "user-card", {user.name}, } }
+    ::outou::__private::rsx! { div { class: "user-card", {::outou::__private::child(user.name)}, } }
 }
 
 /// A labeled form field. `type` is a JSX attribute name that happens to
@@ -40,7 +40,7 @@ pub fn UserCard(user: User) -> Element {
 /// representable via `r#type`).
 #[component]
 pub fn Field(label: String, r#type: String) -> Element {
-    ::outou::__private::rsx! { div { class: "field", label { r#for: "id", {label}, }, input { id: "id", r#type: r#type.clone(), }, } }
+    ::outou::__private::rsx! { div { class: "field", label { r#for: "id", {::outou::__private::child(label)}, }, input { id: "id", r#type: r#type.clone(), }, } }
 }
 
 /// A second card, added as a Gate 3 regression fixture (issue #9 review,
@@ -56,7 +56,7 @@ pub struct MyProps {
 
 #[component]
 pub fn Card2(config: MyProps) -> Element {
-    ::outou::__private::rsx! { div { class: "card2", {config.title}, } }
+    ::outou::__private::rsx! { div { class: "card2", {::outou::__private::child(config.title)}, } }
 }
 
 #[cfg(test)]

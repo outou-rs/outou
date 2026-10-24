@@ -44,7 +44,7 @@ pub fn FilterBar() -> Element {
                     }
                 }
             >
-                All ({board.tasks().len().to_string()})
+                All ({board.tasks().len()})
             </button>
             {Status::ALL.into_iter().map(|status| <button
                 key={status.label()}
@@ -54,7 +54,7 @@ pub fn FilterBar() -> Element {
                     filter.set(next);
                 }}
             >
-                {status.label()} ({board.count(status).to_string()})
+                {status.label()} ({board.count(status)})
             </button>)}
         </div>
     </div>

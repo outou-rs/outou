@@ -5,5 +5,5 @@ use outou::prelude::*;
 fn App() -> Element {
     let name = "Outou";
 
-    ::outou::__private::rsx! { div { "Hello ", {name}, } }
+    ::outou::__private::rsx! { div { "Hello ", {::outou::__private::child(name)}, } }
 }

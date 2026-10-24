@@ -107,6 +107,10 @@ const KNOWN_REWRITES: &[(&str, &str)] = &[
         "PropsBuilder",
         "this component is missing a required property",
     ),
+    // Since issue #27 every child goes through the facade's `IntoChild`,
+    // which has its own Outou message, so generated code no longer reaches
+    // this one directly. It stays as the net for a message that still
+    // names the trait (a note, or hand-written Rust that calls the backend).
     (
         "IntoDynNode",
         "this value cannot be used as element content here",

@@ -387,7 +387,7 @@ fn a_plain_rust_file_path_is_normalised_and_backend_spans_are_dropped() {
     let mut backend = span(
         "src/.generated/components/user.rs",
         &generated,
-        "::outou::__private::rsx! { div { class: \"user\", {name}, } }",
+        "::outou::__private::rsx! { div { class: \"user\", {::outou::__private::child(name)}, } }",
         false,
         Some("required by a bound introduced by this call"),
     );
@@ -405,7 +405,7 @@ fn a_plain_rust_file_path_is_normalised_and_backend_spans_are_dropped() {
     let name = span(
         "src/.generated/components/user.rs",
         &generated,
-        "{name}",
+        "{::outou::__private::child(name)}",
         true,
         None,
     );
@@ -454,7 +454,7 @@ fn a_backend_worded_message_is_translated() {
         vec![span(
             "src/.generated/components/user.rs",
             &generated,
-            "{name}",
+            "{::outou::__private::child(name)}",
             true,
             Some("the trait `IntoDynNode` is not implemented"),
         )],
@@ -564,11 +564,12 @@ fn recorded_rustc_output_never_shows_the_generated_layout_or_dependencies() {
 fn a_closure_type_in_a_message_is_mapped_to_the_rsx_position() {
     let fixture = Fixture::new("cargo-cli-closure");
     let generated = fixture.read("src/.generated/components/user.rs");
-    let (gline, gcol) = line_col(&generated, "{name}");
+    // The expression `name` inside the generated `child(name)` call.
+    let (gline, gcol) = line_col(&generated, "name)}");
     let (rline, rcol) = line_col(&fixture.read("src/components/user.rsx"), "{name}");
     let closure = format!(
         "{{closure@src/.generated/components/user.rs:{gline}:{gcol}: {gline}:{}}}",
-        gcol + 6
+        gcol + 4
     );
     let lost = "{closure@src/.generated/nowhere.rs:1:2: 1:5}";
     fixture.set_cargo_stdout(&[message_with_children(
@@ -579,7 +580,7 @@ fn a_closure_type_in_a_message_is_mapped_to_the_rsx_position() {
         vec![span(
             "src/.generated/components/user.rs",
             &generated,
-            "{name}",
+            "{::outou::__private::child(name)}",
             true,
             Some(&format!("found closure `{closure}`")),
         )],
@@ -608,7 +609,7 @@ fn an_include_str_path_is_hidden_and_the_resolution_rule_is_explained() {
     let mut primary = span(
         "src/.generated/components/user.rs",
         &generated,
-        "{name}",
+        "{::outou::__private::child(name)}",
         true,
         None,
     );
@@ -900,7 +901,7 @@ fn explanation_notes_list_only_the_codes_that_were_shown() {
         vec![span(
             "src/.generated/components/user.rs",
             &generated,
-            "{name}",
+            "{::outou::__private::child(name)}",
             true,
             None,
         )],

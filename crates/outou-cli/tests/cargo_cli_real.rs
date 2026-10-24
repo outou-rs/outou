@@ -312,6 +312,125 @@ fn a_key_of_an_unsupported_type_is_reported_at_the_key_expression() {
     assert_no_backend_text(&stderr);
 }
 
+/// Replaces the `board.tasks().len()` child of the dogfood board's filter
+/// bar with `replacement`, runs `outou cargo check` and returns the colour-free
+/// stderr, with the `.rsx` position the replacement starts at.
+fn check_with_child(replacement: &str) -> (String, String) {
+    let _target = lock_shared_target();
+    let board = temp_board();
+    let dir = board.path();
+    let file = dir.join("app/src/filter_bar.rsx");
+    let source = fs::read_to_string(&file).unwrap();
+    let anchor = "board.tasks().len()";
+    assert!(
+        source.contains(anchor),
+        "the example changed; update this test"
+    );
+    let broken = source.replacen(anchor, replacement, 1);
+    fs::write(&file, &broken).unwrap();
+    let offset = broken.find(replacement).unwrap();
+    let line = broken[..offset].matches('\n').count() + 1;
+    let column = broken[..offset]
+        .rsplit('\n')
+        .next()
+        .unwrap()
+        .chars()
+        .count()
+        + 1;
+
+    let output = outou_cargo(dir, &["check"]);
+
+    let stderr = without_cargo_progress(&String::from_utf8_lossy(&output.stderr));
+    println!("{stderr}");
+    assert!(!output.status.success(), "{stderr}");
+    (stderr, format!("app/src/filter_bar.rsx:{line}:{column}"))
+}
+
+/// The facade's own words only: none of the trait or marker types.
+fn assert_no_child_trait_text(stderr: &str) {
+    assert_no_backend_text(stderr);
+    for internal in [
+        "Delegated",
+        "Displayed",
+        "SealedChild",
+        "IntoChild",
+        "VNode",
+    ] {
+        assert!(
+            !stderr.contains(internal),
+            "output must not contain {internal:?}:\n{stderr}"
+        );
+    }
+}
+
+/// Issue #27: a `bool` child is reported through `outou cargo` at the
+/// child expression in the `.rsx` file, in Outou's words, with the advice to
+/// use `if` or `Option` and none of the backend's trait or marker types.
+#[test]
+#[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
+fn a_bool_child_is_reported_at_the_child_expression() {
+    let (stderr, position) = check_with_child("board.tasks().is_empty()");
+
+    assert!(
+        stderr.contains("`bool` cannot be rendered as a JSX child"),
+        "expected the Outou message in:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("`if` or `Option`"),
+        "expected the advice in:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(&position),
+        "expected {position} in:\n{stderr}"
+    );
+    assert_no_child_trait_text(&stderr);
+    assert!(!stderr.contains("Iterator"), "{stderr}");
+}
+
+/// Issue #27: an `Option` of a number is not a child, and the note says how
+/// to write it; the `IntoChild<..Delegated<_>>` note is not shown.
+#[test]
+#[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
+fn an_option_of_a_number_child_is_told_to_map_to_text() {
+    let (stderr, position) = check_with_child("Some(board.tasks().len())");
+
+    assert!(
+        stderr.contains("`Option<usize>` cannot be rendered as a JSX child"),
+        "expected the Outou message in:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(".map(|n| n.to_string())"),
+        "expected the advice in:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(&position),
+        "expected {position} in:\n{stderr}"
+    );
+    assert_no_child_trait_text(&stderr);
+}
+
+/// Issue #27: a `Vec<Element>` is named as such (not as the backend's node
+/// type) and the one useful help, that a `Vec` is not an iterator, stays.
+#[test]
+#[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
+fn a_vec_of_elements_child_is_told_to_use_into_iter() {
+    let (stderr, position) = check_with_child("Vec::<Element>::new()");
+
+    assert!(
+        stderr.contains("`Vec<Element>` cannot be rendered as a JSX child"),
+        "expected the Outou message in:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(".into_iter()"),
+        "expected the advice in:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(&position),
+        "expected {position} in:\n{stderr}"
+    );
+    assert_no_child_trait_text(&stderr);
+}
+
 #[test]
 fn colored_progress_lines_are_removed_and_diagnostics_kept() {
     let colored = "\x1b[1m\x1b[92m   Compiling\x1b[0m dioxus-rsx v0.7.10\n\

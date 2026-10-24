@@ -64,6 +64,16 @@
 //!    batch, [`translate::TwinFilter`] for the stream `outou cargo`
 //!    prints; one implementation). The notes that list error codes then
 //!    name only the codes shown ([`translate::ExplanationNotes`]).
+//! 10. **The trait helps around a JSX child diagnostic** (issue #27). Under a
+//!     message ending in "cannot be rendered as a JSX child", rustc's help
+//!     that `Iterator` is not implemented for the type is dropped (for a
+//!     `Vec` it becomes "a `Vec` is not an iterator; use `.into_iter()`"),
+//!     and `Vec<Result<VNode, RenderError>>` is first named `Vec<Element>`
+//!     so the message is not mistaken for backend vocabulary. Under any
+//!     message, a note or help that names `IntoChild<..>` (the list of
+//!     implementing types, `required for .. to implement
+//!     IntoChild<..Delegated<_>>`) is dropped. They describe the facade's
+//!     implementation, not the mistake.
 
 pub mod locate;
 pub mod parse;

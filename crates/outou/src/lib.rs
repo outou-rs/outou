@@ -41,11 +41,113 @@ pub mod prelude {
 
 pub mod jsx {
     //! Types that JSX syntax gives a meaning to: the `key` of a JSX element
-    //! (`<li key={id}>`, `<Row key="new" />`).
+    //! (`<li key={id}>`, `<Row key="new" />`) and the value of a child
+    //! expression (`<p>{count}</p>`).
+
+    use dioxus::dioxus_core::{DynamicNode, IntoDynNode};
 
     mod sealed {
         pub trait Sealed {}
+
+        /// Seals [`super::IntoChild`]: the marker parameter is as free as
+        /// the trait's own, so sealing needs the same parameter.
+        pub trait SealedChild<M> {}
     }
+
+    /// Marker for the children the backend already knows how to render.
+    /// `A` is the backend's own marker; it is carried only so that the
+    /// delegating impl does not overlap the number impls below.
+    #[doc(hidden)]
+    pub struct Delegated<A>(std::marker::PhantomData<A>);
+
+    /// Marker for the children Outou renders as text: numbers and `char`.
+    #[doc(hidden)]
+    pub struct Displayed;
+
+    /// A value that can be a JSX child: `<p>{value}</p>`.
+    ///
+    /// Implemented for text (`&str`, `String`, formatted strings), for
+    /// integers, floating point numbers and `char`, and for references to
+    /// them (`&usize`, what `v.iter()` hands out), all rendered as their
+    /// `Display` text (so `{3.5}` is the text `3.5`), for an `Element`, for
+    /// an `Option` of text or of an `Element` (`None` renders nothing) and
+    /// for an iterator of elements.
+    ///
+    /// Not children, with the way to write them:
+    ///
+    /// - an `Option` of a number or `char`: `{maybe.map(|n| n.to_string())}`;
+    /// - a `Vec<Element>`: `{items.into_iter()}` (or `.iter()`), because a
+    ///   `Vec` is not an iterator;
+    /// - an iterator of text: map each item to an element first;
+    /// - `&String`, `&&str`, `Arc<str>`, `Rc<str>`, `Cow<str>`, `Box<str>`:
+    ///   `{s.as_str()}` or `{s.to_string()}`;
+    /// - a `Signal<usize>`: read it first (the state API is issue #29).
+    ///
+    /// TODO(alpha): the `&String`/`&&str`/smart-pointer strings, the `Option`
+    /// of a number and a `Signal` of a displayable value are gaps to close
+    /// or to keep deliberately, see `docs/grammar.md` (Child types).
+    ///
+    /// **`bool` is not a child.** Rust has no `cond && <x />` that keeps its
+    /// type, so a condition is written with `if` or with `Option`:
+    ///
+    /// ```text
+    /// {if ready { <b>done</b> } else { <i>wait</i> }}
+    /// {ready.then(|| <b>done</b>)}
+    /// ```
+    ///
+    /// The trait is sealed; it cannot be implemented outside Outou. A child
+    /// of any other type is reported at the child expression in the `.rsx`
+    /// file:
+    ///
+    /// ```text
+    /// error[E0277]: `bool` cannot be rendered as a JSX child
+    /// ```
+    ///
+    /// The type parameter `M` only keeps the implementations apart; it is
+    /// always inferred and never written.
+    #[diagnostic::on_unimplemented(
+        message = "`{Self}` cannot be rendered as a JSX child",
+        label = "this is not text, a number, an element, an `Option` of text or an element, or an iterator of elements",
+        note = "a JSX child can be text (`&str`, `String`), a number, a `char`, an element, an `Option` of text or of an element, or an iterator of elements",
+        note = "`bool` is not a child; write a conditional child with `if` or `Option`, for example `{{if ready {{ <b>done</b> }} else {{ <i>wait</i> }}}}` or `{{ready.then(|| <b>done</b>)}}`",
+        note = "convert any other value to text first, for example with `.to_string()`; an `Option` of a number needs `.map(|n| n.to_string())`"
+    )]
+    pub trait IntoChild<M>: sealed::SealedChild<M> {
+        /// The child as a backend node. Generated code only; not public API.
+        #[doc(hidden)]
+        fn into_child(self) -> DynamicNode;
+    }
+
+    impl<T: IntoDynNode<A>, A> sealed::SealedChild<Delegated<A>> for T {}
+    impl<T: IntoDynNode<A>, A> IntoChild<Delegated<A>> for T {
+        fn into_child(self) -> DynamicNode {
+            self.into_dyn_node()
+        }
+    }
+
+    macro_rules! displayed_children {
+        ($($displayed:ty),* $(,)?) => {
+            $(
+                impl sealed::SealedChild<Displayed> for $displayed {}
+                impl IntoChild<Displayed> for $displayed {
+                    fn into_child(self) -> DynamicNode {
+                        self.to_string().into_dyn_node()
+                    }
+                }
+                // `v.iter().map(|n| <li>{n}</li>)` hands out `&usize`.
+                impl sealed::SealedChild<Displayed> for &$displayed {}
+                impl IntoChild<Displayed> for &$displayed {
+                    fn into_child(self) -> DynamicNode {
+                        self.to_string().into_dyn_node()
+                    }
+                }
+            )*
+        };
+    }
+
+    displayed_children!(
+        u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64, char,
+    );
 
     /// A value that can be used as a JSX `key`: a string or an integer.
     ///
@@ -186,6 +288,16 @@ pub mod __private {
     #[doc(hidden)]
     pub fn key<K: crate::jsx::IntoKey + ?Sized>(key: &K) -> String {
         key.to_key()
+    }
+
+    /// Turns a JSX child expression into the node the backend renders.
+    /// Generated code wraps every `{ … }` child in this call, so a child of
+    /// an unsupported type (a `bool`, a custom struct) is reported here, in
+    /// Outou's words (`crate::jsx::IntoChild`), and a number is rendered as
+    /// text.
+    #[doc(hidden)]
+    pub fn child<M>(child: impl crate::jsx::IntoChild<M>) -> dioxus::dioxus_core::DynamicNode {
+        child.into_child()
     }
 
     /// Recovery-mode placeholder for a JSX element the parser could not

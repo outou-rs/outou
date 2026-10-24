@@ -13,6 +13,7 @@ use outou_syntax::lexer::rust_token::{next_token, RtKind};
 
 use crate::element::lower_island;
 use crate::escape::{is_plain_ident, is_raw_identifiable_keyword, rust_string_literal};
+use crate::expr_shape::parts_are_one_expression;
 use crate::key::KeyBindings;
 
 /// Lowers one attribute: its key, then `: `, then its value.
@@ -118,6 +119,23 @@ fn bare_rust_expr(island: &Island) -> Option<&RustSource> {
     }
 }
 
+/// Whether `text` holds any token other than comments (and whitespace): an
+/// island with none, `{}` or `{/* note */}`, has no expression in it.
+fn has_code(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut pos = 0usize;
+    loop {
+        let tok = next_token(bytes, pos);
+        if tok.start == tok.end {
+            return false;
+        }
+        if !matches!(tok.kind, RtKind::LineComment | RtKind::BlockComment) {
+            return true;
+        }
+        pos = tok.end;
+    }
+}
+
 /// Whether `text` (a Rust expression's own source) contains a `;` not
 /// nested inside `(`, `[` or `{` — the shape of a Rust *statement*
 /// sequence, which cannot be spliced into an expression position without
@@ -125,18 +143,40 @@ fn bare_rust_expr(island: &Island) -> Option<&RustSource> {
 /// a naive byte scan) so a `;` inside a string, char or comment is never
 /// mistaken for a statement separator.
 fn has_top_level_semicolon(text: &str) -> bool {
+    scan_semicolon(text, &mut 0)
+}
+
+/// Whether `island` is one Rust *expression* (never a statement sequence,
+/// never empty or comment-only, never containing a broken part), however
+/// many nested JSX elements it holds: the shape that can be passed as a
+/// single call argument with no braces of its own (issue #27). Statements
+/// that need no `;` (`if c {} "x"`, `fn f() {} f()`) are not an expression
+/// either; see [`crate::expr_shape`].
+pub(crate) fn is_single_expression(island: &Island) -> bool {
+    let has_code = island.parts.iter().any(|part| match part {
+        Expr::Rust(rust) => has_code(&rust.text),
+        Expr::Jsx(_) => true,
+        Expr::Error(_) => false,
+    });
+    let has_error = island
+        .parts
+        .iter()
+        .any(|part| matches!(part, Expr::Error(_)));
+    has_code && !has_error && parts_are_one_expression(&island.parts)
+}
+
+fn scan_semicolon(text: &str, depth: &mut i32) -> bool {
     let bytes = text.as_bytes();
     let mut pos = 0usize;
-    let mut depth = 0i32;
     loop {
         let tok = next_token(bytes, pos);
         if tok.start == tok.end {
             break;
         }
         match tok.kind {
-            RtKind::OpenDelim => depth += 1,
-            RtKind::CloseDelim => depth -= 1,
-            RtKind::Punct if depth == 0 && tok.text(text) == ";" => return true,
+            RtKind::OpenDelim => *depth += 1,
+            RtKind::CloseDelim => *depth -= 1,
+            RtKind::Punct if *depth == 0 && tok.text(text) == ";" => return true,
             _ => {}
         }
         pos = tok.end;
