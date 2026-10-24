@@ -151,12 +151,18 @@ fn update_returns_nothing_and_with_returns_the_closure_result() {
     });
 }
 
+// Calls the `Clone` impl through a generic bound, so clippy's `clone_on_copy`
+// (which fires on a direct clone of a `Copy` type) does not apply.
+fn cloned<T: Clone>(value: &T) -> T {
+    value.clone()
+}
+
 #[component]
 fn Identity() -> Element {
     let first = use_state(|| 1);
     let copy = first;
     assert!(first == copy);
-    assert!(first == Clone::clone(&first));
+    assert!(first == cloned(&first));
     assert!(first != use_state(|| 1));
     rsx! { p { "ok" } }
 }

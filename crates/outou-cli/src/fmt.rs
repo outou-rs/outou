@@ -227,7 +227,7 @@ mod tests {
             rustfmt_program: script.to_string_lossy().to_string(),
             ..FormatOptions::default()
         };
-        run_with_options(std::slice::from_ref(&file), false, &options);
+        let _ = run_with_options(std::slice::from_ref(&file), false, &options);
 
         let count = std::fs::read_to_string(&counter)
             .map(|s| s.lines().count())
