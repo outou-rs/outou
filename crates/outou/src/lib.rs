@@ -23,13 +23,33 @@ pub mod prelude {
     // `docs/backend-leakage.md` ("Macro expansion names in scope").
     #[doc(hidden)]
     pub use crate::__private::{dioxus_core, dioxus_elements, dioxus_signals, Props};
+
+    // Alpha gate A4 (issue #22): the temporary backend's existing state and
+    // launch APIs, re-exported unchanged so an application can be
+    // interactive. Not Outou-owned hooks or signals: the alpha decides the
+    // runtime, it does not build one. Each name is a backend leakage
+    // recorded in ADR 0010 and `docs/backend-leakage.md` rows 31-32.
+    pub use crate::__private::{
+        use_context, use_context_provider, use_signal, ReadableExt, Signal, WritableExt,
+    };
+
+    /// Starts the application in the browser with `app` as the root
+    /// component. Needs the `web` feature of `outou`.
+    #[cfg(feature = "launch")]
+    pub use crate::__private::launch;
 }
 
 /// Backend re-exports used by generated code. **Not public API.**
 #[doc(hidden)]
 pub mod __private {
     pub use dioxus::dioxus_core;
-    pub use dioxus::prelude::{component, dioxus_elements, dioxus_signals, rsx, Element, Props};
+    pub use dioxus::prelude::{
+        component, dioxus_elements, dioxus_signals, rsx, use_context, use_context_provider,
+        use_signal, Element, Props, ReadableExt, Signal, WritableExt,
+    };
+
+    #[cfg(feature = "launch")]
+    pub use dioxus::launch;
 
     /// Recovery-mode placeholder for a JSX element the parser could not
     /// recover a name for (grammar §9 — `outou-backend-dioxus`'s

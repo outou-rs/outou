@@ -1,0 +1,6 @@
+# Alpha gate A4 dogfood application (issue #22): an internal task board
+# written in `.rsx`. Standalone Cargo workspace, like `examples/phase0-app`
+# (excluded from the repository root workspace, see the root `Cargo.toml`).
+[workspace]
+resolver = "2"
+members = ["board-core", "app"]

@@ -1,0 +1,111 @@
+# dogfood-board
+
+The alpha gate A4 dogfood application (issue #22, `docs/alpha.md`): a small internal task board written in `.rsx`, built to be lived in rather than to exercise a gate. The subject was chosen by the project owner on 2026-10-24: a task / case board with a form to add and edit tasks, a filtered list, a detail view and state shared between components. It runs in a browser through the temporary backend.
+
+It is deliberately the smallest thing a team could actually use: one board in memory (no persistence, no server), seeded with three sample tasks.
+
+## Layout
+
+| Path | What it is |
+|---|---|
+| `board-core/` | Library crate in plain Rust (no UI): `Task`, `Status`, `Priority`, `TaskDraft` validation, the immutable `Board`, `Filter`. Has its own unit tests. The app depends on it. |
+| `app/src/main.rsx` | `App`: provides the shared state, lays out the page, picks the side panel; `main` calls `launch`. Plus three headless render tests (initial render, and the `selected` option of the edit form and detail view, F18). |
+| `app/src/state.rs` | Plain Rust module in a mixed `.rs` / `.rsx` crate: `AppState` (board, filter and panel signals) provided through context. |
+| `app/src/filter_bar.rsx` | Search box and status chips with counts. |
+| `app/src/task_list.rsx` | The filtered list; each row has a done checkbox and opens the detail view. |
+| `app/src/task_detail.rsx` | Read-only view, status select, Edit and Delete. |
+| `app/src/task_form.rsx` | One form for create and edit, with per-field validation messages. |
+
+The directory is its own Cargo workspace (`board-core` + `app`) and is excluded from the repository's root workspace, like `examples/phase0-app`. `app/src/.generated/` is gitignored for applications.
+
+The app imports only `use outou::prelude::*;`. Its `Cargo.toml` lists `outou` and `board-core`, never the backend. Everything beyond `component` and `Element` that it uses from the prelude (`use_signal`, `Signal`, `use_context_provider`, `use_context`, `ReadableExt`, `WritableExt`, `launch`) is a re-export of the temporary backend's existing API, recorded in ADR 0010 and `docs/backend-leakage.md` rows 31 and 32.
+
+## Building
+
+From the repository root:
+
+```bash
+cargo run -p outou-cli -- build --manifest-dir examples/dogfood-board
+cd examples/dogfood-board
+cargo build
+cargo test
+cargo clippy --all-targets -- -D warnings
+cargo check --target wasm32-unknown-unknown     # the browser build, without bundling
+```
+
+`outou build` on the workspace root builds every member that has an `.rsx` crate root (`board-core` has none and is skipped). Re-run it whenever a `.rsx` file changes. CI runs exactly these steps (`dogfood-board` job in `.github/workflows/ci.yml`).
+
+## Running in a browser
+
+This needs dioxus-cli (`dx`) and the `wasm32-unknown-unknown` target:
+
+```bash
+cargo install dioxus-cli --version 0.7.10      # once; also provides `dx`
+rustup target add wasm32-unknown-unknown       # once
+cargo run -p outou-cli -- build --manifest-dir examples/dogfood-board   # from the repo root
+cd examples/dogfood-board/app
+dx serve --platform web
+```
+
+Re-run `outou build` after editing a `.rsx` file; there is no watch mode that regenerates (`dx` rebuilds Rust, it does not know about `.rsx`). If a `dx` version cannot find the web platform feature, `dx serve --platform web --features web` is the explicit spelling; with dioxus-cli 0.7.10 it was not needed (F9).
+
+**Status: run in a real browser on 2026-10-24** (Chrome, `dx serve --platform web --port 8099`, driven by hand by the project's manager). Environment: dioxus-cli 0.7.10 installed with `cargo install dioxus-cli --version 0.7.10`; `dx` downloaded `wasm-bindgen-cli` 0.2.129 and esbuild by itself. The `dx` on `PATH` there was Deno's unrelated command, so `~/.cargo/bin/dx` had to be called by absolute path (F8). The browser console showed no errors during the walkthrough. Result of the walkthrough below: all 13 steps behaved as expected except that step 12 (length limits) was not run in the browser and that the `<select>` controls displayed the wrong option (F18, fixed in the application after the run and **not yet re-checked in a browser**). Automated coverage is narrower than the walkthrough: see "Manual walkthrough".
+
+## Manual walkthrough
+
+Run in a browser on 2026-10-24 (see "Running in a browser"). Start the app (`dx serve --platform web`) and open the printed URL. Expected results are in parentheses.
+
+1. **First load.** (Heading "Task board"; three tasks listed; chips show `All (3)`, `To do (3)`, `In progress (0)`, `Done (0)`; the side panel says "Select a task, or create a new one.") **Observed: as expected.**
+2. **Open a detail view.** Click "Write the quarterly report". (The side panel shows title, assignee `ana`, priority High and notes; the row is highlighted.) **Observed: as expected, except that the highlight cannot be seen: there is no stylesheet, so the `selected` class has no visual effect (by design).**
+3. **Change status from the detail view.** Choose "In progress" in the Status select. (Chips become `To do (2)`, `In progress (1)`; the row's meta text becomes "In progress / High".) **Observed: as expected.**
+4. **Complete from the list.** Tick the checkbox on "Renew the office lease". (Its meta text becomes "Done / Medium"; chips `Done (1)`; the detail view, if open on it, would show Done.) **Observed: as expected.**
+5. **Filter by status.** Click the `Done (1)` chip. (Only the completed task is listed; the chip is highlighted.) Click `All (3)` to reset. **Observed: as expected.**
+6. **Search.** Type `ken` in the search box. (Only "Replace the meeting-room display" remains; matching is case-insensitive over title and assignee.) Type `zzz`. (The list shows "No tasks match the current filter.") Clear the box. **Observed: as expected** (`ken` shows one task; `kenzzz` shows the empty message).
+7. **Create, validation.** Click "New task", then "Save" with the title empty. (The form stays open and shows "Title is required.") **Observed: as expected.**
+8. **Create, success.** Type a title, an assignee and notes, pick priority High, click "Save". (The form is replaced by the new task's detail view; the list has four tasks with the new one last, status "To do"; chip counts update.) **Observed: as expected.**
+9. **Edit.** In the detail view click "Edit". (The form opens pre-filled with the task's current values.) Change the title and Save. (Back to the detail view with the new title; status unchanged.) Open "Edit" on a different task. (The form shows that other task's values, not the previous task's: the form is keyed per task.) **Observed: as expected, so the key does what F14 reasoned.** Exception, F18: the Priority select showed "Low" for a High task although the stored value stayed High.
+10. **Cancel.** Click "Edit", change a field, click "Cancel". (The detail view returns with the original values.) Click "New task" then "Cancel". (The side panel returns to the hint.) **Observed: Edit then Cancel as expected; New task then Cancel was not run.**
+11. **Delete.** Open a task, click "Delete". (It disappears from the list and the panel returns to the hint; counts update.) **Observed: as expected.**
+12. **Validation limits.** In the form, enter a title longer than 80 characters. (Save shows "Title must be at most 80 characters.") An assignee longer than 40 characters shows its own message below the assignee field. **Not run in the browser** (covered by `board-core` unit tests only).
+13. **Refresh the page.** (All changes are lost and the three sample tasks return: there is no persistence by design.) **Observed: as expected.**
+
+Two further observations from the run. Step 8: the new-task form's Priority select initially showed "Low" while the internal value was Medium (it changed to Medium after a failed Save re-rendered the form); step 2 onwards, the detail view's Status select showed the right option right after being changed, but "To do" for an "In progress" task after opening another task and coming back. Both are F18. **Re-checked in the browser after the `selected` fix (2026-10-24, same setup):** the new-task form shows Priority Medium at once; the edit form of the High task shows High; the detail view of an "In progress" task still shows "In progress" after opening another task and coming back. The browser console showed no errors.
+
+**What is automated and what is not.** The domain rules behind steps 3 to 12 (trimming, both limits counted in characters, every error reported at once, ids never reused, filter combination, immutability of the board) are covered by headless tests in `board-core`. The app has three headless render tests (`app/src/main.rsx`): the whole tree once, `TaskForm` for a High-priority task and `TaskDetail` for a To-do task, the last two checking which `<option>` carries `selected`. None of them clicks or types. **The interactive flows (clicking, typing, state changes between renders) are covered only by the manual walkthrough**, which is a record of one hand-run on 2026-10-24, not a repeatable automated check (F13).
+
+## What worked without friction
+
+- A mixed crate: `state.rs` (plain Rust) next to five `.rsx` modules, each `mod` declared in `main.rsx`, built by `outou build` + `cargo build` with no special handling.
+- A workspace library (`board-core`) with no `.rsx` in it, next to the application, under one `outou build`.
+- JSX as the tail of a `match` arm, a whole function body that is a single `{ match .. }` island, closures with statement bodies as `onclick` / `oninput` / `onsubmit`, `.map(..)` returning JSX with `key`, `Option::map` returning JSX, and `r#type` / `for` attribute names.
+- `outou fmt` is idempotent over the whole app and its output still builds.
+- A second `outou build` rewrote nothing (every file reported unchanged), and `cargo xtask determinism` still passes.
+
+## Friction log
+
+Every rough edge met while building the app, not only backend leakage. Disposition is one of: **fixed** during the alpha; **deferred** with an owning `TODO(alpha)` or issue; **accepted**. "Row N" is `docs/backend-leakage.md`. No GitHub issues were created; items marked "propose issue" are suggestions for the owner.
+
+| # | Friction | Ledger | Disposition |
+|---|---|---|---|
+| F1 | `key="new"` (a static string) fails the build with `Key must not be a static string. Make sure to use a formatted string like key: "{value}"`: backend wording, advice in backend syntax, reported at `src/.generated/crate-root.rs:31`, not in `.rsx`. | row 35 | **Deferred**: `TODO(alpha)` in row 35, to be decided with the runtime decision (A5). The app uses an integer key instead of a workaround string. |
+| F2 | `key={format!("edit-{id}")}` fails with `Failed to parse formatted segment: Expected Ident or Expression` (the key expression is spliced into a format string and the first inner `}`, here the one in the `format!` string, ends the segment early. A string literal as such is fine: `key={String::from("edit")}` compiles; verified by building variants, see row 38). | rows 35, 38 | **Deferred**: same owner as F1. A fix inside `key_interpolation_literal` would be a design change, not a small patch. |
+| F3 | `{board.count(status)}` (an integer child) is rejected: ``the trait bound `usize: IntoDynNode<..>` is not satisfied``. JSX in React renders numbers. The message names `IntoDynNode` and lists unrelated types. | row 34 | **Deferred**: Outou has no rule for rendering non-string values; needs a language decision (A5). The app writes `.to_string()`. |
+| F4 | `signal.set(T { f, ..signal.read().clone() })` fails with E0502 and a `GenerationalRef<Ref<..>>` type in the message. Hit four times; every `set` that depends on the current value is a trap. | row 33 | **Accepted** for the alpha (it is the signals API, row 8). Reconsider in A5: an Outou-owned update API would not have this. |
+| F5 | `cargo build` / `cargo clippy` diagnostics for `.rsx` code point at `src/.generated/<file>.rs:<line>:<col>`, where `rsx!` expansion makes the line hundreds of characters long, and never at the `.rsx` position. Only the language server and the UI-test harness map diagnostics back. Warnings in plain modules appear as `src/.generated/../state.rs`. | related: rows 13, 19, 24 | **Deferred**: `TODO(alpha)`: a thin mapping layer for `cargo build` output (for example consuming `--message-format=json` through the existing source maps) is the biggest day-to-day gap seen here. Propose an issue for the owner; not built in A4. |
+| F6 | Nothing interactive was available from `outou::prelude`; building the app required deciding and re-exporting a set of backend names, including two traits (`ReadableExt`, `WritableExt`) whose absence shows up as `no method named read found for struct Signal<..>`. | row 31, ADR 0010 | **Fixed** for the app by the recorded re-exports; the API itself is **deferred** to A5. |
+| F7 | Launching needs a renderer feature on the facade (`outou/web`) and a `launch` function; enabling the feature adds about 2,400 lines to the repository root `Cargo.lock` although no workspace member enables it. | row 32 | **Accepted** (opt-in, off by default). `cargo +1.85 check --workspace` result is in `docs/alpha-results.md`. |
+| F8 | The environment had no dioxus-cli, and `dx` on `PATH` resolved to an unrelated command (`dx` is also Deno's `deno x` alias), which prints a Deno usage error for `--version`. After `cargo install dioxus-cli` the real binary is `~/.cargo/bin/dx` and had to be called by absolute path. | none | **Accepted**: environment, not Outou. The README states the install command and the path caveat. |
+| F9 | Whether `dx serve --platform web` finds the application's `web = ["outou/web"]` feature was unknown (dioxus-cli recognizes features forwarding to `dioxus/web`; this one forwards to `outou/web`). Checked on 2026-10-24 with dioxus-cli 0.7.10: `dx serve --platform web` with no `--features web` started and rendered the app. | row 32 | **Fixed / resolved**: no fallback needed with 0.7.10; `--features web` stays documented as the explicit spelling for other versions. |
+| F10 | A native `cargo build` also compiles the browser renderer (the `web` default feature), so the binary builds but cannot be run natively; running it is not useful. | row 32 | **Accepted**: chosen so CI compiles the real `launch` call; the alternative (no default) leaves `App` unused and fails `clippy -D warnings`. |
+| F11 | `outou fmt` puts every `attr={ .. }` island on its own indented lines (`oninput={`, newline, closure, newline, `}`), so a handler that is three lines of Rust becomes ten. `.map(|x| <jsx>..</jsx>)` stays on one very long line. | none | **Accepted** for the alpha (the formatter is canonical, and the app is committed formatted). Candidate polish if the formatter is revisited. |
+| F12 | `cargo fmt --all -- --check` inside the app directory fails on `.generated/` files: the repository's `rustfmt.toml` `ignore` is nightly-only and only warns on stable (that warning is printed once per file). The repository root job does not hit this because the example is outside its workspace. | none | **Accepted**: CI for the app does not run `cargo fmt`; `.rsx` is checked with `outou fmt --check` and `.rs` with `cargo fmt` on the files by hand. |
+| F13 | There is no headless way to click. The render tests use the hidden `dioxus_core::VirtualDom` name (row 11) and check first renders only (the whole tree, `TaskForm`, `TaskDetail`), no interaction. | row 36 | **Deferred**: a facade-level test renderer is new API; out of scope for the alpha. Interactive coverage is the manual walkthrough (hand-run once, 2026-10-24); it is not an automated check. |
+| F14 | A component keeps its local state when its props change; the form is keyed per task (`key={id}`) because, with the backend's component reuse, it would otherwise keep the first task's local state when Edit is opened on a second task (first reasoned from the reuse rules, then **observed** in the browser on 2026-10-24: opening Edit on a second task showed that task's values). | rows 3, 35 | **Accepted**: React behaves the same way, so the key is natural; the diagnostics around `key` are the problem (F1, F2). |
+| F15 | Domain types that travel as props (`Task`, `Status`, `Priority`) must derive `Clone` and `PartialEq`, which is a UI requirement leaking into the model crate. | rows 1, 3 | **Accepted** pending A5. `board-core` derives them anyway. |
+| F16 | `outou check` prints nothing on success, so a clean run cannot be told from a run that checked nothing. | none | **Deferred**: small; suggest a one-line summary ("checked N files"). Not changed here to keep A4 scoped to the app. |
+| F17 | Editor behavior (completion, hover, diagnostics through `outou-lsp`) on these files was **not** exercised: the session had no editor attached, and the browser run of 2026-10-24 did not involve an editor either. | none | **Deferred**: still unverified; whoever opens these files in an editor should note any LSP gaps here. |
+| F18 | `<select value={x}>` did not display `x` in the browser: a new form's Priority showed "Low" while the value was Medium; an edit form showed "Low" for a High task (stored value stayed High, display only); a detail Status select showed "To do" for an "In progress" task after a remount. A change made while mounted displayed correctly. Cause: the backend applies a select's `value` without selecting the matching option on mount, where React's `<select value>` would; Outou lowers the attribute exactly as written, so this is backend semantics, not a codegen or parser defect. | row 37 | **Fixed in the app** after the run: every `<option>` has `selected={option == current}` (`task_form.rsx`, `task_detail.rsx`), plus two headless tests of the `selected` flags. **Open: re-check in a browser** (step 8 and 9 and the remount case of the detail Status select). The wider question (React semantics for `<select value>`) is deferred to A5 (`TODO(alpha)` in row 37). |
+
+## What this app does not do
+
+No persistence, no server, no routing, no authentication, no styling beyond class names (there is no stylesheet), no accessibility pass beyond labels and `role="alert"` on validation messages, no drag and drop. Those would be separate work and none of them is needed to answer the alpha's questions.

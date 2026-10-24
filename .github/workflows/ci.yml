@@ -106,6 +106,39 @@ jobs:
       - run: cargo test -p outou-backend-dioxus -- --ignored
       - run: cargo test -p outou-cli --test ui -- --ignored
 
+  dogfood-board:
+    name: dogfood board builds with cargo build alone
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+          targets: wasm32-unknown-unknown
+      # The example is its own Cargo workspace with its own `target/`, so
+      # the cache must list it next to the root one (which holds `outou`).
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            examples/dogfood-board -> target
+      # Alpha gate A4 (issue #22): a larger, interactive, multi-module
+      # application plus a plain-Rust workspace library. Mirrors the
+      # `example-app` job: generate `src/.generated/`, then Cargo alone.
+      # The browser itself is not exercised here (needs dioxus-cli); the
+      # default `web` feature makes `cargo build` compile the real
+      # `launch` entry point anyway.
+      - run: cargo run -p outou-cli -- build --manifest-dir examples/dogfood-board
+      - run: cargo build
+        working-directory: examples/dogfood-board
+      - run: cargo test
+        working-directory: examples/dogfood-board
+      - run: cargo clippy --all-targets -- -D warnings
+        working-directory: examples/dogfood-board
+      # What `dx serve` compiles for the browser, minus the bundling.
+      - run: cargo check --target wasm32-unknown-unknown
+        working-directory: examples/dogfood-board
+
   generated-drift:
     name: generated output matches committed .rsx sources (issue #15)
     runs-on: ubuntu-latest

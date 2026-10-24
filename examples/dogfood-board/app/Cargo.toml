@@ -1,0 +1,23 @@
+[package]
+name = "dogfood-board"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Applications never commit `src/.generated/` (repository root `.gitignore`);
+# `outou build` regenerates it before `cargo build`.
+[[bin]]
+name = "dogfood-board"
+path = "src/.generated/crate-root.rs"
+
+[dependencies]
+outou = { path = "../../../crates/outou" }
+board-core = { path = "../board-core" }
+
+[features]
+# `web` makes `launch` start the browser renderer. It is on by default so
+# that the plain `cargo build` / `cargo clippy` that CI runs compile the
+# real entry point (a native run of the binary has no browser to render
+# into; use `dx serve`, see README.md).
+default = ["web"]
+web = ["outou/web"]

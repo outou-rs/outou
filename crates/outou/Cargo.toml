@@ -11,5 +11,14 @@ readme = "README.md"
 [dependencies]
 dioxus = { workspace = true }
 
+[features]
+# Opt-in launch support for browser applications (alpha gate A4; ADR 0010,
+# `docs/backend-leakage.md` row 31). Off by default so the facade's own
+# build and every existing consumer stay unchanged.
+# Internal: part of `web`. On its own it selects no renderer, so a call to
+# `launch` panics. Applications enable `web` (see README.md).
+launch = ["dioxus/launch"]
+web = ["launch", "dioxus/web"]
+
 [lints]
 workspace = true

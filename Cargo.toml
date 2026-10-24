@@ -4,7 +4,8 @@ members = ["crates/*", "xtask"]
 # Independent Cargo projects. They are not part of the framework build:
 #   - spikes/rust-analyzer/fixture: hand-written rust-analyzer feasibility spike
 #   - examples/phase0-app: `.rsx` sources that cannot build until Gate 2
-exclude = ["spikes/rust-analyzer/fixture", "examples/phase0-app"]
+#   - examples/dogfood-board: the alpha A4 dogfood application (own workspace)
+exclude = ["spikes/rust-analyzer/fixture", "examples/phase0-app", "examples/dogfood-board"]
 
 [workspace.package]
 version = "0.0.1"

@@ -1,0 +1,8 @@
+[package]
+name = "board-core"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Domain model and validation for the dogfood task board. Plain Rust, no UI."
+
+[dependencies]

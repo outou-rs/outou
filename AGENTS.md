@@ -45,6 +45,7 @@ All four workspace checks must pass before a change is considered done. Do not w
 | `spikes/rust-analyzer/` | Week 1 experiment. Not a workspace member. No framework code. |
 | `tests/` | Shared fixtures and UI tests (data only, not a crate). |
 | `examples/phase0-app/` | Phase 0's representative app in `.rsx`. Not a workspace member; CI builds it with `outou build` then `cargo build`. |
+| `examples/dogfood-board/` | Alpha A4 dogfood app: interactive task board in `.rsx` plus a plain-Rust workspace library (`board-core`). Its own Cargo workspace, not a member of the root one; CI (`dogfood-board` job) runs `outou build`, `cargo build`, `cargo test`, `cargo clippy` and a wasm32 `cargo check` on it. README holds the friction log. |
 | `packages/` | npm packages. `vite-plugin-outou` is still a placeholder; `vscode-outou` has a working TextMate grammar and language configuration, standing in for semantic tokens until the extension is wired to `outou-lsp`. |
 | `docs/` | Design, grammar, plan, backend leakage ledger, ADRs, issue mirrors (Phase 0 and alpha). |
 

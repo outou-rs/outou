@@ -2,7 +2,7 @@
 
 This document accumulates the alpha's decision report (`docs/alpha.md`, "Decision report"). This
 revision covers **A1: measurement** (issue #17, `docs/alpha/issues/17-measurement.md`) and, in the
-last section, **A3's forwarded-completion work** (issue #21); later gates append their own sections
+next-to-last section, **A3's forwarded-completion work** (issue #21), and, last, **A4: the dogfood application** (issue #22); later gates append their own sections
 here rather than replacing this one.
 
 Every number in (a), (c) and (d) is from the **settled re-measurement of 2026-10-11** (harness
@@ -885,3 +885,61 @@ Outou vocabulary. Implemented in `crates/outou-lsp/src/status.rs`, wired in
 - `experimental/serverStatus` decision: taken by the user (2026-10-24) and implemented as above, together with Outou-vocabulary rewriting of the forwarded progress.
 - Release judgement: done; the formula's ~23-31x looseness stands, and a verdict line now names the
   profile.
+
+## A4: dogfood application (issue #22)
+
+Status: built, checked natively and for `wasm32-unknown-unknown`, and **walked through by hand in Chrome on 2026-10-24** (see "Browser run"). One defect found there (F18) was fixed afterwards and is **not yet re-checked in a browser**. Full friction log with dispositions: `examples/dogfood-board/README.md` ("Friction log", F1 to F18).
+
+### The application
+
+`examples/dogfood-board`: an internal task board, subject chosen by the project owner on 2026-10-24 (forms to add and edit tasks, a filtered list, a detail view, state shared between components). It is its own Cargo workspace outside the root one (`examples/phase0-app`'s arrangement), about 430 lines of `.rsx` and `.rs` in the app and about 410 in the library:
+
+- `board-core`: plain-Rust workspace library (domain model, validation, immutable `Board`, `Filter`), 8 unit tests.
+- `app`: `main.rsx` (App, `launch`, three headless render tests), `filter_bar.rsx`, `task_list.rsx`, `task_detail.rsx`, `task_form.rsx`, and `state.rs` (a plain `.rs` module in the mixed crate holding the shared signals).
+
+### What was added to the facade
+
+`outou::prelude` re-exports the backend's existing `use_signal`, `Signal`, `use_context_provider`, `use_context`, `ReadableExt`, `WritableExt` and (behind the new opt-in `launch` / `web` features) `launch`. Nothing was wrapped or renamed. Recorded in ADR 0010 (Amendments) and `docs/backend-leakage.md` rows 31 and 32. Four more rows came from the build itself: 33 (signal read guard held across `set`), 34 (integer children are not renderable), 35 (`key` lowering), 36 (headless rendering names the backend). Two rows were added after the browser run and review: 37 (`<select value>` does not select an option on mount, F18) and 38 (a correction to row 35's description of the failing `key` shapes). The ledger now has 38 rows; none of the existing 30 was rewritten.
+
+### Verification run (2026-10-24)
+
+| Command | Result |
+|---|---|
+| `outou build --manifest-dir examples/dogfood-board`, then in that directory `cargo build` | pass |
+| `cargo test` (example workspace) | pass: 8 `board-core` tests, 1 app render test |
+| `cargo clippy --all-targets -- -D warnings` (example workspace) | pass |
+| `cargo check --target wasm32-unknown-unknown` (example workspace) | pass |
+| `cargo build --target wasm32-unknown-unknown` | pass (produces a `.wasm`; not bundled, not loaded) |
+| `outou fmt --check` on `app/src` | pass after one `outou fmt` run (output kept) |
+| `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace` (repository) | pass |
+| `cargo +1.85 check --workspace` (repository) | pass. The new opt-in features add about 2,400 lines to the root `Cargo.lock`, but nothing in the workspace enables them, so MSRV is unaffected. The example workspace is outside the MSRV check by construction (own lockfile, own workspace). |
+| `cargo xtask determinism` | pass, 10 targets; the example is not one of them, so its determinism was checked only by a second `outou build` rewriting nothing |
+
+### Browser run (2026-10-24)
+
+Run by hand by the project's manager: dioxus-cli 0.7.10 (`cargo install`), `~/.cargo/bin/dx serve --platform web --port 8099`, Chrome. `dx` installed `wasm-bindgen-cli` 0.2.129 and esbuild itself. The `dx` first on `PATH` was Deno's unrelated command, so the absolute path was required (F8).
+
+- **F9 resolved**: `dx serve --platform web` started and rendered the app without `--features web`; the app's `web = ["outou/web"]` was recognized.
+- Walkthrough steps 1 to 11 and 13 behaved as written, with no browser console errors: initial render, detail view, status change from the detail select and from the list checkbox, status chips, search (including the empty-result message), create with validation and success, edit pre-filled and per-task (the F14 reasoning was **observed** to hold), cancel from Edit, delete, and reset on reload. Not run in the browser: step 12 (length limits, covered by `board-core` tests) and New task then Cancel.
+- **New defect, F18 (ledger row 37)**: a `<select value={..}>` did not show its value on mount (new form's Priority showed "Low" for a Medium value; an edit form showed "Low" for a High task; the detail Status select showed "To do" for an "In progress" task after a remount). Display only: the stored values were right. Cause: backend semantics (the select's `value` does not select the matching option on mount; React's does), not Outou's lowering. Fixed in the app with `selected={option == current}` on each `<option>`; two headless tests check the flags. **A browser re-check of the fix is still open.**
+- **Automated versus manual coverage**: the app's automated tests are three headless first-render tests (whole tree, edit form, detail view). Every interactive flow above is covered by the hand-run walkthrough only; it is not repeatable automation (F13). The fixed `key` and `select` behavior in particular is only as verified as that one run.
+
+### Findings that matter for A5
+
+- **A state API is the first thing an application needs** and the facade had none: the re-exports are Dioxus's `Signal` model unchanged. Two everyday patterns fail on it with backend-flavored diagnostics (row 33's guard borrow, F4; row 34's integer child, F3). Neither is a language-level Outou rule.
+- **`key` is the weakest seam** (row 35, F1/F2): both a static key and a key expression with a string literal fail with messages written by the backend, at a generated position.
+- **The biggest practical gap is not a ledger row**: `cargo build` diagnostics land on `src/.generated/*.rs` lines, one very long `rsx!` line each, instead of the `.rsx` position (F5). Only the language server and the UI-test harness map back.
+- **`<select value>` carries different semantics from React** (row 37, F18): only a real browser run found it; no compile-time or headless check could have. Together with rows 33 to 35 it argues that the A5 weighing should count "same JSX, different meaning" separately from "backend-authored diagnostic".
+- **What did not hurt**: mixed `.rs` / `.rsx` modules, a plain-Rust workspace library, JSX in `match` arms and closures, and the formatter, which is idempotent and keeps the app building (README, "What worked without friction").
+- Count of A4's own additions to the ledger: 6 rows (31 to 36), of which 3 (33, 34, 35) are cases where a user hits a backend-authored diagnostic or rule while doing ordinary work; that count goes into the A5 weighing of rows that make Outou semantics unnatural.
+
+### Not verified
+
+- **The F18 fix has not been re-checked in a browser** (the headless tests check the `selected` flags, not what a browser displays). Browser coverage is one hand-run of the walkthrough; steps 12 and New task then Cancel were not run.
+- The language-server experience on the app's `.rsx` files (completion, hover, diagnostics) was not exercised (F17).
+- The `dogfood-board` CI job has not run on a pushed branch.
+
+### Issue #22 checklist status
+
+Done: build the app (native and wasm32 compile); prelude re-exports recorded (ADR 0010, rows 31 and 32); app under `examples/` as a non-workspace member; Friction log with dispositions; backend-specific frictions appended as numbered rows (33 to 36); manual walkthrough documented; this summary. Open: browser run and the first CI run of the new job (both described above).
+
