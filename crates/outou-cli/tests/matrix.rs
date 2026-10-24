@@ -658,25 +658,52 @@ fn make_standalone_publish_workspace(negate_generated: bool) -> PathBuf {
     dir
 }
 
-/// A standalone `crates/outou/Cargo.toml` with every `*.workspace = true`
-/// field inlined from the repository root `Cargo.toml`'s own
-/// `[workspace.package]`/`[workspace.dependencies]` — the manifest form
-/// this crate would actually carry once published (a published crate has
-/// no workspace to inherit from).
-fn standalone_outou_manifest() -> &'static str {
-    r#"[package]
-name = "outou"
-description = "Outou — Rust with JSX. Public facade crate."
-version = "0.0.1"
-edition = "2021"
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/outou-rs/outou"
-rust-version = "1.85"
-readme = "README.md"
-
-[dependencies]
-dioxus = { version = "0.7.10", default-features = false, features = ["macro", "html", "signals", "hooks"] }
-"#
+/// A standalone `crates/outou/Cargo.toml`: the real manifest with every
+/// `*.workspace = true` field inlined from the repository root
+/// `Cargo.toml`'s own `[workspace.package]`/`[workspace.dependencies]` —
+/// the manifest form this crate would actually carry once published (a
+/// published crate has no workspace to inherit from).
+///
+/// Derived from `crates/outou/Cargo.toml` rather than hand-copied, so the
+/// `[features]` table (and anything else added later) reaches the packaged
+/// crate. A hand-copied manifest once silently dropped `launch`/`web`, and
+/// the packaged crate then failed `unexpected_cfgs` in `cargo package`'s
+/// verify step, in CI only (this test is `#[ignore]`d locally).
+fn standalone_outou_manifest() -> String {
+    const INLINED: &[(&str, &str)] = &[
+        ("version.workspace = true", "version = \"0.0.1\""),
+        ("edition.workspace = true", "edition = \"2021\""),
+        ("license.workspace = true", "license = \"MIT OR Apache-2.0\""),
+        (
+            "repository.workspace = true",
+            "repository = \"https://github.com/outou-rs/outou\"",
+        ),
+        ("rust-version.workspace = true", "rust-version = \"1.85\""),
+        (
+            "dioxus = { workspace = true }",
+            "dioxus = { version = \"0.7.10\", default-features = false, features = [\"macro\", \"html\", \"signals\", \"hooks\"] }",
+        ),
+    ];
+    let real = fs::read_to_string(repo_root().join("crates/outou/Cargo.toml"))
+        .unwrap_or_else(|e| panic!("reading crates/outou/Cargo.toml: {e}"));
+    let mut out = String::new();
+    let mut in_lints = false;
+    for line in real.lines() {
+        if line.starts_with('[') {
+            in_lints = line.trim() == "[lints]";
+        }
+        if in_lints {
+            continue;
+        }
+        let inlined = INLINED.iter().find(|(from, _)| *from == line.trim());
+        out.push_str(inlined.map_or(line, |(_, to)| to));
+        out.push('\n');
+    }
+    assert!(
+        !out.contains("workspace = true"),
+        "unhandled workspace inheritance in crates/outou/Cargo.toml:\n{out}"
+    );
+    out
 }
 
 /// Rewrites one workspace-fixture member's `outou`/`ui-kit` path
