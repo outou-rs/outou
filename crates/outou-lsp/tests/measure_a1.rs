@@ -29,6 +29,7 @@
 //! cargo test -p outou-lsp --test measure_a1 -- --ignored --nocapture measure_a1_coldinit
 //! cargo test -p outou-lsp --test measure_a1 -- --ignored --nocapture measure_a1_flycheck
 //! cargo test -p outou-lsp --test measure_a1 -- --ignored --nocapture measure_a1_completion_overhead
+//! cargo test -p outou-lsp --test measure_a1 -- --ignored --nocapture measure_a1_completion_stall
 //! cargo test -p outou-lsp --test measure_a1 -- --ignored --nocapture measure_a1_rss_single
 //! cargo test -p outou-lsp --test measure_a1 -- --ignored --nocapture measure_a1_rss_two_process
 //! ```
@@ -48,6 +49,15 @@
 //! - `MEASURE_A1_COMPLETION_N` (positive integer) and
 //!   `MEASURE_A1_COMPLETION_SITE` (non-empty site label) restrict the
 //!   completion run; both are validated before anything is spawned.
+//! - `MEASURE_A1_STALL_SESSIONS` (positive integer, default 5),
+//!   `MEASURE_A1_STALL_VIA=direct|outou-lsp` (default `direct`) and
+//!   `MEASURE_A1_STALL_LOG_DIR` (existing directory; a direct session then
+//!   runs rust-analyzer with `--log-file` and `RA_LOG=info`),
+//!   `MEASURE_A1_STALL_SITE` (a completion site label),
+//!   `MEASURE_A1_STALL_AUTOIMPORT=true|false` and
+//!   `MEASURE_A1_STALL_WINDOW_MS` and `MEASURE_A1_STALL_TAG` (suffix of the
+//!   saved report name) configure
+//!   `measure_a1_completion_stall` (issue #21's stall investigation).
 //! - `MEASURE_A1_SAVE_ARTIFACTS=1` writes each run's JSON to
 //!   `spikes/rust-analyzer/results/` instead of a system temp directory.
 //!   Raw JSON is not kept in the repository by default: the tables in
@@ -553,7 +563,8 @@ fn completion_env() -> (String, Option<String>) {
 /// "Thresholds" (2)): median overhead <= 5 ms + 0.15 ms x candidate count,
 /// per bucket, asserted for the dev/debug-profile `outou-lsp` only (this
 /// test runs `CARGO_BIN_EXE_outou-lsp`). Under `cargo test --release` the
-/// same assertion runs but is far too loose to catch a release regression
+/// same assertion runs (with a per-bucket verdict line naming the profile,
+/// issue #21) but is far too loose to catch a release regression
 /// (about 31x at 1204 candidates); read those numbers, not the pass.
 /// A bucket also fails if the two sessions did not settle on, and get
 /// sampled at, the same candidate count: the ceiling would otherwise be
@@ -592,6 +603,20 @@ fn assert_completion_buckets(result: &serde_json::Value) {
             .as_f64()
             .expect("median overhead");
         let ceiling = COMPLETION_BASE_MS + COMPLETION_PER_CANDIDATE_MS * direct_count as f64;
+        // Issue #21: the same formula judges whichever profile this test
+        // binary is. Printing the verdict with the profile named keeps a
+        // release run's (very loose) pass from being mistaken for
+        // evidence that the release overhead is close to the ceiling.
+        let profile = if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        };
+        println!(
+            "measure_a1 completion verdict [{profile}]: {label}: {direct_count} candidates, \
+             median overhead {overhead:.1} ms vs ceiling {ceiling:.1} ms ({})",
+            if overhead <= ceiling { "PASS" } else { "FAIL" }
+        );
         assert!(
             overhead <= ceiling,
             "{label}: median forwarded-completion overhead {overhead:.1}ms exceeds {ceiling:.1}ms \
@@ -618,6 +643,57 @@ fn measure_a1_completion_overhead() {
     );
     save_report("completion-overhead", &result);
     assert_completion_buckets(&result);
+}
+
+/// Issue #21: the multi-second `large-enum-path` stall investigation.
+/// Unlike `measure_a1_completion_overhead` this does NOT wait for the
+/// session to settle: completion is requested back-to-back from the
+/// `didChange` that introduces the site, and every slow sample is lined
+/// up with rust-analyzer's `serverStatus`/`$/progress` events (and, for a
+/// direct session with `MEASURE_A1_STALL_LOG_DIR`, its own `RA_LOG`).
+/// Asserts nothing; it records what happened.
+#[test]
+#[ignore = "spawns rust-analyzer sessions; run explicitly, see module docs"]
+fn measure_a1_completion_stall() {
+    let sessions = std::env::var("MEASURE_A1_STALL_SESSIONS").unwrap_or_else(|_| "5".to_string());
+    assert!(
+        sessions.parse::<u64>().is_ok_and(|n| n > 0),
+        "MEASURE_A1_STALL_SESSIONS={sessions:?} is not a positive integer"
+    );
+    let via = std::env::var("MEASURE_A1_STALL_VIA").unwrap_or_else(|_| "direct".to_string());
+    let log_dir = std::env::var("MEASURE_A1_STALL_LOG_DIR").ok();
+    let site = std::env::var("MEASURE_A1_STALL_SITE").ok();
+    let autoimport = std::env::var("MEASURE_A1_STALL_AUTOIMPORT").ok();
+    let window = std::env::var("MEASURE_A1_STALL_WINDOW_MS").ok();
+    let setup = heavy_probe_setup("stall", Fixture::Phase0App);
+    let mut extra: Vec<&str> = vec!["--n", &sessions, "--via", &via];
+    if let Some(dir) = log_dir.as_deref() {
+        extra.extend(["--log-dir", dir]);
+    }
+    for (flag, value) in [
+        ("--site", site.as_deref()),
+        ("--autoimport", autoimport.as_deref()),
+        ("--window-ms", window.as_deref()),
+    ] {
+        if let Some(value) = value {
+            extra.extend([flag, value]);
+        }
+    }
+    let result = run_measure(&setup, "stall", &extra);
+    for session in result["sessions"].as_array().expect("sessions array") {
+        println!(
+            "measure_a1 stall: session {} via {}: {} samples, first non-empty at {} ms, max {} ms, counts seen {}, slow (> 500 ms): {}",
+            session["index"],
+            session["via"],
+            session["sampleCount"],
+            session["firstNonEmptyAtMs"],
+            session["maxMs"],
+            session["countsSeen"],
+            session["slow"],
+        );
+    }
+    let suffix = std::env::var("MEASURE_A1_STALL_TAG").unwrap_or_default();
+    save_report(&format!("completion-stall-{via}{suffix}"), &result);
 }
 
 // ---------------------------------------------------------------------

@@ -1,8 +1,9 @@
 # Alpha results
 
 This document accumulates the alpha's decision report (`docs/alpha.md`, "Decision report"). This
-revision covers **A1: measurement** only (issue #17, `docs/alpha/issues/17-measurement.md`); later
-gates append their own sections here rather than replacing this one.
+revision covers **A1: measurement** (issue #17, `docs/alpha/issues/17-measurement.md`) and, in the
+last section, **A3's forwarded-completion work** (issue #21); later gates append their own sections
+here rather than replacing this one.
 
 Every number in (a), (c) and (d) is from the **settled re-measurement of 2026-10-11** (harness
 fixed after review: samples are taken only once rust-analyzer has settled, RSS covers the whole
@@ -621,12 +622,13 @@ The criterion is interpreted on the **write side** (file writes and mtimes), the
 2. **Forwarded-completion overhead: Fixed (user-confirmed, 2026-10-11): median overhead ≤ 5 ms +
    0.15 ms × candidate count, per bucket, same-session A/B — as the bound for the dev/debug-profile
    `outou-lsp`** (`CARGO_BIN_EXE_outou-lsp` under plain `cargo test`, which is where
-   `measure_a1_completion_overhead` asserts it). Release numbers (`cargo test --release`) are
-   recorded as information only; there is **no release assertion**. In release the bound is very
-   loose (measured: ~31x at 1204 candidates, release median overhead 6 ms vs. the 185.6 ms ceiling)
-   and **would not catch a
-   release regression**: A3 (#21) completion-path optimisation must be judged on release numbers, not
-   on this assertion. Measured at three candidate-list-size buckets (see (d)); the form is a
+   `measure_a1_completion_overhead` is calibrated). `assert_completion_buckets` applies the same
+   formula **unconditionally in both profiles** (there is no profile-specific assertion; since
+   2026-10-24 it also prints a per-bucket verdict line naming the profile). In release the bound is
+   very loose (measured: ~31x at 1204 candidates, release median overhead 6 ms vs. the 185.6 ms
+   ceiling; ~23x at 122 candidates, 1 ms vs. 23.3 ms) and **a release pass would not catch a
+   moderate release regression**: A3 (#21) completion-path optimisation must be judged on the raw
+   release numbers, not on this assertion. Measured at three candidate-list-size buckets (see (d)); the form is a
    rate-plus-fixed-cost fit to the two extreme buckets of the first 2026-09-28 pass (N=10, unsettled; fixed term about 2x the
    fitted 2.4 ms, per-candidate term 3x the fitted 0.05 ms/candidate, for headroom; both fit points
    came from that pass's unsettled sessions, see (d)).
@@ -637,8 +639,10 @@ The criterion is interpreted on the **write side** (file writes and mtimes), the
      only): 0 / 1 / 6 ms median overhead at 5 / 122 / 1204.
    - **No p95/tail threshold is set.** The `large-enum-path` multi-second stall (see (d), "Earlier
      N=50 pass") is a rust-analyzer-side event that also appears in direct sessions and did not occur
-     in the settled runs (max 60 ms debug), so a tail bound still cannot be derived from these runs;
-     it stays blocked on pinning down the trigger (A3, #21).
+     in the settled runs (max 60 ms debug), so a tail bound cannot be derived from them. A3 (#21)
+     later found that the stall coincides with the initial cache priming and was not seen in any
+     settled session (see "The multi-second stall"), so a tail bound for *settled* sessions could be
+     set from settled runs if wanted; none has been proposed.
    - Asserted by `measure_a1_completion_overhead` in `crates/outou-lsp/tests/measure_a1.rs` (ignored
      test, per bucket, median overhead against the formula). The test also fails a bucket whose two
      sessions did not settle on the same candidate count, or whose count changed while sampling,
@@ -686,12 +690,169 @@ instructions; recorded here instead):
   1200 → 1204, and so points at rust-analyzer's own late background work rather than `outou-lsp`'s
   mapping. The exact rust-analyzer trigger was not identified, which is why no tail/p95 threshold is
   set. Flagged rather than smoothed over.
-- **Deferred to A3 (#21)**: pinning down the stall trigger with `RA_LOG`; whether `outou-lsp` should
-  forward `experimental/serverStatus` / show readiness; judging completion-path optimisation on
-  release numbers (the debug threshold is loose in release).
+- **Deferred to A3 (#21)** (stall trigger, `serverStatus`, release numbers): worked in "A3:
+  forwarded-completion overhead (issue #21)" below; the `serverStatus` decision is still open.
 - ~~Deferred to #20: the `outou build` CLI-path FAIL in (f).~~ Fixed in issue #20, see (f).
 - **Harness limitations (recorded, not fixed)**: harness requests have no per-request timeout, so a
   wedged server can hang the rss mode or a `Command::output()` call; and the `outou-lsp` side of the
   RSS settle uses hover stability only (no quiescence signal, no expected signature).
 - Candidate-list-size bucketing has three real buckets (not one), and the RSS harness now supports
   both fixed workspaces directly (`MEASURE_A1_FIXTURE`).
+
+## A3: forwarded-completion overhead (issue #21)
+
+Issue #21 (`docs/alpha/issues/21-completion-overhead.md`). Same machine (Apple M1 Pro, 16 GiB),
+toolchain and rust-analyzer 1.98.1 as "A1: Setup"; measured 2026-10-24 with the A1 harness
+(`measure_a1_completion_overhead`, N=50 per bucket and side, settled sessions, same-session A/B).
+
+**Machine state, not clean.** Unlike the 2026-10-11 settled pass, this session did *not* run on a
+freshly booted idle machine: VS Code was open (main process and helpers; **no rust-analyzer
+process** was running, `pgrep -fl rust-analyzer` empty), `vm.swapusage` showed 5.5 GiB of 7 GiB used
+before and after the first run, and load1 was 2-5 at the start of most runs (one release run started
+at load1 39 and one other at 5; they are marked below). The numbers are therefore a regression check
+against the 2026-10-11 baseline, not a replacement for it.
+
+### Threshold and verdict
+
+The user-confirmed threshold (2026-10-24; unchanged from "Thresholds" (2)): **median overhead <= 5 ms
++ 0.15 ms x candidate count. p95 is not used.** It was already encoded in
+`assert_completion_buckets` (`crates/outou-lsp/tests/measure_a1.rs`) and is unchanged. The only
+change to that test is a per-bucket `measure_a1 completion verdict [debug|release]` line (value,
+ceiling, PASS/FAIL), so a release run states its verdict instead of passing silently; the formula
+is the same in both profiles, which is why a release pass says little (see below).
+
+| bucket | candidates | ceiling | debug median overhead (this pass; 2026-10-11) | release median overhead (this pass; 2026-10-11) |
+|---|---|---|---|---|
+| `tiny-local-type` | 5 | 5.75 ms | 0 (1) | 0 (0) |
+| `option-member-access` | 122 | 23.3 ms | 11 (12) | 0-1 (1) |
+| `large-enum-path` | 1204 | 185.6 ms | 48 (49) | 6 (6) |
+
+All three buckets PASS in both profiles. Three further debug runs of `large-enum-path` alone:
+49 / 50 / 49 ms (`outou-lsp` p95 59-67, no sample above 100 ms). Release: four N=50 runs; three give
+0 / 0-1 / 6 ms, the fourth (the first release run, load1 3-5, swap in use) gave 0 / 8 / -1 ms with a
+direct `large-enum-path` median of 16 ms instead of the usual 8, i.e. noise in the *direct* side;
+all four pass. Largest release headroom is 31x at 1204 candidates, as noted in 2026-10-11.
+
+Margin per profile (median overhead vs. ceiling), this pass: debug n/a / 2.1x / 3.9x (the tiny
+bucket's overhead was 0 ms, so its ratio is undefined; the 5.8x in the 2026-10-11 pass came from a 1 ms
+median against 5.75 ms); release n/a (0 ms) / 23x or more (0-1 ms against 23.3 ms) / 31x (6 ms against
+185.6 ms). The debug assertion's tightest bucket is still `option-member-access`. Because the formula
+is the same in release, a release regression is only caught once the median exceeds the ceiling:
+roughly 23x the current value in the 122-candidate bucket (at 1 ms) and 31x in the 1204-candidate
+bucket. The release judgement here is therefore the raw numbers above, not the pass.
+
+### Profile of `map_completion_response` (no optimization made)
+
+The threshold is met in both profiles, so by the issue's own conditional ("if over threshold")
+nothing in `crates/outou-lsp/src/response.rs` was changed. For the record, a throwaway
+release-profile in-process timing (a synthetic 1204-item list shaped like rust-analyzer's enum-variant
+items, run against `examples/phase0-app`'s real workspace registry; the test was removed afterwards)
+put the whole `map_completion_response` call at about 2.2-3.5 ms once warm (first call ~8 ms), of
+the ~6 ms release overhead the A/B shows; the rest is JSON parse/serialize and pipe I/O outside this
+function. Split of the pieces timed separately: `textEdit` reverse-mapping (`map_text_edit`) about
+1.2-1.9 ms (largest, ~45%), `is_backend_leak` scan about 0.5-1.1 ms (~25%), the first cursor-containment
+check about 0.4-0.7 ms (~15%; it `serde_json::from_value`-clones every range). If a release regression
+ever shows up, those three are the order to look at (avoid the range clone/`from_value`; skip
+`documentation`/`filterText` scanning when absent; cache the generated-file lookup across items).
+Not applied: it would be an optimization against a threshold that is met by 31x.
+
+### The multi-second stall: what it is (issue #21 item "pin down the trigger")
+
+A new harness mode `--mode stall` (`measure-a1.mjs`; `measure_a1_completion_stall`) is the *opposite*
+of the settled `completion` mode: right after the `didChange` that introduces the site, completion is
+requested back to back (50 ms apart) for 9-20 s with **no wait for quiescence**, and every
+`experimental/serverStatus` / `$/progress` notification is timestamped on the same clock (optionally
+with `rust-analyzer --log-file` under `RA_LOG=info`).
+
+Result: **the stall reproduced in 27 of 27 fresh sessions** sampled that way (split in the table
+below), each with exactly one sample over 500 ms, and in none of the settled runs of this pass (5
+all-bucket runs, 1 debug and 4 release, plus 3 debug `large-enum-path`-only runs, all N=50: no sample
+over 1 s; the largest was 98 ms).
+
+| condition | sessions | stalled | stalled request | when it ended |
+|---|---|---|---|---|
+| `large-enum-path`, direct, `RA_LOG=info` | 3 | 3 | 6.2-6.4 s | at quiescence + ~0.4 s |
+| `large-enum-path`, direct | 10 | 10 | 2.12-2.23 s | at quiescence + ~0.4 s |
+| `large-enum-path`, direct, autoimport off | 5 | 5 | 2.10-2.18 s | at quiescence + ~0.4 s |
+| `tiny-local-type` (5 candidates), direct | 4 | 4 | 2.14-2.31 s | at quiescence + ~0.4 s |
+| `large-enum-path`, via `outou-lsp` | 5 | 5 | 2.09-2.15 s | ~0.3 s after the forwarded `$/progress` `cachePriming` end |
+
+What the timelines show:
+
+- Every session first returns empty answers (0 candidates for the first ~0.4-1.3 s), sometimes then
+  a fast intermediate list (1200, or 3 for the tiny site), and then has **one** slow request, the first
+  that returns the final (1204 / 5) list. The slow request starts about when `Indexing` begins
+  (`$/progress` `begin` "Indexing" at 1.2-1.7 s after `didChange`) and **returns about 0.3-0.4 s
+  after rust-analyzer's `cachePriming` progress ends / `serverStatus` goes `quiescent: true`**. Every
+  later sample in all 27 sessions is at most 47 ms (the tail right after the stall, while the
+  analysis finishes settling), and a settled session answers in single-digit to low-tens of ms.
+- It is **independent of candidate count and of `large-enum-path`**: the 5-candidate tiny site stalls
+  for the same ~2.2 s. It is independent of `completion.autoimport`. It is not `outou-lsp`: the
+  direct session stalls identically and the `outou-lsp` session adds nothing measurable.
+- With `RA_LOG=info` the same stall lasts ~6.2 s (tracing makes the work slower). That it stretches
+  with logging overhead and (below) with machine contention suggests computation rather than a fixed
+  timer or a lock wait, but CPU time was not measured, so "CPU-bound" is an inference, not a result:
+  about 2.1 s on an idle-ish M1 Pro. The `info` log of a stalled request is dominated by `inherent_impls_in_crate_query` (hundreds of
+  thousands of lines), `crate_def_map_query`, `import_map_query` and `TraitImpls` across the ~93 crates
+  of the dependency graph, i.e. rust-analyzer's first (cold) computation of those salsa queries, which
+  the initial cache priming runs over the same period. The log shows the two overlapping; it does not
+  show which of them the request waits on. The 1200 -> 1204 / 3 -> 5 flip is the sysroot's
+  blanket-impl methods becoming visible, i.e. exactly the answer that needs those queries.
+- On the 2026-09-28 `~4 s at ~1200 candidates, 1 of 10` outlier: it is consistent with this stall.
+  The first pass sampled right after the first non-empty answer while a VS Code-owned rust-analyzer and
+  a hung rust-analyzer were competing for CPU on the machine, which fits "the same work, longer under
+  contention"; this cannot be proven after the fact. It is **not** a candidate-list-size or
+  leak-scan/reverse-map effect (the steady-state `outou-lsp` cost is ~50 ms debug / ~6 ms release at
+  1204 candidates, flat, p95 within 15 ms of the median).
+- Product meaning: the first completion that arrives while rust-analyzer is still indexing
+  (~1.2-3.3 s after the workspace opens on this fixture, longer for a big workspace, and the ~93-crate
+  dependency graph is small) blocks until the indexing finishes. A user typing `.` in the first seconds
+  waits; after that it is never seen. The editor already receives the matching signal today,
+  because `$/progress` is forwarded: the stall coincides with a visible "Indexing" progress report.
+
+No exclusion of the outlier from any measurement was made; the settled tables simply did not contain
+one.
+
+### `experimental/serverStatus`: forward it? (recommendation, not implemented)
+
+State of play (read from `crates/outou-lsp/src/dispatch/responses.rs`): `handle_ra_notification`
+forwards `textDocument/publishDiagnostics` (merged and mapped) and `$/progress` (verbatim, gated on the
+client's `window.workDoneProgress`) and drops every other notification, including
+`experimental/serverStatus`. The `$/progress` stream through `outou-lsp` is already complete for
+this purpose: in the `--via outou-lsp` stall runs the harness saw `Indexing` begin, the `cachePriming`
+reports and the `cachePriming` end, then `cargo check`/flycheck progress, all with rust-analyzer's own
+titles. What `serverStatus` adds is only `quiescent` (a boolean that `cachePriming` end already
+approximates within ~0.3 s here), `health` (`ok`/`warning`/`error`) and a free-text `message`
+(for example a failed `cargo metadata`).
+
+Arguments against forwarding it raw: it is a rust-analyzer-specific *experimental* extension, so a
+generic client has no handler and a rust-analyzer-aware client (VS Code's rust-analyzer extension)
+would update *its own* status item for a language it does not own, colliding with its real
+rust-analyzer's status (the two-process arrangement in `crates/outou-lsp/README.md`); and its
+`message` is rust-analyzer free text that can name backend/generated vocabulary (`AGENTS.md`'s backend
+boundary: it would need the same leak scan as diagnostics). Arguments for: the only information
+`$/progress` lacks is `health`, which tells the user "rust-analyzer could not load the workspace",
+currently invisible except as missing completions.
+
+**Recommendation: do not forward `experimental/serverStatus` in the alpha.** The stall that motivated
+the question is already visible to the editor through the forwarded `$/progress`. If a readiness or
+health indicator is later wanted, build it in `outou-lsp` from the signals it already receives
+(`$/progress` and the first answers), in Outou vocabulary and behind the existing leak scan, rather
+than relaying the extension; a one-time `window/showMessage` on `health != ok` (message run through
+`contains_backend_marker`) is the smallest version. This is a product decision and is left open for the
+user; nothing was implemented.
+
+### Issue #21 checklist status
+
+- Re-measure with A1's method under the fixed threshold: done (above); PASS in debug and release.
+- Profile and optimize if over threshold: **not over threshold**, so no optimization; profile
+  recorded above for later.
+- Re-measure after optimizing: n/a (no change to the completion path).
+- Before/after in this document: done (after == before; the 2026-10-11 table is the "before").
+- Pin down the stall trigger on a larger set of sessions: done (27 sessions, `RA_LOG` on 3): the first
+  completion that returns the final list consistently overlaps rust-analyzer's initial cache priming and
+  query computation and ends shortly after it (correlation; causation not isolated). What
+  remains open is whether to *treat* it (user decision below).
+- `experimental/serverStatus` decision: recommendation written; **decision not taken** (user).
+- Release judgement: done; the formula's ~23-31x looseness stands, and a verdict line now names the
+  profile.

@@ -40,66 +40,7 @@ import { loadavg } from "node:os";
 import { pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 
-const MODE_NAMES = ["coldinit", "flycheck", "completion", "rss"];
-const CONFIG_NAMES = ["single", "two-process"];
-// `cold`: sample from spawn until both sessions have settled. `cold+edit`:
-// the same cold window, then (in the SAME process, no restart) the scripted
-// edits; the result reports the two windows separately.
-const PHASE_NAMES = ["cold", "cold+edit"];
-
-function parseArgs(argv) {
-  const out = {};
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "-h" || a === "--help") {
-      out.help = true;
-      continue;
-    }
-    if (!a.startsWith("--")) {
-      throw new Error(`unexpected argument ${JSON.stringify(a)}`);
-    }
-    const name = a.slice(2);
-    const value = argv[++i];
-    if (value === undefined || value.startsWith("--")) {
-      throw new Error(`--${name} requires a value`);
-    }
-    out[name] = value;
-  }
-  return out;
-}
-
-function requirePositiveInteger(args, name) {
-  if (args[name] === undefined) return;
-  if (!/^[1-9][0-9]*$/.test(args[name])) {
-    throw new Error(`--${name} must be a positive integer, got ${JSON.stringify(args[name])}`);
-  }
-}
-
-function requireOneOf(args, name, allowed) {
-  if (args[name] !== undefined && !allowed.includes(args[name])) {
-    throw new Error(`unknown --${name} ${JSON.stringify(args[name])}; expected one of ${allowed.join(", ")}`);
-  }
-}
-
-/// Validates every flag before anything is spawned, so a typo fails in
-/// milliseconds instead of after a cold rust-analyzer start.
-function validateArgs(args) {
-  requireOneOf(args, "mode", MODE_NAMES);
-  requireOneOf(args, "config", CONFIG_NAMES);
-  requireOneOf(args, "phase", PHASE_NAMES);
-  for (const name of ["n", "timeout", "interval-ms", "edits", "edit-delay-ms"]) {
-    requirePositiveInteger(args, name);
-  }
-  if (args.site !== undefined) {
-    if (args.site.trim() === "") throw new Error("--site must be non-empty");
-    requireOneOf(args, "site", COMPLETION_SITES.map((s) => s.label));
-  }
-  for (const name of ["root", "ra"]) {
-    if (!args[name]) throw new Error(`--${name} is required`);
-  }
-  const needsOutouLsp = args.mode !== "rss" || (args.config ?? "single") === "two-process";
-  if (needsOutouLsp && !args["outou-lsp"]) throw new Error("--outou-lsp is required");
-}
+import { parseArgs, validateArgs } from "./measure-a1-args.mjs";
 
 function usage() {
   return `measure-a1: A1 measurement harness (issue #17)
@@ -107,6 +48,7 @@ function usage() {
   node measure-a1.mjs --mode coldinit --root <dir> --outou-lsp <bin> --ra <bin> [--n 5] [--timeout 240000]
   node measure-a1.mjs --mode flycheck --root <dir> --outou-lsp <bin> --ra <bin> [--n 10]
   node measure-a1.mjs --mode completion --root <dir> --outou-lsp <bin> --ra <bin> [--n 10] [--site <label>]
+  node measure-a1.mjs --mode stall --root <dir> --outou-lsp <bin> --ra <bin> [--n 5] [--via direct|outou-lsp] [--site <label>] [--autoimport true|false] [--window-ms 20000] [--request-timeout-ms 60000] [--log-dir <dir>]
   node measure-a1.mjs --mode rss --root <dir> --config <single|two-process> --phase <cold|cold+edit> --ra <bin> [--outou-lsp <bin>] [--interval-ms 500] [--edits 10] [--edit-delay-ms 500]
 
   --root must already contain a built crate (Cargo.toml, src/main.rsx,
@@ -135,7 +77,26 @@ class LspProcess {
     // readiness signal; only a direct rust-analyzer session delivers it —
     // `outou-lsp` forwards only publishDiagnostics and `$/progress`).
     this.serverStatus = null;
+    // Timestamped `experimental/serverStatus` and `$/progress` notifications
+    // (epoch ms), for `--mode stall`'s timeline.
+    this.events = [];
     this.child.stdout.on("data", (chunk) => this.onData(chunk));
+    // A child that dies (or never starts) must not leave requests hanging:
+    // reject everything in flight so the caller's `finally` can clean up.
+    this.exited = false;
+    this.child.on("exit", (code, signal) => this.failPending(`process exited (code ${code}, signal ${signal})`));
+    this.child.on("error", (err) => this.failPending(`process error: ${err.message}`));
+    // A write to a dead child's stdin must not crash the harness.
+    this.child.stdin.on("error", () => {});
+  }
+
+  failPending(reason) {
+    this.exited = true;
+    for (const [id, { rej, timer }] of this.pending) {
+      clearTimeout(timer);
+      this.pending.delete(id);
+      rej(new Error(reason));
+    }
   }
 
   get pid() {
@@ -164,11 +125,23 @@ class LspProcess {
     this.child.stdin.write(`Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
   }
 
-  request(method, params) {
+  /// `timeoutMs` (optional) rejects the request if no response arrives in
+  /// time; without it the request waits indefinitely, as before.
+  request(method, params, timeoutMs) {
     const id = this.nextId++;
     const start = Date.now();
+    if (this.exited) return Promise.reject(new Error("process already exited"));
     this.send({ id, method, params });
-    return new Promise((res, rej) => this.pending.set(id, { res, rej, start }));
+    return new Promise((res, rej) => {
+      const timer =
+        timeoutMs === undefined
+          ? undefined
+          : setTimeout(() => {
+              this.pending.delete(id);
+              rej(new Error(`${method} timed out after ${timeoutMs} ms`));
+            }, timeoutMs);
+      this.pending.set(id, { res, rej, start, timer });
+    });
   }
 
   notify(method, params) {
@@ -177,12 +150,17 @@ class LspProcess {
 
   handle(message) {
     if (message.method === undefined && message.id !== undefined && this.pending.has(message.id)) {
-      const { res, rej, start } = this.pending.get(message.id);
+      const { res, rej, start, timer } = this.pending.get(message.id);
+      clearTimeout(timer);
       this.pending.delete(message.id);
       const elapsedMs = Date.now() - start;
       message.error ? rej(message.error) : res({ result: message.result, elapsedMs });
     } else if (message.method === "experimental/serverStatus") {
       this.serverStatus = message.params;
+      this.events.push({ t: Date.now(), kind: "serverStatus", ...message.params });
+    } else if (message.method === "$/progress") {
+      const value = message.params?.value ?? {};
+      this.events.push({ t: Date.now(), kind: "progress", token: String(message.params?.token), phase: value.kind, title: value.title, message: value.message });
     } else if (message.method === "textDocument/publishDiagnostics") {
       this.diagnostics[message.params.uri] = message.params.diagnostics;
       this.lastDiagnosticsUpdate[message.params.uri] = Date.now();
@@ -1028,6 +1006,121 @@ async function completionDirect(root, args, n, timeoutMs, site) {
   }
 }
 
+
+// ---------------------------------------------------------------------
+// Mode: stall (issue #21)
+// ---------------------------------------------------------------------
+//
+// Investigates the multi-second `large-enum-path` completion stall.
+// Deliberately the OPPOSITE of the settled `completion` mode: right after
+// the `didChange` that introduces the large-enum site, completion is
+// requested back-to-back (50 ms apart) for `--window-ms` (default 20 s)
+// WITHOUT waiting for quiescence, which is where the stall shows up.
+// Every sample records its start offset from `didChange`, its latency and
+// its candidate count; the session's `experimental/serverStatus` and
+// `$/progress` notifications are returned with the same clock, so a slow
+// sample can be lined up with what rust-analyzer was doing. Each request is
+// bounded by `--request-timeout-ms` (default 60 s) and a child that exits
+// early rejects its pending requests; the session is always shut down/killed
+// in `finally`. With `--log-dir` (must exist) a direct session runs
+// `rust-analyzer --log-file <dir>/ra-<tag>-<i>.log` (tag: `MEASURE_A1_STALL_TAG`,
+// else a timestamp, so reruns do not overwrite each other) under
+// `RA_LOG` (default `info`), whose lines are lined up by hand afterwards.
+// `--site <label>` picks the site (default `large-enum-path`) and
+// `--autoimport false` turns `completion.autoimport` off (a hypothesis
+// check). `--via outou-lsp` runs the same sampling through `outou-lsp` (which
+// forwards no serverStatus) to show the stall is not specific to either.
+
+const STALL_SLOW_MS = 500;
+// Per-request bound, independent of `--window-ms`: a rust-analyzer that never
+// answers must fail the session, not hang the caller (and leave the child).
+const STALL_REQUEST_TIMEOUT_MS = 60000;
+
+/// Log-file suffix that keeps repeated runs from overwriting each other:
+/// `MEASURE_A1_STALL_TAG` if set, otherwise a UTC timestamp.
+function stallLogTag() {
+  const tag = process.env.MEASURE_A1_STALL_TAG || new Date().toISOString().replace(/[:.]/g, "-");
+  return tag.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^[-_]+/, "");
+}
+
+async function stallSession(root, args, index) {
+  const via = args.via ?? "direct";
+  const windowMs = Number(args["window-ms"] ?? 20000);
+  const requestTimeoutMs = Number(args["request-timeout-ms"] ?? STALL_REQUEST_TIMEOUT_MS);
+  const site = COMPLETION_SITES.find((s) => s.label === (args.site ?? "large-enum-path"));
+  const direct = via === "direct";
+  const autoimport = args.autoimport !== "false";
+  const initializationOptions = { ...RA_INIT_OPTIONS, completion: { autoimport: { enable: autoimport } } };
+  const filePath = direct ? resolve(root, "src/.generated/crate-root.rs") : resolve(root, "src/main.rsx");
+  const uri = pathToFileURL(filePath).href;
+  const originalText = readFileSync(filePath, "utf8");
+  const { mutated, cursor } = applySite(originalText, site);
+  const env = { ...process.env };
+  const procArgs = [];
+  let logFile = null;
+  if (direct && args["log-dir"]) {
+    logFile = resolve(args["log-dir"], `ra-${stallLogTag()}-${index}.log`);
+    procArgs.push("--log-file", logFile);
+    env.RA_LOG = env.RA_LOG ?? "info";
+  }
+  if (!direct) env.OUTOU_RUST_ANALYZER = resolve(args.ra);
+  const proc = new LspProcess(direct ? args.ra : args["outou-lsp"], procArgs, env);
+  const t0 = Date.now();
+  try {
+    await proc.request(
+      "initialize",
+      direct
+        ? { processId: process.pid, rootUri: pathToFileURL(root).href, capabilities: capabilities(), initializationOptions }
+        : {
+            processId: process.pid,
+            capabilities: capabilities(),
+            workspaceFolders: [{ uri: pathToFileURL(root).href, name: "measure-a1-stall" }],
+            initializationOptions: { completion: { autoimport: { enable: autoimport } } },
+          },
+      requestTimeoutMs,
+    );
+    proc.notify("initialized", {});
+    proc.notify("textDocument/didOpen", { textDocument: { uri, languageId: direct ? "rust" : "outou-rsx", version: 1, text: originalText } });
+    const changedAt = Date.now();
+    proc.notify("textDocument/didChange", { textDocument: { uri, version: 2 }, contentChanges: [{ text: mutated }] });
+    const params = { textDocument: { uri }, position: cursor };
+    const samples = [];
+    while (Date.now() - changedAt < windowMs) {
+      const startedAt = Date.now() - changedAt;
+      const { result, elapsedMs } = await proc.request("textDocument/completion", params, requestTimeoutMs);
+      samples.push({ atMs: startedAt, ms: elapsedMs, count: completionItems(result).length });
+      await sleep(50);
+    }
+    const rel = (e) => ({ ...e, t: e.t - changedAt });
+    const slow = samples.filter((s) => s.ms > STALL_SLOW_MS);
+    return {
+      index,
+      via,
+      logFile,
+      initializeToChangeMs: changedAt - t0,
+      sampleCount: samples.length,
+      slow,
+      countsSeen: [...new Set(samples.map((s) => s.count))],
+      firstNonEmptyAtMs: samples.find((s) => s.count > 0)?.atMs ?? null,
+      maxMs: Math.max(...samples.map((s) => s.ms)),
+      samples,
+      events: proc.events.map(rel),
+    };
+  } finally {
+    await proc.shutdown();
+  }
+}
+
+async function modeStall(args) {
+  const root = resolve(args.root);
+  const n = Number(args.n ?? 5);
+  const sessions = [];
+  for (let i = 0; i < n; i++) {
+    sessions.push(await stallSession(root, args, i));
+  }
+  return { mode: "stall", root, n, sessions };
+}
+
 // ---------------------------------------------------------------------
 // Mode: rss
 // ---------------------------------------------------------------------
@@ -1432,7 +1525,7 @@ async function main() {
   let args;
   try {
     args = parseArgs(process.argv.slice(2));
-    if (!args.help && args.mode) validateArgs(args);
+    if (!args.help && args.mode) validateArgs(args, COMPLETION_SITES.map((s) => s.label));
   } catch (err) {
     console.error(`measure-a1: ${err.message}`);
     process.exit(2);
@@ -1441,7 +1534,7 @@ async function main() {
     console.log(usage());
     process.exit(args.help ? 0 : 2);
   }
-  const modes = { coldinit: modeColdinit, flycheck: modeFlycheck, completion: modeCompletion, rss: modeRss };
+  const modes = { coldinit: modeColdinit, flycheck: modeFlycheck, completion: modeCompletion, rss: modeRss, stall: modeStall };
   const machineBefore = machineState();
   const result = await modes[args.mode](args);
   console.log(JSON.stringify({ ...result, machineState: { before: machineBefore, after: machineState() } }));
