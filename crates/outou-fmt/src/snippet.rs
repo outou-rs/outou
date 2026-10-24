@@ -159,32 +159,66 @@ fn dedent_one_level(line: &str) -> String {
 /// own indent, not the placeholder's exact column — matching how rustfmt
 /// itself indents a wrapped macro call's arguments).
 fn indent_of_line_containing(text: &str, needle: &str) -> Result<usize, FormatError> {
-    let at = text.find(needle).ok_or_else(|| {
-        FormatError::Internal(format!("placeholder `{needle}` did not survive formatting"))
-    })?;
+    let at = whole_identifier_matches(text, needle)
+        .first()
+        .copied()
+        .ok_or_else(|| {
+            FormatError::Internal(format!("placeholder `{needle}` did not survive formatting"))
+        })?;
     let line_start = text[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
     let line = &text[line_start..at];
     Ok(line.chars().take_while(|c| *c == ' ').count())
 }
 
-/// Replaces exactly one occurrence of `needle` in `text`, erroring
-/// (rather than silently doing nothing, or replacing an unintended
-/// second occurrence) if it is not found exactly once — a placeholder
-/// name is unique by construction, so anything else means an internal
-/// invariant broke.
+/// Byte offsets of every occurrence of `needle` in `text` that is a whole
+/// identifier: not preceded or followed by another identifier character.
+/// A plain substring search would count `__outou_fmt_jsx_1` inside
+/// `__outou_fmt_jsx_10` (ADR 0011: a placeholder is an identifier).
+fn whole_identifier_matches(text: &str, needle: &str) -> Vec<usize> {
+    let is_ident_char = |c: char| c.is_alphanumeric() || c == '_';
+    text.match_indices(needle)
+        .filter(|(at, _)| {
+            let before = text[..*at].chars().next_back();
+            let after = text[at + needle.len()..].chars().next();
+            !before.is_some_and(is_ident_char) && !after.is_some_and(is_ident_char)
+        })
+        .map(|(at, _)| at)
+        .collect()
+}
+
+/// Replaces exactly one whole-identifier occurrence of `needle` in `text`,
+/// erroring (rather than silently doing nothing, or replacing an
+/// unintended second occurrence) if it is not found exactly once — a
+/// placeholder name is unique by construction, so anything else means an
+/// internal invariant broke.
 fn replace_once(text: &str, needle: &str, replacement: &str) -> Result<String, FormatError> {
-    let count = text.matches(needle).count();
-    if count != 1 {
+    let matches = whole_identifier_matches(text, needle);
+    let [at] = matches[..] else {
         return Err(FormatError::Internal(format!(
-            "expected placeholder `{needle}` exactly once, found {count}"
+            "expected placeholder `{needle}` exactly once, found {}",
+            matches.len()
         )));
-    }
-    Ok(text.replacen(needle, replacement, 1))
+    };
+    Ok(format!(
+        "{}{replacement}{}",
+        &text[..at],
+        &text[at + needle.len()..]
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_placeholder_is_not_found_inside_a_longer_one() {
+        let text = "a(__outou_fmt_jsx_10);\nb(__outou_fmt_jsx_1);";
+        assert_eq!(
+            replace_once(text, "__outou_fmt_jsx_1", "X").unwrap(),
+            "a(__outou_fmt_jsx_10);\nb(X);"
+        );
+        assert!(replace_once("a(__outou_fmt_jsx_10);", "__outou_fmt_jsx_1", "X").is_err());
+    }
 
     #[test]
     fn formats_a_whole_file_with_no_jsx() {
