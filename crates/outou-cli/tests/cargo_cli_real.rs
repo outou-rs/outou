@@ -56,9 +56,36 @@ const CARGO_STATUS_WORDS: &[&str] = &[
     "Dirty",
 ];
 
-/// Removes Cargo's progress lines, which are not diagnostics.
+/// Removes ANSI escape sequences (`\x1b[1m\x1b[92m`): CI sets
+/// `CARGO_TERM_COLOR=always`, which puts colour codes in front of Cargo's
+/// status words and in the middle of diagnostics.
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            out.push(c);
+            continue;
+        }
+        if chars.peek() == Some(&'[') {
+            chars.next();
+            // CSI: parameter and intermediate bytes, then one final byte.
+            for next in chars.by_ref() {
+                if ('\x40'..='\x7e').contains(&next) {
+                    break;
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Strips colour codes, then removes Cargo's progress lines, which are not
+/// diagnostics. Forbidden words are checked on this result, so a colour
+/// code inside a word cannot hide it.
 fn without_cargo_progress(text: &str) -> String {
-    text.lines()
+    strip_ansi(text)
+        .lines()
         .filter(|line| {
             let trimmed = line.trim_start();
             !CARGO_STATUS_WORDS.iter().any(|word| {
@@ -238,7 +265,7 @@ fn dogfood_board_type_error_is_reported_at_the_rsx_position_and_a_clean_board_pa
             "expected app/src/task_list.rsx:{line}:{column} in:\n{stderr}"
         );
         assert_no_backend_text(&stderr);
-        assert_no_backend_text(&stdout);
+        assert_no_backend_text(&strip_ansi(&stdout));
     }
 }
 
@@ -283,4 +310,31 @@ fn a_key_of_an_unsupported_type_is_reported_at_the_key_expression() {
         "expected app/src/task_list.rsx:{line}:{column} in:\n{stderr}"
     );
     assert_no_backend_text(&stderr);
+}
+
+#[test]
+fn colored_progress_lines_are_removed_and_diagnostics_kept() {
+    let colored = "\x1b[1m\x1b[92m   Compiling\x1b[0m dioxus-rsx v0.7.10\n\
+\x1b[1m\x1b[92m    Finished\x1b[0m `dev` profile\n\
+\x1b[1m\x1b[91merror[E0308]\x1b[0m\x1b[1m: mismatched types\x1b[0m\n\
+\x1b[1m\x1b[94m --> \x1b[0mapp/src/task_list.rsx:3:9";
+    let filtered = without_cargo_progress(colored);
+    assert_eq!(
+        filtered,
+        "error[E0308]: mismatched types\n --> app/src/task_list.rsx:3:9"
+    );
+    assert_no_backend_text(&filtered);
+}
+
+#[test]
+fn a_forbidden_word_split_by_colour_codes_is_still_found() {
+    let split = "see di\x1b[1moxus here";
+    assert_eq!(strip_ansi(split), "see dioxus here");
+    assert!(strip_ansi(split).contains("dioxus"));
+}
+
+#[test]
+fn strip_ansi_leaves_plain_text_and_a_lone_escape_alone() {
+    assert_eq!(strip_ansi("plain 日本語"), "plain 日本語");
+    assert_eq!(strip_ansi("a\x1bb"), "ab");
 }
