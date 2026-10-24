@@ -1,6 +1,6 @@
 # 0003. Dioxus is the temporary execution backend
 
-Status: Accepted
+Status: Superseded by [0014](0014-dioxus-continues-as-backend-not-as-specification.md) (2026-10-24)
 
 ## Context
 

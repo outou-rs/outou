@@ -6,7 +6,7 @@ Guidance for AI coding agents working in this repository. This file is the singl
 
 Outou compiles JSX written in standalone `.rsx` files to Rust. Phase 0, a feasibility spike, is complete (`docs/phase0-results.md`); the project is now in the **internal front-end alpha**. Read `docs/alpha.md` before planning any work: the order of work, the gates and what may be cut are fixed there.
 
-The alpha's purpose is internal quality, not a public release, and its final gate is the runtime decision. Work that does not move the gates forward (a native runtime, Outou-owned hooks or signals, a router, production CSS, React interop) is out of scope. `docs/phase0.md` and `docs/phase0-results.md` remain as history: they record how the front end was proven feasible in the first place.
+The alpha's purpose is internal quality, not a public release, and its final gate is the runtime decision. Work that does not move the gates forward (a native runtime, a scheduler or new update semantics, a router, production CSS, React interop) is out of scope. The one exception is the A5 work decided in ADR 0014: a thin state API under Outou's own names that never exposes a guard, plus the facade and codegen fixes listed there. `docs/phase0.md` and `docs/phase0-results.md` remain as history: they record how the front end was proven feasible in the first place.
 
 ## Commands
 
@@ -37,7 +37,7 @@ All four workspace checks must pass before a change is considered done. Do not w
 | `crates/outou-syntax` | Lexer, parser, AST, error recovery, Outou diagnostics. |
 | `crates/outou-sourcemap` | Many-to-many source maps and the workspace registry. |
 | `crates/outou-codegen` | `Backend` trait, `Strict` / `Recovery` modes. |
-| `crates/outou-backend-dioxus` | Temporary backend. Emits text; does **not** depend on Dioxus. |
+| `crates/outou-backend-dioxus` | Current backend (ADR 0014). Emits text; does **not** depend on Dioxus. |
 | `crates/outou-modules` | Module resolver for mixed `.rs` / `.rsx` crates. |
 | `crates/outou-fmt` | Formatter: placeholder JSX regions, `rustfmt` for the Rust, then a JSX pretty printer. This is the only crate that spawns `rustfmt`; `outou-syntax` never shells out (`outou-lsp` separately spawns rust-analyzer, unrelated to formatting). |
 | `crates/outou-lsp`, `crates/outou-cli` | Binaries `outou-lsp` and `outou`. |
@@ -88,7 +88,7 @@ All four workspace checks must pass before a change is considered done. Do not w
 ### Scope discipline
 
 - Follow the gate order in `docs/alpha.md`. Do not start a later gate to avoid a blocked earlier one, and do not implement items listed under "what is cut first" there before the gated work is done.
-- Do not build a native runtime, hooks, signals, a router, SSR, HMR or React interop during the alpha. The alpha's job is to *decide* the runtime, not build one. Using the temporary backend's existing state and event APIs in A4 is not building them; any facade re-export this needs follows ADR 0010 and gets a `docs/backend-leakage.md` row.
+- Do not build a native runtime, a scheduler or new update semantics, a router, SSR, HMR or React interop during the alpha. The alpha's job was to *decide* the runtime (ADR 0014: Dioxus continues as the current backend, not as the specification), not build one. Wrapping the backend's state API under Outou's names (`State<T>`, `use_state`, ..., guards never exposed) is in scope as A5 work; the wrapper follows ADR 0010's rule that the prelude does not `pub use` backend items directly, and any new backend-caused constraint gets a `docs/backend-leakage.md` row.
 - Alpha work items are GitHub issues under milestone "Alpha", mirrored in `docs/alpha/issues/`. Keep both in sync when scope changes.
 - Phase 0 work items remain GitHub issues #1–#16 under milestone "Phase 0", mirrored in `docs/phase0/issues/`, kept as history now that Phase 0 is complete.
 

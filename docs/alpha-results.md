@@ -1,9 +1,8 @@
 # Alpha results
 
 This document accumulates the alpha's decision report (`docs/alpha.md`, "Decision report"). This
-revision covers **A1: measurement** (issue #17, `docs/alpha/issues/17-measurement.md`) and, in the
-next-to-last section, **A3's forwarded-completion work** (issue #21), and, last, **A4: the dogfood application** (issue #22); later gates append their own sections
-here rather than replacing this one.
+revision covers **A1: measurement** (issue #17, `docs/alpha/issues/17-measurement.md`), **A2: recovery** (issues #18 and #19), **A3's forwarded-completion work** (issue #21) and, last, **A4: the dogfood application** (issue #22); later gates append their own sections
+here rather than replacing this one. The A5 section (the runtime decision, ADR 0014) is still to be written once its implementation issues close.
 
 Every number in (a), (c) and (d) is from the **settled re-measurement of 2026-10-11** (harness
 fixed after review: samples are taken only once rust-analyzer has settled, RSS covers the whole
@@ -699,6 +698,28 @@ instructions; recorded here instead):
 - Candidate-list-size bucketing has three real buckets (not one), and the RSS harness now supports
   both fixed workspaces directly (`MEASURE_A1_FIXTURE`).
 
+## A2: recovery (issues #18 and #19)
+
+Status: the four A2 shapes are fixed and have fixtures (commits `a6c54aa`, #18, and `771a8af`, #19). The facts below come from those commits' messages, `docs/grammar.md` §9 and the fixtures; no new measurement was made for this section.
+
+### What changed
+
+- **Swallowed tail (#18).** A function body that reaches end of input without its closing `}` is cut at the next column-0 item head and always diagnosed as an unclosed body (``unclosed body of function `Name`, expected `}` to close this `{` ``, at the body's `{`). An incomplete signature stops at an item head or at a mismatched closing delimiter. The boundary search walks Rust tokens lexically, is linear, and is capped at 16 body cuts per file. The item after the broken function (`fn After`) survives as its own item.
+- **Truncated closing tags (#18).** A truncated `</` right after a reserved fragment, and a top-level truncated `</div` at end of file, keep their diagnostics and, for the stray close, the partially scanned tag name. The two `TODO(phase0)` markers in `crates/outou-syntax/src/parser/jsx/mod.rs` are removed.
+- **`<div class=` followed by a sibling (#19).** A `<` that begins a tag (`<Name`, `<>`, `</`) now ends an unfinished opening tag, so the sibling is its own node instead of becoming attributes of the broken tag. The missing value is represented as a `JsxAttributeValue::Error` with an empty span at the `<` and diagnosed as ``attribute values must be double-quoted strings or `{…}` expressions``; `outou-lsp` answers `Cursor::AttrValue` with an empty list locally, so completion no longer returns `null` there. In Rust regions the following JSX is absorbed as the element's children and a matching `</Name>` closes it, which keeps Recovery output valid Rust. Fragments after a broken tag are still unsupported (`TODO(alpha)`).
+
+### Fixtures
+
+Under `tests/fixtures/incomplete/`: the `*-mid-file` fixtures (`bodyless-fn-mid-file`, `class-attribute-value-mid-file`, `unclosed-island-mid-file`, `unclosed-tag-mid-file`) pin that `fn After` survives; `fragment-truncated-closing-tag-eof`, `fragment-closing-tag-interrupted-by-lt` / `-rbrace`, `stray-truncated-closing-tag-eof` and `stray-closing-tag-interrupted-by-lt` / `-rbrace` cover the two `jsx/mod.rs` gaps; `attribute-value-missing-before-sibling` and its variants (top level, in a `let`, in an island, before a closing tag, before a truncated closing tag) and `attribute-name-only-before-sibling` cover #19. Each has a verbatim `.expected` file. Each fixture is checked by `every_incomplete_fixture_produces_parseable_analyzable_rust` and `every_incomplete_fixture_compiles_with_no_parse_errors` (`crates/outou-backend-dioxus/tests/recovery.rs`).
+
+### Performance and corpus
+
+`crates/outou-syntax/tests/item_recovery.rs` has timing tests with a fixed time bound for large runs after a broken function, many broken functions and many unclosed visibility groups (names ending `_in_linear_time`); the cut cap is tested separately (`cuts_per_file_are_capped`). The parser corpus run (`cargo xtask corpus test`) is not repeated for this section; the recorded Phase 0 corpus result (`docs/phase0-results.md` §2: 20 false positives, all on Rust that rustc itself rejects) is the baseline. TODO(alpha): record the corpus re-run's false-positive count after #18 and #19 here, with how many of those rustc rejects.
+
+### Known limits (from `docs/grammar.md` §9)
+
+L1 (a late or missed cut when the earliest diagnostic is inside a later item), L2 (a leftover closing delimiter passes through to `rustc`) and L3 (text skipped by a truncated-construct recovery). A column-0 item head inside JSX text, an attribute string or `<pre>` content after the real error can be taken for a boundary. None changes valid input.
+
 ## A3: forwarded-completion overhead (issue #21)
 
 Issue #21 (`docs/alpha/issues/21-completion-overhead.md`). Same machine (Apple M1 Pro, 16 GiB),
@@ -888,7 +909,7 @@ Outou vocabulary. Implemented in `crates/outou-lsp/src/status.rs`, wired in
 
 ## A4: dogfood application (issue #22)
 
-Status: built, checked natively and for `wasm32-unknown-unknown`, and **walked through by hand in Chrome on 2026-10-24** (see "Browser run"). One defect found there (F18) was fixed afterwards and is **not yet re-checked in a browser**. Full friction log with dispositions: `examples/dogfood-board/README.md` ("Friction log", F1 to F18).
+Status: built, checked natively and for `wasm32-unknown-unknown`, and **walked through by hand in Chrome on 2026-10-24** (see "Browser run"). One defect found there (F18) was fixed afterwards and **re-checked in the browser the same day (2026-10-24)**: the new-task form shows Priority Medium at once, the edit form of a High task shows High, and the detail Status select keeps "In progress" after opening another task and coming back; no console errors. Full friction log with dispositions: `examples/dogfood-board/README.md` ("Friction log", F1 to F18).
 
 ### The application
 
@@ -921,13 +942,13 @@ Run by hand by the project's manager: dioxus-cli 0.7.10 (`cargo install`), `~/.c
 
 - **F9 resolved**: `dx serve --platform web` started and rendered the app without `--features web`; the app's `web = ["outou/web"]` was recognized.
 - Walkthrough steps 1 to 11 and 13 behaved as written, with no browser console errors: initial render, detail view, status change from the detail select and from the list checkbox, status chips, search (including the empty-result message), create with validation and success, edit pre-filled and per-task (the F14 reasoning was **observed** to hold), cancel from Edit, delete, and reset on reload. Not run in the browser: step 12 (length limits, covered by `board-core` tests) and New task then Cancel.
-- **New defect, F18 (ledger row 37)**: a `<select value={..}>` did not show its value on mount (new form's Priority showed "Low" for a Medium value; an edit form showed "Low" for a High task; the detail Status select showed "To do" for an "In progress" task after a remount). Display only: the stored values were right. Cause: backend semantics (the select's `value` does not select the matching option on mount; React's does), not Outou's lowering. Fixed in the app with `selected={option == current}` on each `<option>`; two headless tests check the flags. **A browser re-check of the fix is still open.**
+- **New defect, F18 (ledger row 37)**: a `<select value={..}>` did not show its value on mount (new form's Priority showed "Low" for a Medium value; an edit form showed "Low" for a High task; the detail Status select showed "To do" for an "In progress" task after a remount). Display only: the stored values were right. Cause: backend semantics (the select's `value` does not select the matching option on mount; React's does), not Outou's lowering. Fixed in the app with `selected={option == current}` on each `<option>`; two headless tests check the flags. **Re-checked in the browser afterwards (2026-10-24)**; the fix holds in the three cases above.
 - **Automated versus manual coverage**: the app's automated tests are three headless first-render tests (whole tree, edit form, detail view). Every interactive flow above is covered by the hand-run walkthrough only; it is not repeatable automation (F13). The fixed `key` and `select` behavior in particular is only as verified as that one run.
 
 ### Findings that matter for A5
 
 - **A state API is the first thing an application needs** and the facade had none: the re-exports are Dioxus's `Signal` model unchanged. Two everyday patterns fail on it with backend-flavored diagnostics (row 33's guard borrow, F4; row 34's integer child, F3). Neither is a language-level Outou rule.
-- **`key` is the weakest seam** (row 35, F1/F2): both a static key and a key expression with a string literal fail with messages written by the backend, at a generated position.
+- **`key` is the weakest seam** (rows 35 and 38, F1/F2): both a static key and a key expression containing a `{` or `}` byte (for example `format!("edit-{id}")`) fail with messages written by the backend, at a generated position. A string literal inside the expression is fine; row 38 corrects row 35's first description.
 - **The biggest practical gap is not a ledger row**: `cargo build` diagnostics land on `src/.generated/*.rs` lines, one very long `rsx!` line each, instead of the `.rsx` position (F5). Only the language server and the UI-test harness map back.
 - **`<select value>` carries different semantics from React** (row 37, F18): only a real browser run found it; no compile-time or headless check could have. Together with rows 33 to 35 it argues that the A5 weighing should count "same JSX, different meaning" separately from "backend-authored diagnostic".
 - **What did not hurt**: mixed `.rs` / `.rsx` modules, a plain-Rust workspace library, JSX in `match` arms and closures, and the formatter, which is idempotent and keeps the app building (README, "What worked without friction").
@@ -935,11 +956,11 @@ Run by hand by the project's manager: dioxus-cli 0.7.10 (`cargo install`), `~/.c
 
 ### Not verified
 
-- **The F18 fix has not been re-checked in a browser** (the headless tests check the `selected` flags, not what a browser displays). Browser coverage is one hand-run of the walkthrough; steps 12 and New task then Cancel were not run.
+- The F18 fix **was** re-checked in a browser (2026-10-24); the headless tests check only the `selected` flags. Browser coverage is still one hand-run of the walkthrough plus that re-check; steps 12 and New task then Cancel were not run.
 - The language-server experience on the app's `.rsx` files (completion, hover, diagnostics) was not exercised (F17).
 - The `dogfood-board` CI job has not run on a pushed branch.
 
 ### Issue #22 checklist status
 
-Done: build the app (native and wasm32 compile); prelude re-exports recorded (ADR 0010, rows 31 and 32); app under `examples/` as a non-workspace member; Friction log with dispositions; backend-specific frictions appended as numbered rows (33 to 36); manual walkthrough documented; this summary. Open: browser run and the first CI run of the new job (both described above).
+Done: build the app (native and wasm32 compile); prelude re-exports recorded (ADR 0010, rows 31 and 32); app under `examples/` as a non-workspace member; Friction log with dispositions; backend-specific frictions appended as numbered rows (33 to 36); manual walkthrough documented; this summary. Open: the first CI run of the new job (described above). The browser run is done, including the F18 re-check.
 

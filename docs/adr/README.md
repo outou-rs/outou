@@ -6,7 +6,7 @@ One file per decision. Each record has the sections Context, Decision, Consequen
 |---|---|---|
 | [0001](0001-standalone-rsx-source-format.md) | `.rsx` is a standalone source format, not a macro | Accepted |
 | [0002](0002-drop-rsx-as-syntax-name.md) | The syntax is called "Outou JSX"; `.rsx` is only the extension | Accepted |
-| [0003](0003-dioxus-as-temporary-backend.md) | Dioxus is the temporary execution backend | Accepted |
+| [0003](0003-dioxus-as-temporary-backend.md) | Dioxus is the temporary execution backend | Superseded by 0014 |
 | [0004](0004-grammar-extension-limited-to-jsx.md) | The grammar extension is limited to JSX expressions | Accepted |
 | [0005](0005-rust-analyzer-strategy-priority.md) | rust-analyzer strategy priority: overlay, shadow project, rust-project.json | Accepted |
 | [0006](0006-ambiguous-module-is-an-error.md) | An ambiguous module is an error | Accepted |
@@ -17,3 +17,4 @@ One file per decision. Each record has the sections Context, Decision, Consequen
 | [0011](0011-formatter-placeholder-rustfmt-splice.md) | Formatter: placeholder JSX regions, `rustfmt` for the Rust, then a JSX pretty printer | Accepted |
 | [0012](0012-semantic-tokens-legend-and-overlay.md) | Semantic tokens: legend reuse and overlay precedence | Accepted |
 | [0013](0013-rename-translation-and-refusal.md) | Rename/references translation and the refusal policy | Accepted |
+| [0014](0014-dioxus-continues-as-backend-not-as-specification.md) | Dioxus continues as the current backend, but is not the specification | Accepted |

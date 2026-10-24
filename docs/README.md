@@ -10,6 +10,7 @@
 | [gate3-results.md](gate3-results.md) | Results of the integrated language server (Gate 3) |
 | [phase0-results.md](phase0-results.md) | The Gate 4 decision report: parser, modules, Cargo, IDE features, latency and leakage, measured |
 | [alpha.md](alpha.md) | The internal front-end alpha: gates A1–A5, what must not be cut, what is cut first |
+| [alpha-results.md](alpha-results.md) | The alpha's decision report: A1 measurements, A2 recovery, A3 completion overhead, A4 dogfood findings (A5 section pending) |
 | [adr/](adr/README.md) | Architecture decision records |
 | [phase0/issues/](phase0/issues/) | The Phase 0 work items, one file per issue |
 | [alpha/issues/](alpha/issues/) | The alpha work items, one file per issue |
