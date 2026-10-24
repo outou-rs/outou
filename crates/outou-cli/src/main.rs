@@ -106,12 +106,14 @@ fn run_build(manifest_dir: Option<PathBuf>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(report) => {
+            let produced = report.generated_files.len() + report.map_files.len();
             println!(
-                "outou build: generated {} file(s), removed {} stale file(s)",
-                report.generated_files.len(),
+                "outou build: wrote {} file(s), {} unchanged, removed {} stale file(s)",
+                report.written_files.len(),
+                produced - report.written_files.len(),
                 report.removed_files.len()
             );
-            for file in &report.generated_files {
+            for file in &report.written_files {
                 println!("  {}", file.display());
             }
             for file in &report.removed_files {

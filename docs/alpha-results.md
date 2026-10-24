@@ -502,18 +502,56 @@ repository.
 
 ### (f) "A single-file edit never regenerates the whole crate"
 
+The criterion is interpreted on the **write side** (file writes and mtimes), the harm that was measured: PASS below means unchanged units' generated files are not rewritten, not that their codegen is skipped.
+
 - **Language-server path: PASS.** `regenerating_one_unit_does_not_touch_another`
   (`crates/outou-lsp/src/documents/workspace/tests.rs`) re-verified passing (re-run for this
   report, alongside `regenerating_one_unit_is_fast` under its new 10 ms threshold — both pass).
   `components.rs`'s generated text is byte-identical before and after editing `main.rsx`.
-- **`outou build` CLI path: FAIL, as already recorded in `docs/phase0-results.md` §6.**
-  Re-verified directly for this report: touching only `examples/phase0-app`'s `main.rsx` (appending
-  a comment) and re-running `outou build --manifest-dir <copy>` reports `generated 2 file(s)` —
-  both `crate-root.rs` *and* `components.rs` are rewritten on every invocation, even though only the
-  crate root's source changed. `components.rs`'s *content* happened to come out byte-identical in
-  this case (nothing about `components.rsx` changed), but the file is unconditionally regenerated and
-  rewritten regardless — this is A3's work to fix, not A1's; recorded here as the pass/fail baseline
-  A3 starts from.
+- **`outou build` CLI path: FAIL at A1 (baseline), PASS after issue #20.** Baseline, re-verified
+  for A1: touching only `examples/phase0-app`'s `main.rsx` and re-running `outou build
+  --manifest-dir <copy>` reported `generated 2 file(s)`; both `crate-root.rs` and `components.rs`
+  were rewritten although only the crate root's source changed.
+- **Cause (issue #20).** `emit()` (`crates/outou-cli/src/build/emit.rs`) generated every unit in the
+  plan and then called `atomic_write` (temp file + rename) on every `.rs` and `.rs.map.json`
+  unconditionally. There was no comparison against what was already on disk, so every invocation
+  gave every generated file a fresh mtime. Content was already deterministic, which is why this
+  only showed in mtimes, never in `git status`.
+- **Fix.** `emit()` still parses and generates every unit, but skips the write when the existing
+  file's bytes equal the new bytes (`is_up_to_date`); `EmitOutput`/`Report` gain `written_files`,
+  and `outou build` prints `wrote N file(s), M unchanged`. Comparing the final output (not only the
+  unit's own source) is deliberate: output also depends on the plan (`#[path]` lines, crate-relative
+  header and map paths), so it cannot miss a changed input. Codegen cost per unit is far below the
+  10 ms threshold (e), so skipping parse/codegen was not needed to meet the criterion and would have
+  required a dependency graph for cache keys.
+- **CLI-path tests** (`crates/outou-cli/tests/build_incremental.rs`, run through the real `outou`
+  binary): editing `components/user.rsx` leaves the mtimes of `crate-root.rs`, `components.rs` and
+  their maps untouched (pinned to a 2001 timestamp beforehand); an unchanged rebuild writes nothing;
+  a hand-edited generated file is restored; adding a child module still rewrites the parent.
+- **Workspace measurement** (`tests/fixtures/workspace` copy, `ui-kit` generated files pinned to
+  mtime 2001-01-01 after a first build, then `// edit` appended to `app/src/main.rsx` and
+  `outou build --manifest-dir <ws>` re-run; debug binaries before/after the change):
+
+  | | `ui-kit` generated files rewritten (of 10: 5 `.rs` + 5 maps) | `app` files rewritten | summary line |
+  |---|---|---|---|
+  | before | 10 | 2 | `generated 6 file(s)` (all units) |
+  | after | 0 | 2 | `wrote 2 file(s), 10 unchanged` |
+
+  Determinism is unaffected (generation is unchanged; `cargo xtask determinism` passes).
+
+- **Alternative not taken (unit-level codegen skip).** Skipping parse+codegen for units whose
+  source is unchanged was rejected (Opus review conclusion): savings are only 0.05-0.46 ms per unit
+  (see (e)), while a correct cache key must include every plan-dependent input (`#[path]` lines,
+  crate-relative header and map paths, child module set), so a missed invalidation would leave
+  stale output. The byte comparison needs no such bookkeeping.
+- **Known pre-existing bug (not a #20 regression; recommend a separate issue).** On a
+  case-insensitive filesystem (macOS APFS), if only the case of a generated name changes (for
+  example `mod components;` to `mod Components;`), `clean_stale` (`crates/outou-cli/src/build/clean.rs`,
+  ~line 30) checks a case-sensitive `HashSet` and treats the existing on-disk spelling as stale. It
+  deletes it after the new write resolved to the same file, so `outou build` exits 0 and the
+  generated module is gone. HEAD behaves the same. Candidate fixes: skip removal when the
+  `(dev, inode)` of the candidate matches a produced file, or have emit remove differently-cased
+  existing entries before writing. No code change made here.
 
 ### Thresholds
 
@@ -632,8 +670,7 @@ instructions; recorded here instead):
   2026-10-11 on settled sessions, debug and release), **Fixed (user-confirmed 2026-10-11): median overhead ≤ 5 ms + 0.15 ms × candidate count,
   no tail threshold** — see "Thresholds" (2).
 - Threshold: "a single-file edit never regenerates the whole crate," pass/fail on both paths:
-  **done**, see (f) — language-server path PASS, `outou build` CLI path FAIL (issue #20's work, not fixed
-  here).
+  **done**, see (f) — language-server path PASS, `outou build` CLI path FAIL at A1 and PASS after issue #20.
 - Every number, threshold and method recorded in this document: **done**, this section and (a)-(f)
   above.
 
@@ -652,7 +689,7 @@ instructions; recorded here instead):
 - **Deferred to A3 (#21)**: pinning down the stall trigger with `RA_LOG`; whether `outou-lsp` should
   forward `experimental/serverStatus` / show readiness; judging completion-path optimisation on
   release numbers (the debug threshold is loose in release).
-- **Deferred to #20**: the `outou build` CLI-path FAIL in (f).
+- ~~Deferred to #20: the `outou build` CLI-path FAIL in (f).~~ Fixed in issue #20, see (f).
 - **Harness limitations (recorded, not fixed)**: harness requests have no per-request timeout, so a
   wedged server can hang the rss mode or a `Command::output()` call; and the `outou-lsp` side of the
   RSS settle uses hover stability only (no quiescence signal, no expected signature).

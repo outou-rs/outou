@@ -47,7 +47,7 @@ Four known gaps, all already on record rather than newly discovered:
 
 ### A3: budget misses, in detail
 
-`docs/phase0-results.md` §6 records the `outou build` CLI path regenerating every unit in a workspace's plan on every invocation, even when only one file changed — met on the language-server path (`regenerating_one_unit_does_not_touch_another`), missed on the CLI one. Forwarded completion overhead is measured but not yet judged against a fixed threshold, because A1 is what fixes that threshold; A3 is where the overhead is brought under it.
+`docs/phase0-results.md` §6 records the `outou build` CLI path regenerating every unit in a workspace's plan on every invocation, even when only one file changed — met on the language-server path (`regenerating_one_unit_does_not_touch_another`), missed on the CLI one. For the CLI path, "not regenerate" is judged on the write side: `outou build` must not rewrite (or bump the mtime of) generated files whose output did not change; it may still parse and generate every unit. Forwarded completion overhead is measured but not yet judged against a fixed threshold, because A1 is what fixes that threshold; A3 is where the overhead is brought under it.
 
 ### A4: dogfood, in detail
 

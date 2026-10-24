@@ -57,10 +57,14 @@ pub struct Report {
     /// `false` when the crate has no `.rsx` crate root (only a plain
     /// `.rs` one, or none at all): "nothing to do".
     pub built: bool,
-    /// Generated `.rs` files written, in plan order.
+    /// Generated `.rs` files produced, in plan order (written or already
+    /// up to date).
     pub generated_files: Vec<PathBuf>,
-    /// Generated `.rs.map.json` files written, in plan order.
+    /// Generated `.rs.map.json` files produced, in plan order.
     pub map_files: Vec<PathBuf>,
+    /// The subset of `generated_files` and `map_files` actually written;
+    /// the rest were byte-identical and left untouched (issue #20).
+    pub written_files: Vec<PathBuf>,
     /// Stale managed files removed from `src/.generated/`.
     pub removed_files: Vec<PathBuf>,
 }
@@ -119,6 +123,7 @@ fn build_workspace(members: &[PathBuf]) -> Result<Report, BuildError> {
         aggregate.built |= report.built;
         aggregate.generated_files.extend(report.generated_files);
         aggregate.map_files.extend(report.map_files);
+        aggregate.written_files.extend(report.written_files);
         aggregate.removed_files.extend(report.removed_files);
     }
     Ok(aggregate)
@@ -152,6 +157,7 @@ fn build_crate(manifest_dir: &Path) -> Result<Report, BuildError> {
         built: true,
         generated_files: output.generated_files,
         map_files: output.map_files,
+        written_files: output.written_files,
         removed_files: removed,
     })
 }
