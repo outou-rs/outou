@@ -358,6 +358,7 @@ fn setup_rust_analyzer(
     let mut capabilities = serde_json::to_value(&params.capabilities).unwrap_or(json!({}));
     strip_link_support(&mut capabilities);
     force_utf16_position_encoding(&mut capabilities);
+    crate::status::declare_server_status(&mut capabilities);
     let init_options = build_ra_init_options(params.initialization_options.clone());
 
     let id = ra.request(

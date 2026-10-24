@@ -11,7 +11,7 @@ use lsp_types::PublishDiagnosticsParams;
 use serde_json::Value;
 
 use super::{Pending, PendingKind, State};
-use crate::{diagnostics, response};
+use crate::{diagnostics, response, status};
 
 pub(crate) fn dispatch_ra_message(state: &mut State, connection: &Connection, message: Message) {
     match message {
@@ -63,8 +63,22 @@ fn handle_ra_request(state: &mut State, connection: &Connection, request: Reques
         "client/registerCapability" if state.client_supports_dynamic_registration => {
             forward_ra_request_to_client(state, connection, request)
         }
-        "window/workDoneProgress/create" if state.client_supports_work_done_progress => {
-            forward_ra_request_to_client(state, connection, request)
+        "window/workDoneProgress/create" => {
+            let token = request.params.get("token").cloned();
+            if state.client_supports_work_done_progress {
+                let mut params = request.params;
+                if let Some(token) = token {
+                    params["token"] = state.progress_tokens.map_created(&token);
+                }
+                forward_ra_request_to_client(state, connection, Request { params, ..request });
+            } else {
+                if let Some(token) = token {
+                    state.progress_tokens.suppress(&token);
+                }
+                if let Some(ra) = &state.ra {
+                    ra.send(Message::Response(Response::new_ok(request.id, Value::Null)));
+                }
+            }
         }
         _ => {
             if let Some(ra) = &state.ra {
@@ -291,18 +305,17 @@ fn sanitize_ra_error(mut error: ResponseError) -> ResponseError {
 /// Handles a notification from rust-analyzer: `publishDiagnostics` is
 /// merged and republished for the owning `.rsx` file
 /// (`diagnostics::handle_ra_publish`); `$/progress` is relayed to the
-/// editor verbatim, under its own token, so a real editor gets a
+/// editor (title, message and token rewritten by [`status`]), so a real editor gets a
 /// readiness signal for rust-analyzer's indexing (issue #9 Gate 3 review,
 /// S6) — `outou-lsp-client.mjs` used to work around the lack of one with
 /// bounded request retries (see its own module doc comment; it now
 /// listens for `$/progress` `end` instead).
 ///
-/// No token rewriting is needed: every token this server ever sees in a
-/// `$/progress` notification was itself allocated by the *editor*, in
-/// its response to the `window/workDoneProgress/create` request this
-/// server forwarded on rust-analyzer's behalf (`handle_ra_request` below)
-/// — never one this server or rust-analyzer invented independently — so
-/// there is nothing to collide with.
+/// Tokens are rust-analyzer's own (`rustAnalyzer/...`), renamed to
+/// `outou/...` by [`status`] in both the forwarded `create` request and
+/// every `$/progress`, so the two always agree. `experimental/serverStatus`
+/// is never relayed: a `health` other than `ok` becomes one Outou
+/// `window/showMessage` per state (issue #21).
 ///
 /// Forwarding is gated on the exact same condition as forwarding
 /// `create` itself (`state.client_supports_work_done_progress`, issue #9
@@ -323,11 +336,26 @@ fn handle_ra_notification(state: &mut State, connection: &Connection, notificati
                 }
             }
         }
-        "$/progress" if state.client_supports_work_done_progress => {
-            let _ = connection.sender.send(Message::Notification(Notification {
-                method: notification.method,
-                params: notification.params,
-            }));
+        "$/progress" => {
+            if let Some(params) = state.progress_tokens.route_progress(notification.params) {
+                let _ = connection.sender.send(Message::Notification(Notification {
+                    method: notification.method,
+                    params,
+                }));
+            }
+        }
+        status::SERVER_STATUS_METHOD => {
+            let (notified, notice) =
+                status::next_health_notice(state.notified_health, &notification.params);
+            state.notified_health = notified;
+            if let Some(params) = notice {
+                let _ = connection
+                    .sender
+                    .send(Message::Notification(Notification::new(
+                        "window/showMessage".to_string(),
+                        params,
+                    )));
+            }
         }
         _ => {}
     }
@@ -461,7 +489,7 @@ mod tests {
         }
     }
 
-    /// S6/L12: `$/progress` is forwarded to the editor verbatim when it
+    /// S6/L12: `$/progress` is forwarded to the editor (sanitized by `crate::status`) when it
     /// advertised `window.workDoneProgress` support (the same flag that
     /// gates forwarding `window/workDoneProgress/create` in the first
     /// place).
@@ -470,6 +498,8 @@ mod tests {
         let mut state = State::new();
         state.client_supports_work_done_progress = true;
         let (connection, client) = Connection::memory();
+        let editor_token =
+            create_progress(&mut state, &connection, &client, "rustAnalyzer/Indexing");
 
         handle_ra_notification(
             &mut state,
@@ -487,10 +517,141 @@ mod tests {
         match msg {
             Message::Notification(note) => {
                 assert_eq!(note.method, "$/progress");
-                assert_eq!(note.params["token"], "rustAnalyzer/Indexing");
+                assert_eq!(note.params["token"], editor_token);
             }
             other => panic!("expected a notification, got {other:?}"),
         }
+    }
+
+    /// Has rust-analyzer create `token`, as the editor sees it, and returns
+    /// the token forwarded to the editor.
+    fn create_progress(
+        state: &mut State,
+        connection: &Connection,
+        client: &Connection,
+        token: &str,
+    ) -> Value {
+        handle_ra_request(
+            state,
+            connection,
+            Request {
+                id: RequestId::from(3),
+                method: "window/workDoneProgress/create".to_string(),
+                params: json!({ "token": token }),
+            },
+        );
+        match drain(client).into_iter().next() {
+            Some(Message::Request(req)) => req.params["token"].clone(),
+            other => panic!("create was not forwarded: {other:?}"),
+        }
+    }
+
+    fn drain(client: &Connection) -> Vec<Message> {
+        client.receiver.try_iter().collect()
+    }
+
+    fn server_status(health: &str, message: &str) -> Notification {
+        Notification::new(
+            "experimental/serverStatus".to_string(),
+            json!({ "health": health, "quiescent": true, "message": message }),
+        )
+    }
+
+    fn show_messages(messages: &[Message]) -> Vec<String> {
+        messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::Notification(n) if n.method == "window/showMessage" => {
+                    Some(n.params["message"].as_str().unwrap_or_default().to_string())
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn server_status_warning_and_error_show_one_outou_message_each() {
+        for health in ["warning", "error"] {
+            let mut state = State::new();
+            let (connection, client) = Connection::memory();
+            handle_ra_notification(&mut state, &connection, server_status(health, ""));
+            let shown = show_messages(&drain(&client));
+            assert_eq!(shown.len(), 1, "{health}");
+            assert!(shown[0].starts_with("Outou:"));
+        }
+    }
+
+    #[test]
+    fn server_status_ok_shows_nothing_and_is_never_forwarded_raw() {
+        let mut state = State::new();
+        let (connection, client) = Connection::memory();
+        handle_ra_notification(&mut state, &connection, server_status("ok", "fine"));
+        assert!(drain(&client).is_empty());
+    }
+
+    #[test]
+    fn server_status_repeats_are_silent_and_ok_rearms() {
+        let mut state = State::new();
+        let (connection, client) = Connection::memory();
+        handle_ra_notification(&mut state, &connection, server_status("error", ""));
+        handle_ra_notification(&mut state, &connection, server_status("error", ""));
+        assert_eq!(show_messages(&drain(&client)).len(), 1);
+        handle_ra_notification(&mut state, &connection, server_status("ok", ""));
+        handle_ra_notification(&mut state, &connection, server_status("error", ""));
+        assert_eq!(show_messages(&drain(&client)).len(), 1);
+    }
+
+    #[test]
+    fn server_status_message_with_backend_vocabulary_does_not_leak() {
+        let mut state = State::new();
+        let (connection, client) = Connection::memory();
+        handle_ra_notification(
+            &mut state,
+            &connection,
+            server_status("error", "rust-analyzer: rsx! failed in src/.generated/a.rs"),
+        );
+        let out = format!("{:?}", drain(&client));
+        for needle in [
+            "rust-analyzer",
+            "rsx!",
+            ".generated",
+            "experimental/serverStatus",
+        ] {
+            assert!(!out.contains(needle), "{needle} leaked: {out}");
+        }
+    }
+
+    #[test]
+    fn forwarded_progress_has_an_outou_title_and_no_crate_names() {
+        let mut state = State::new();
+        state.client_supports_work_done_progress = true;
+        let (connection, client) = Connection::memory();
+        create_progress(
+            &mut state,
+            &connection,
+            &client,
+            "rustAnalyzer/cachePriming",
+        );
+        handle_ra_notification(
+            &mut state,
+            &connection,
+            Notification::new(
+                "$/progress".to_string(),
+                json!({
+                    "token": "rustAnalyzer/cachePriming",
+                    "value": { "kind": "begin", "title": "Indexing", "message": "0/93 (dioxus_core)" }
+                }),
+            ),
+        );
+        let Some(Message::Notification(note)) = drain(&client).into_iter().next() else {
+            panic!("progress was not forwarded");
+        };
+        assert_eq!(note.params["value"]["title"], "Outou: indexing");
+        assert_eq!(note.params["value"]["message"], "0/93");
+        assert!(!note.params["token"]
+            .as_str()
+            .unwrap()
+            .contains("rustAnalyzer"));
     }
 
     /// L12: kept consistent with `create`'s own gating — a client that
@@ -502,6 +663,15 @@ mod tests {
         let mut state = State::new();
         assert!(!state.client_supports_work_done_progress);
         let (connection, client) = Connection::memory();
+        handle_ra_request(
+            &mut state,
+            &connection,
+            Request {
+                id: RequestId::from(3),
+                method: "window/workDoneProgress/create".to_string(),
+                params: json!({ "token": "rustAnalyzer/Indexing" }),
+            },
+        );
 
         handle_ra_notification(
             &mut state,

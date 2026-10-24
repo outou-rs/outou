@@ -691,7 +691,7 @@ instructions; recorded here instead):
   mapping. The exact rust-analyzer trigger was not identified, which is why no tail/p95 threshold is
   set. Flagged rather than smoothed over.
 - **Deferred to A3 (#21)** (stall trigger, `serverStatus`, release numbers): worked in "A3:
-  forwarded-completion overhead (issue #21)" below; the `serverStatus` decision is still open.
+  forwarded-completion overhead (issue #21)" below; the `serverStatus` decision was taken on 2026-10-24 and implemented there.
 - ~~Deferred to #20: the `outou build` CLI-path FAIL in (f).~~ Fixed in issue #20, see (f).
 - **Harness limitations (recorded, not fixed)**: harness requests have no per-request timeout, so a
   wedged server can hang the rss mode or a `Command::output()` call; and the `outou-lsp` side of the
@@ -813,34 +813,63 @@ What the timelines show:
 No exclusion of the outlier from any measurement was made; the settled tables simply did not contain
 one.
 
-### `experimental/serverStatus`: forward it? (recommendation, not implemented)
+### `experimental/serverStatus` and indexing visibility (decided and implemented 2026-10-24)
 
-State of play (read from `crates/outou-lsp/src/dispatch/responses.rs`): `handle_ra_notification`
-forwards `textDocument/publishDiagnostics` (merged and mapped) and `$/progress` (verbatim, gated on the
-client's `window.workDoneProgress`) and drops every other notification, including
-`experimental/serverStatus`. The `$/progress` stream through `outou-lsp` is already complete for
-this purpose: in the `--via outou-lsp` stall runs the harness saw `Indexing` begin, the `cachePriming`
-reports and the `cachePriming` end, then `cargo check`/flycheck progress, all with rust-analyzer's own
-titles. What `serverStatus` adds is only `quiescent` (a boolean that `cachePriming` end already
-approximates within ~0.3 s here), `health` (`ok`/`warning`/`error`) and a free-text `message`
-(for example a failed `cargo metadata`).
+User decision (2026-10-24): do not relay `experimental/serverStatus`; show a health problem once, in
+Outou vocabulary. Implemented in `crates/outou-lsp/src/status.rs`, wired in
+`dispatch/responses.rs` (`handle_ra_notification`) and `server.rs` (`setup_rust_analyzer`).
 
-Arguments against forwarding it raw: it is a rust-analyzer-specific *experimental* extension, so a
-generic client has no handler and a rust-analyzer-aware client (VS Code's rust-analyzer extension)
-would update *its own* status item for a language it does not own, colliding with its real
-rust-analyzer's status (the two-process arrangement in `crates/outou-lsp/README.md`); and its
-`message` is rust-analyzer free text that can name backend/generated vocabulary (`AGENTS.md`'s backend
-boundary: it would need the same leak scan as diagnostics). Arguments for: the only information
-`$/progress` lacks is `health`, which tells the user "rust-analyzer could not load the workspace",
-currently invisible except as missing completions.
-
-**Recommendation: do not forward `experimental/serverStatus` in the alpha.** The stall that motivated
-the question is already visible to the editor through the forwarded `$/progress`. If a readiness or
-health indicator is later wanted, build it in `outou-lsp` from the signals it already receives
-(`$/progress` and the first answers), in Outou vocabulary and behind the existing leak scan, rather
-than relaying the extension; a one-time `window/showMessage` on `health != ok` (message run through
-`contains_backend_marker`) is the smallest version. This is a product decision and is left open for the
-user; nothing was implemented.
+- **Declaration.** rust-analyzer only sends the notification if the client capabilities it receives
+  contain `experimental.serverStatusNotification`. `outou-lsp` adds that flag to the capabilities it
+  sends *to rust-analyzer* in its own `initialize` (the editor's capabilities are otherwise forwarded
+  as before). It says nothing about what the real editor supports, and nothing is advertised to the
+  editor.
+- **Behaviour.** `health` `warning`/`error` produces one `window/showMessage` (warning/error
+  severity) beginning `Outou:`. The same non-`ok` state does not notify again; `ok` re-arms; a change
+  between `warning` and `error` notifies. `ok` shows nothing. The notification itself is never
+  forwarded. Only an explicit `ok` re-arms; a missing, `null`, non-string or unknown `health` changes
+  nothing and shows nothing. The upstream `message` contributes only its first line (200 chars max)
+  and only if it passes `contains_backend_marker` and, after lower-casing and `-` to `_` (and again
+  with all punctuation removed), contains no `dioxus`, `rsx`, `rust_analyzer` / `rustanalyzer`,
+  `propsbuilder` or `.generated`; otherwise the fixed Outou text is shown alone. (The fixed text
+  does not claim a cause.)
+- **(B) investigation, before the change.** (1) Visibility: `window/workDoneProgress/create` was
+  already forwarded to the editor under a fresh request id, the editor's response routed back to
+  rust-analyzer (`reverse_pending`), and `$/progress` forwarded under the same token, all gated on the
+  editor's `window.workDoneProgress`. So a progress-capable editor did see an indexing report;
+  nothing was missing there. The gate3 `progress-before-hover` probe confirms an `end` reaches the
+  client. (2) Leakage: it leaked. The title was rust-analyzer's own (`Indexing`, `Roots Scanned`,
+  `Fetching`, `cargo check`), the message named crates and paths (`12/300 (dioxus_core)`), and the token
+  was `rustAnalyzer/...`. This is a leak by AGENTS.md's rule even though the old comment on
+  `handle_ra_notification` assumed the editor allocated tokens (it does not; rust-analyzer does).
+- **(B) implementation, after review.** A first version renamed the `rustAnalyzer/` and
+  `rust-analyzer/` prefixes to `outou/`. Review found that this is not injective (`rustAnalyzer/x`,
+  `rust-analyzer/x` and `outou/x` collide), that `window/workDoneProgress/cancel` then reached
+  rust-analyzer with a token it never created, and that the editor's own `partialResultToken`
+  progress was rewritten or dropped. Now only tokens from rust-analyzer's `create` are mapped: each
+  gets an opaque `outou/progress/<n>` token, stored both ways in `State` and removed at `end`. A
+  client without `window.workDoneProgress` gets `null` for `create` and that token's progress is
+  dropped. A `$/progress` for any other token passes untouched whatever the capability flag.
+  `window/workDoneProgress/cancel` is mapped back to rust-analyzer's token (unknown tokens forwarded
+  as is). `partialResultToken` is removed from requests forwarded to rust-analyzer (partial results
+  cannot be reverse-mapped; rust-analyzer returns the full result in the ordinary response).
+  Titles are mapped by keyword to `Outou: indexing`, `Outou: scanning files`, `Outou: fetching
+  dependencies`, `Outou: building`, `Outou: checking`, anything else `Outou: working`. A message is
+  reduced to its leading `done/total` counter or removed. Only `begin` / `report` / `end` objects are
+  rewritten; `kind`, `percentage` and `cancellable` pass through.
+- **What this does not do.** The first-completion stall itself is untouched (it is rust-analyzer-side);
+  it is now only visible as an "Outou: indexing" report, in editors that support work-done progress.
+  Not verified in a real editor (VS Code or other): coverage is the unit tests plus the gate3 probe
+  against a live rust-analyzer. `health` notices were not provoked against a live broken workspace
+  (the notice path is covered by unit tests with synthetic `serverStatus` params).
+- **Tests** (`status.rs`, `dispatch/responses.rs`, `dispatch/progress_tests.rs`): warning and error each notify once with the right
+  severity; ok is silent; a repeat is silent; ok then error notifies again; warning then error
+  notifies; leaky upstream messages (`rsx!`, `dioxus_core`, `.generated`, `rust-analyzer`,
+  `PropsBuilder`, and the spellings `DIOXUS_CORE`, `RSX!`, `dioxus-html v0.7.10`) never reach the
+  editor; an unknown `health` does not re-arm; progress title/message rewriting; distinct upstream
+  tokens stay distinct; the token is identical in `create` and `$/progress`; editor-token progress
+  passes untouched with or without work-done support; `cancel` reaches a mock rust-analyzer under
+  its own token; `partialResultToken` does not reach it.
 
 ### Issue #21 checklist status
 
@@ -853,6 +882,6 @@ user; nothing was implemented.
   completion that returns the final list consistently overlaps rust-analyzer's initial cache priming and
   query computation and ends shortly after it (correlation; causation not isolated). What
   remains open is whether to *treat* it (user decision below).
-- `experimental/serverStatus` decision: recommendation written; **decision not taken** (user).
+- `experimental/serverStatus` decision: taken by the user (2026-10-24) and implemented as above, together with Outou-vocabulary rewriting of the forwarded progress.
 - Release judgement: done; the formula's ~23-31x looseness stands, and a verdict line now names the
   profile.

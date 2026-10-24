@@ -20,6 +20,8 @@ use crate::documents::{self, Workspace};
 use crate::ra::RaClient;
 
 mod notifications;
+#[cfg(test)]
+mod progress_tests;
 mod requests;
 mod responses;
 
@@ -144,6 +146,12 @@ pub(crate) struct State {
     /// (LSP has no single top-level flag for this; it is declared
     /// per-capability).
     pub(crate) client_supports_dynamic_registration: bool,
+    /// The non-`ok` rust-analyzer health already announced to the editor
+    /// (`crate::status`); `None` until one is, and again after `ok`.
+    pub(crate) notified_health: Option<crate::status::Health>,
+    /// rust-analyzer's work-done progress tokens, renamed for the editor
+    /// and mapped back for `window/workDoneProgress/cancel`.
+    pub(crate) progress_tokens: crate::status::ProgressTokens,
     /// Bumped by [`notifications::replan_and_resync`] every time a
     /// crate-wide re-plan succeeds. See [`Pending::epoch`].
     epoch: u64,
@@ -174,6 +182,8 @@ impl State {
             client_supports_configuration: false,
             client_supports_work_done_progress: false,
             client_supports_dynamic_registration: false,
+            notified_health: None,
+            progress_tokens: crate::status::ProgressTokens::default(),
             epoch: 0,
             semantic_legend: crate::semantic_tokens::Legend::default_legend(),
             ra_supports_semantic_tokens: false,

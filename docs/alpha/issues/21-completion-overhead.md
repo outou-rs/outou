@@ -18,7 +18,7 @@ labels: [alpha, gate-a3, droppable, lsp]
 - [ ] Re-measure after optimizing and confirm the result is within the A1 threshold. N/A: no optimization was needed (the threshold was already met), so there is nothing to re-measure.
 - [x] Record before/after numbers in `docs/alpha-results.md`.
 - [x] Pin down the trigger of the multi-second `large-enum-path` stall (a rust-analyzer-side event seen in direct sessions too) by reproducing it with `RA_LOG`/`--log-file` on a larger set of sessions (`docs/alpha-results.md`, A1 (d)). Done as far as a correlation: the stall consistently overlaps the initial cache priming; causation was not isolated.
-- [ ] Decide whether `outou-lsp` should forward `experimental/serverStatus` or otherwise show readiness (today it forwards only `publishDiagnostics` and `$/progress`).
+- [x] Decide whether `outou-lsp` should forward `experimental/serverStatus` or otherwise show readiness. Decided (2026-10-24): not relayed; `health != ok` becomes one Outou-worded `window/showMessage` per state, and the progress rust-analyzer creates is relayed under opaque `outou/progress/<n>` tokens (cancel mapped back) with title and message rewritten into Outou vocabulary, the editor's own tokens untouched and `partialResultToken` stripped from forwarded requests so the first-completion stall shows as "Outou: indexing". Unit-tested and gate3-run; not checked in a real editor.
 - [x] Judge any completion-path optimisation on **release** numbers: the debug-profile threshold is loose in release (~31x headroom at 1204 candidates, ~23x at 122) and would not catch a release regression.
 
 Status (2026-10-24, details in `docs/alpha-results.md`, "A3: forwarded-completion overhead (issue #21)"):
@@ -26,5 +26,4 @@ the overhead passes the A1 threshold in debug and release (so the profile/optimi
 fix: "if over threshold" did not apply and no after-measurement was needed); the stall is characterised
 (the first completion that returns the final list consistently overlaps rust-analyzer's initial
 cache priming and query computation, in 27 of 27 sessions sampled before quiescence; a correlation,
-not an isolated cause). The `experimental/serverStatus` item is
-left unchecked: a recommendation (do not forward it) is written, but the decision is the user's.
+not an isolated cause). The `experimental/serverStatus` item was decided by the user and implemented (see `docs/alpha-results.md`).

@@ -88,6 +88,15 @@ pub(crate) fn dispatch_client_notification(
             }
         }
         "$/cancelRequest" => handle_cancel_request(state, note.params),
+        "window/workDoneProgress/cancel" => {
+            let mut params = note.params;
+            if let Some(token) = params.get("token") {
+                params["token"] = state.progress_tokens.upstream_for(token);
+            }
+            if let Some(ra) = &state.ra {
+                ra.notify(note.method, params);
+            }
+        }
         _ => {
             if let Some(ra) = &state.ra {
                 ra.notify(note.method, note.params);

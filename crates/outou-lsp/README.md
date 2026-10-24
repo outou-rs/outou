@@ -124,8 +124,11 @@ internally) rather than rust-analyzer's own:
 |---|---|
 | `workspace/configuration` | Answered locally: an array of `null`s, one per requested item — never a bare `null`, which is not a valid result shape for this request. |
 | `client/registerCapability` | Forwarded to the editor (under a fresh id) only if the editor's own `initialize` capabilities advertised `dynamicRegistration: true` somewhere; otherwise answered locally with `null`. |
-| `window/workDoneProgress/create` | Forwarded to the editor (under a fresh id) only if the editor advertised `window.workDoneProgress`; otherwise answered locally with `null`. |
-| `$/progress` (a notification, not a request) | Forwarded to the editor verbatim, under its own token, only if the editor advertised `window.workDoneProgress` (the same condition that gates forwarding `window/workDoneProgress/create`); otherwise dropped. |
+| `window/workDoneProgress/create` | Forwarded to the editor (under a fresh id) only if the editor advertised `window.workDoneProgress`, with rust-analyzer's token replaced by an opaque `outou/progress/<n>` token (remembered both ways); otherwise answered locally with `null` and that token's progress is dropped. |
+| `$/progress` (a notification, not a request) | A token rust-analyzer created is renamed to its `outou/progress/<n>` token (forgotten at `end`); its title (rewritten to `Outou: indexing`, `Outou: checking`, ...) and message (reduced to its `done/total` counter) are rewritten, for `begin` / `report` / `end` payloads only. If the editor did not advertise `window.workDoneProgress`, that progress is dropped. A `$/progress` for any other token (one the editor allocated, e.g. a `workDoneToken`) is forwarded untouched. |
+| `window/workDoneProgress/cancel` (editor to rust-analyzer) | The `outou/progress/<n>` token is mapped back to rust-analyzer's own; an unknown token is forwarded as is. |
+| `partialResultToken` in a forwarded request | Removed before the request reaches rust-analyzer (partial results are not reverse-mapped); rust-analyzer answers in full. `workDoneToken` is kept. |
+| `experimental/serverStatus` (a notification) | Never forwarded. `outou-lsp` declares `experimental.serverStatusNotification` to rust-analyzer in its own `initialize`; a `health` of `warning` or `error` becomes one Outou-worded `window/showMessage` per state (repeats are silent, only an explicit `ok` re-arms, a missing or unknown `health` is ignored), with the upstream message appended only if it passes the backend-vocabulary scan (case-insensitive, `-` as `_`, punctuation ignored). |
 | Every other rust-analyzer -> client request | Answered locally with `null`. |
 | Every client -> server request/notification not named above | Forwarded to rust-analyzer verbatim (after any position mapping this document already described). |
 
@@ -236,7 +239,7 @@ since it is read-only. See
 
 See [`docs/gate3-results.md`](../../docs/gate3-results.md)'s own section
 for the full hover/completion/definition/diagnostics list with evidence.
-In short: `$/progress` (and so the readiness signal it carries) only
+In short: rust-analyzer's `$/progress` (and so the readiness signal it carries) only
 reaches editors that advertise `window.workDoneProgress` support,
 semantic diagnostics need a save (a rust-analyzer limitation, not this
 server's), a transformed (non-verbatim) source mapping returns `null`

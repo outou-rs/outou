@@ -301,6 +301,7 @@ fn forward_semantic_tokens_request(
     };
 
     let mut params = req.params.clone();
+    strip_partial_result_token(&mut params);
     params["textDocument"]["uri"] = serde_json::to_value(&generated_uri_lsp).unwrap();
 
     let ra_id = ra.next_id();
@@ -418,6 +419,7 @@ fn forward_position_request(
     };
 
     let mut params = req.params;
+    strip_partial_result_token(&mut params);
     params["textDocument"]["uri"] = serde_json::to_value(&mapped.generated_uri).unwrap();
     params["position"] = serde_json::to_value(mapped.position).unwrap();
 
@@ -453,11 +455,24 @@ fn forward_transparent_request(state: &mut State, connection: &Connection, req: 
             rsx_document: None,
         },
     );
+    let mut params = req.params;
+    strip_partial_result_token(&mut params);
     ra.send(Message::Request(Request {
         id: ra_id,
         method: req.method,
-        params: req.params,
+        params,
     }));
+}
+
+/// Removes the editor's `partialResultToken` before a request reaches
+/// rust-analyzer. Partial results would arrive as `$/progress` payloads
+/// that are not reverse-mapped, so rust-analyzer is made to answer in
+/// full instead (LSP: a server that gets no token returns the complete
+/// result), and that response is mapped as usual. `workDoneToken` stays.
+fn strip_partial_result_token(params: &mut Value) {
+    if let Some(map) = params.as_object_mut() {
+        map.remove("partialResultToken");
+    }
 }
 
 /// Fails every request this server is still waiting on a rust-analyzer

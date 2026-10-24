@@ -18,6 +18,7 @@ mod rename;
 mod response;
 mod semantic_tokens;
 mod server;
+mod status;
 mod translate;
 mod uri;
 
