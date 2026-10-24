@@ -1,0 +1,6 @@
+error: `Priority` cannot be used as the value of a `<select>` or `<option>`
+ --> $DIR/input.rsx:8:20
+error: `bool` cannot be used as the value of a `<select>` or `<option>`
+ --> $DIR/input.rsx:9:24
+error: `{float}` cannot be used as the value of a `<select>` or `<option>`
+ --> $DIR/input.rsx:10:24

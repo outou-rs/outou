@@ -1,0 +1,12 @@
+warning: this `<option>` has no `value`, so Outou does not mark it as selected for the `value` of the enclosing `<select>`; add a `value` attribute to have it selected
+ --> $DIR/input.rsx:14:14
+warning: `<Choices>` is inside a `<select value=…>`: an `<option>` it renders is not selected by `value`; write the `<option>` elements inside the `<select>`
+ --> $DIR/input.rsx:16:14
+warning: this expression is not JSX, so an `<option>` it produces is not selected by `value` on the enclosing `<select>`; write the `<option>` elements inside the `<select>`
+ --> $DIR/input.rsx:17:14
+warning: `value` on a `<select multiple>` does not select any `<option>`; give each selected `<option>` a `selected` attribute
+ --> $DIR/input.rsx:19:26
+warning: no `<option>` is written inside this `<select>`, so `value` selects nothing; write the `<option>` elements inside the `<select>`
+ --> $DIR/input.rsx:22:17
+warning: `multiple` on this `<select>` is not a literal `true` or `false`, so it is treated as `multiple` and `value` does not select any `<option>`; write `multiple={false}` (or leave `multiple` out) for a single choice, or give each selected `<option>` a `selected` attribute
+ --> $DIR/input.rsx:26:33

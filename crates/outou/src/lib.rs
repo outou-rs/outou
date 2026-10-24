@@ -41,13 +41,17 @@ pub mod prelude {
 
 pub mod jsx {
     //! Types that JSX syntax gives a meaning to: the `key` of a JSX element
-    //! (`<li key={id}>`, `<Row key="new" />`) and the value of a child
-    //! expression (`<p>{count}</p>`).
+    //! (`<li key={id}>`, `<Row key="new" />`), the value of a child
+    //! expression (`<p>{count}</p>`) and the `value` of a `<select>` and its
+    //! `<option>` elements.
 
     use dioxus::dioxus_core::{DynamicNode, IntoDynNode};
 
     mod sealed {
         pub trait Sealed {}
+
+        /// Seals [`super::IntoOptionValue`].
+        pub trait SealedOptionValue {}
 
         /// Seals [`super::IntoChild`]: the marker parameter is as free as
         /// the trait's own, so sealing needs the same parameter.
@@ -266,6 +270,110 @@ pub mod jsx {
         std::num::NonZeroI128,
         std::num::NonZeroIsize,
     );
+
+    /// A value that can be the `value` of a `<select>` or of an `<option>`:
+    /// a string, an integer or a `char`.
+    ///
+    /// `<select value={V}>` selects the `<option>` whose `value` is equal to
+    /// `V`. Both are turned into text first and compared as text, as the
+    /// browser does: `2` and `"2"` are equal, `"a"` and `"A"` are not.
+    ///
+    /// Implemented for `str`, `String`, `Cow<'_, str>`, `Box<str>`,
+    /// `Rc<str>`, `Arc<str>`, every integer type, every `NonZero*` type,
+    /// `char`, and `&T` / `&mut T` of any of them. `bool`, floating point
+    /// numbers, `Option` and a custom type are not values: convert them with
+    /// `.to_string()` (or `.label()` and the like) first.
+    ///
+    /// The trait is sealed; it cannot be implemented outside Outou. A value
+    /// of any other type is reported at the expression in the `.rsx` file:
+    ///
+    /// ```text
+    /// error[E0277]: `Priority` cannot be used as the value of a `<select>` or `<option>`
+    /// ```
+    #[diagnostic::on_unimplemented(
+        message = "`{Self}` cannot be used as the value of a `<select>` or `<option>`",
+        label = "this is not a string, an integer or a `char`",
+        note = "the `value` of a `<select>` and of an `<option>` must be a string (`&str`, `String`), an integer type or a `char`",
+        note = "convert the value first, for example with `.to_string()`"
+    )]
+    pub trait IntoOptionValue: sealed::SealedOptionValue {
+        /// The value as text. Generated code only; not public API.
+        #[doc(hidden)]
+        fn to_option_value(&self) -> String;
+    }
+
+    impl sealed::SealedOptionValue for str {}
+    impl IntoOptionValue for str {
+        fn to_option_value(&self) -> String {
+            self.to_owned()
+        }
+    }
+
+    impl sealed::SealedOptionValue for String {}
+    impl IntoOptionValue for String {
+        fn to_option_value(&self) -> String {
+            self.clone()
+        }
+    }
+
+    impl<T: IntoOptionValue + ?Sized> sealed::SealedOptionValue for &T {}
+    impl<T: IntoOptionValue + ?Sized> IntoOptionValue for &T {
+        fn to_option_value(&self) -> String {
+            (**self).to_option_value()
+        }
+    }
+
+    impl<T: IntoOptionValue + ?Sized> sealed::SealedOptionValue for &mut T {}
+    impl<T: IntoOptionValue + ?Sized> IntoOptionValue for &mut T {
+        fn to_option_value(&self) -> String {
+            (**self).to_option_value()
+        }
+    }
+
+    macro_rules! displayed_option_values {
+        ($($displayed:ty),* $(,)?) => {
+            $(
+                impl sealed::SealedOptionValue for $displayed {}
+                impl IntoOptionValue for $displayed {
+                    fn to_option_value(&self) -> String {
+                        self.to_string()
+                    }
+                }
+            )*
+        };
+    }
+
+    displayed_option_values!(
+        u8,
+        u16,
+        u32,
+        u64,
+        u128,
+        usize,
+        i8,
+        i16,
+        i32,
+        i64,
+        i128,
+        isize,
+        char,
+        std::borrow::Cow<'_, str>,
+        Box<str>,
+        std::rc::Rc<str>,
+        std::sync::Arc<str>,
+        std::num::NonZeroU8,
+        std::num::NonZeroU16,
+        std::num::NonZeroU32,
+        std::num::NonZeroU64,
+        std::num::NonZeroU128,
+        std::num::NonZeroUsize,
+        std::num::NonZeroI8,
+        std::num::NonZeroI16,
+        std::num::NonZeroI32,
+        std::num::NonZeroI64,
+        std::num::NonZeroI128,
+        std::num::NonZeroIsize,
+    );
 }
 
 /// Backend re-exports used by generated code. **Not public API.**
@@ -288,6 +396,31 @@ pub mod __private {
     #[doc(hidden)]
     pub fn key<K: crate::jsx::IntoKey + ?Sized>(key: &K) -> String {
         key.to_key()
+    }
+
+    /// Turns the `value` of a `<select value={V}>` into text. Generated code
+    /// binds it once, before the element's call, and every `<option>` of the
+    /// select compares against that one value (`option_selected`). A value of
+    /// an unsupported type is reported here, in Outou's words
+    /// (`crate::jsx::IntoOptionValue`).
+    #[doc(hidden)]
+    pub fn select_value<V: crate::jsx::IntoOptionValue + ?Sized>(value: &V) -> String {
+        value.to_option_value()
+    }
+
+    /// Turns the `value` of an `<option>` that sits inside a
+    /// `<select value={..}>` into text. Generated code binds it once and uses
+    /// the binding both as the option's `value` and in `option_selected`.
+    #[doc(hidden)]
+    pub fn option_value<V: crate::jsx::IntoOptionValue + ?Sized>(value: &V) -> String {
+        value.to_option_value()
+    }
+
+    /// Whether an `<option>` is the one the enclosing `<select value>`
+    /// names: exact text equality, as the browser compares them.
+    #[doc(hidden)]
+    pub fn option_selected(select_value: &str, option_value: &str) -> bool {
+        select_value == option_value
     }
 
     /// Turns a JSX child expression into the node the backend renders.

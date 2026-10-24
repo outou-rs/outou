@@ -14,6 +14,7 @@
 //! names, event handlers).
 
 mod attribute;
+mod bindings;
 mod block;
 mod element;
 mod escape;
@@ -23,12 +24,22 @@ mod item;
 mod key;
 mod module;
 mod recovery;
+mod select;
 
 use outou_codegen::{
     reject_syntax_errors_in_strict_mode, Backend, Error, GenerateOptions, Generated, Mode, Writer,
 };
 use outou_sourcemap::Span;
+use outou_syntax::select::SelectScan;
 use outou_syntax::Parsed;
+
+/// What lowering needs besides the writer and the source text: the mode and
+/// which options belong to which `<select value>` (issue #28).
+#[derive(Clone, Copy)]
+pub(crate) struct Cx<'a> {
+    pub(crate) mode: Mode,
+    pub(crate) selects: &'a SelectScan,
+}
 
 /// Root path through which generated code reaches the runtime.
 pub const PRIVATE_PATH: &str = "::outou::__private";
@@ -87,6 +98,11 @@ impl Backend for DioxusBackend {
         // question — through the exact same code path as the real pass,
         // so it can never drift out of sync with what that pass actually
         // does — and only the second pass's writer is kept.
+        let (selects, _) = outou_syntax::select::scan(&parsed.file);
+        let cx = Cx {
+            mode,
+            selects: &selects,
+        };
         let needs_lint_allow = {
             let mut probe = Writer::new(opts.generated_uri.clone(), opts.source_uri.clone());
             item::lower_items(
@@ -94,7 +110,7 @@ impl Backend for DioxusBackend {
                 source,
                 &parsed.file.items,
                 opts,
-                mode,
+                cx,
                 Span::new(0, source.len() as u32),
             );
             probe.marked()
@@ -112,7 +128,7 @@ impl Backend for DioxusBackend {
             source,
             &parsed.file.items,
             opts,
-            mode,
+            cx,
             Span::new(0, source.len() as u32),
         );
         let (rust, source_map) = writer.finish();
@@ -214,7 +230,7 @@ mod tests {
         let generated = generate(source, Mode::Strict).expect("generation succeeds");
         assert!(
             generated.rust.contains(
-                "{ let __outou_key_0 = ::outou::__private::key(&(x.clone())); ::outou::__private::rsx! { li { key: \"{__outou_key_0}\", {::outou::__private::child(x.clone())}, } } }"
+                "{ #[allow(clippy::borrow_deref_ref)] let __outou_key_0 = ::outou::__private::key(&(x.clone())); ::outou::__private::rsx! { li { key: \"{__outou_key_0}\", {::outou::__private::child(x.clone())}, } } }"
             ),
             "{}",
             generated.rust
@@ -248,7 +264,7 @@ mod tests {
         let generated = generate(source, Mode::Strict).expect("generation succeeds");
         assert!(
             generated.rust.contains(
-                "{ let __outou_key_0 = ::outou::__private::key(&(\"new\")); ::outou::__private::rsx! { TaskForm { key: \"{__outou_key_0}\", } } }"
+                "{ #[allow(clippy::borrow_deref_ref)] let __outou_key_0 = ::outou::__private::key(&(\"new\")); ::outou::__private::rsx! { TaskForm { key: \"{__outou_key_0}\", } } }"
             ),
             "{}",
             generated.rust
@@ -272,7 +288,7 @@ mod tests {
     fn keys_in_one_rsx_call_share_one_block_in_source_order() {
         let source = "fn f() { <ul key={a}><li key={b}></li><li key={c}></li></ul>; }";
         let generated = generate(source, Mode::Strict).expect("generation succeeds");
-        let expected = "{ let __outou_key_0 = ::outou::__private::key(&(a)); let __outou_key_1 = ::outou::__private::key(&(b)); let __outou_key_2 = ::outou::__private::key(&(c)); ::outou::__private::rsx! { ul { key: \"{__outou_key_0}\", li { key: \"{__outou_key_1}\", }, li { key: \"{__outou_key_2}\", }, } } }";
+        let expected = "{ #[allow(clippy::borrow_deref_ref)] let __outou_key_0 = ::outou::__private::key(&(a)); #[allow(clippy::borrow_deref_ref)] let __outou_key_1 = ::outou::__private::key(&(b)); #[allow(clippy::borrow_deref_ref)] let __outou_key_2 = ::outou::__private::key(&(c)); ::outou::__private::rsx! { ul { key: \"{__outou_key_0}\", li { key: \"{__outou_key_1}\", }, li { key: \"{__outou_key_2}\", }, } } }";
         assert!(generated.rust.contains(expected), "{}", generated.rust);
     }
 
@@ -282,8 +298,132 @@ mod tests {
     fn island_rsx_call_gets_its_own_key_block() {
         let source = "fn f() { <ul key={a}>{v.iter().map(|x| <li key={x}></li>)}</ul>; }";
         let generated = generate(source, Mode::Strict).expect("generation succeeds");
-        let expected = "{ let __outou_key_0 = ::outou::__private::key(&(a)); ::outou::__private::rsx! { ul { key: \"{__outou_key_0}\", {::outou::__private::child(v.iter().map(|x| { let __outou_key_0 = ::outou::__private::key(&(x)); ::outou::__private::rsx! { li { key: \"{__outou_key_0}\", } } }))}, } } }";
+        let expected = "{ #[allow(clippy::borrow_deref_ref)] let __outou_key_0 = ::outou::__private::key(&(a)); ::outou::__private::rsx! { ul { key: \"{__outou_key_0}\", {::outou::__private::child(v.iter().map(|x| { #[allow(clippy::borrow_deref_ref)] let __outou_key_0 = ::outou::__private::key(&(x)); ::outou::__private::rsx! { li { key: \"{__outou_key_0}\", } } }))}, } } }";
         assert!(generated.rust.contains(expected), "{}", generated.rust);
+    }
+
+    /// Issue #28: the select's value and every option's value are bound once
+    /// before the call; `value` and `selected` use the bindings. Binding
+    /// names carry the element's offset in the source.
+    #[test]
+    fn select_and_option_values_are_bound_before_the_rsx_call() {
+        let source = "fn f() { <select value={cur}><option value=\"a\">A</option></select>; }";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        let (s, o) = (
+            source.find("<select").unwrap(),
+            source.find("<option").unwrap(),
+        );
+        let expected = format!("{{ #[allow(clippy::borrow_deref_ref)] let __outou_select_{s} = &::outou::__private::select_value(&(cur)); #[allow(clippy::borrow_deref_ref)] let __outou_opt_{o} = ::outou::__private::option_value(&(\"a\")); let __outou_selected_{o} = ::outou::__private::option_selected(__outou_select_{s}, &__outou_opt_{o}); ::outou::__private::rsx! {{ select {{ value: \"{{__outou_select_{s}}}\", option {{ value: \"{{__outou_opt_{o}}}\", selected: __outou_selected_{o}, \"A\", }}, }} }} }}");
+        assert!(generated.rust.contains(&expected), "{}", generated.rust);
+    }
+
+    /// An option written in an island is part of another `rsx!` call: its
+    /// bindings are in that call's block and refer to the outer select's.
+    #[test]
+    fn an_option_in_an_island_refers_to_the_outer_selects_binding() {
+        let source =
+            "fn f() { <select value={cur}>{xs.map(|x| <option value={x}>{x}</option>)}</select>; }";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        let (s, o) = (
+            source.find("<select").unwrap(),
+            source.find("<option").unwrap(),
+        );
+        let island = format!("{{::outou::__private::child(xs.map(|x| {{ #[allow(clippy::borrow_deref_ref)] let __outou_opt_{o} = ::outou::__private::option_value(&(x)); let __outou_selected_{o} = ::outou::__private::option_selected(__outou_select_{s}, &__outou_opt_{o}); ::outou::__private::rsx! {{ option {{ value: \"{{__outou_opt_{o}}}\", selected: __outou_selected_{o}, {{::outou::__private::child(x)}}, }} }} }}))}}");
+        assert!(generated.rust.contains(&island), "{}", generated.rust);
+        let outer = format!("{{ #[allow(clippy::borrow_deref_ref)] let __outou_select_{s} = &::outou::__private::select_value(&(cur)); ::outou::__private::rsx!");
+        assert!(generated.rust.contains(&outer), "{}", generated.rust);
+    }
+
+    /// Two selects in one call and a select inside an island each have their
+    /// own binding, named by the element's offset in the `.rsx` file, so one
+    /// can never shadow the other.
+    #[test]
+    fn several_selects_have_distinct_bindings() {
+        let source = "fn f() { <p><select value={a}><option value=\"1\"/></select><select value={b}><option value=\"1\"/></select>{xs.map(|x| <select value={x}><option value=\"1\"/></select>)}</p>; }";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        let names: Vec<&str> = generated
+            .rust
+            .match_indices("let __outou_select_")
+            .map(|(at, _)| &generated.rust[at..at + "let __outou_select_000".len()])
+            .collect();
+        assert_eq!(names.len(), 3, "{}", generated.rust);
+        let mut unique = names.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), 3, "{names:?}");
+    }
+
+    #[test]
+    fn an_explicit_selected_a_missing_value_and_multiple_are_left_alone() {
+        let source = "fn f() { <select value={cur}><option value=\"a\" selected={true}>A</option><option>B</option></select>; <select multiple value={cur}><option value=\"a\">A</option></select>; }";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        assert!(
+            generated
+                .rust
+                .contains("option { value: \"a\", selected: true, \"A\", }, option { \"B\", }"),
+            "{}",
+            generated.rust
+        );
+        assert!(
+            generated.rust.contains(
+                "select { multiple: true, value: cur, option { value: \"a\", \"A\", }, }"
+            ),
+            "{}",
+            generated.rust
+        );
+        assert!(
+            !generated.rust.contains("option_selected"),
+            "{}",
+            generated.rust
+        );
+    }
+
+    /// A statement island is a block, not a call argument (the `expr_shape`
+    /// rule of issue #27).
+    #[test]
+    fn a_block_value_keeps_its_braces() {
+        let source = "fn f() { <select value={ let a = 1u8; a }><option value=\"1\"/></select>; }";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        assert!(
+            generated
+                .rust
+                .contains("select_value(&({ let a = 1u8; a }));"),
+            "{}",
+            generated.rust
+        );
+    }
+
+    /// The option's value expression is written once in the generated text,
+    /// so a diagnostic or a lint on it cannot be reported twice.
+    #[test]
+    fn an_option_value_expression_appears_and_maps_exactly_once() {
+        let source = "fn f() { <select value={cur}>{xs.map(|x| <option value={wrap(x)}>{x}</option>)}</select>; }";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        assert_eq!(
+            generated.rust.matches("wrap(x)").count(),
+            1,
+            "{}",
+            generated.rust
+        );
+        let start = source.find("wrap(x)").unwrap() as u32;
+        let mappings = generated
+            .source_map
+            .mappings
+            .iter()
+            .filter(|m| m.sources.iter().any(|s| s.span.start == start))
+            .filter(|m| {
+                &generated.rust[m.generated.start as usize..m.generated.end as usize] == "wrap(x)"
+            })
+            .count();
+        assert_eq!(mappings, 1, "{:#?}", generated.source_map);
+    }
+
+    /// An element without a select value has no extra block.
+    #[test]
+    fn a_select_without_value_has_no_block() {
+        let source = "fn f() { <select><option value=\"a\"/></select>; }";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        assert!(!generated.rust.contains("__outou_"), "{}", generated.rust);
     }
 
     /// Issue #27: a child expression is wrapped in the facade's `child(..)`,

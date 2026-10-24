@@ -50,6 +50,13 @@ fn cases() -> Vec<Case> {
                 .join("tests/golden/children/input.rsx"),
             module_paths: vec![],
         },
+        // Issue #28: every shape of `<select value>` and its options.
+        Case {
+            name: "selects".to_string(),
+            source_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/golden/selects/input.rsx"),
+            module_paths: vec![],
+        },
     ];
 
     let formatting_dir = root.join("tests/fixtures/formatting");

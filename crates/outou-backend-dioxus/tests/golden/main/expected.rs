@@ -13,7 +13,7 @@ fn Greeting(name: String) -> Element {
 
 #[component]
 fn TagList(tags: Vec<String>) -> Element {
-    ::outou::__private::rsx! { ul { class: "tags", {::outou::__private::child(tags.iter().map(|tag| { let __outou_key_0 = ::outou::__private::key(&(tag.clone())); ::outou::__private::rsx! { li { key: "{__outou_key_0}", {::outou::__private::child(tag.clone())}, } } }))}, } }
+    ::outou::__private::rsx! { ul { class: "tags", {::outou::__private::child(tags.iter().map(|tag| { #[allow(clippy::borrow_deref_ref)] let __outou_key_0 = ::outou::__private::key(&(tag.clone())); ::outou::__private::rsx! { li { key: "{__outou_key_0}", {::outou::__private::child(tag.clone())}, } } }))}, } }
 }
 
 #[component]

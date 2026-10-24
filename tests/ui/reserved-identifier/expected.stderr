@@ -1,0 +1,2 @@
+error: `__outou_select_9` is reserved for generated code: identifiers starting with `__outou_key_`, `__outou_select_`, `__outou_selected_` or `__outou_opt_` cannot be used in a JSX expression; rename it
+ --> $DIR/input.rsx:6:33

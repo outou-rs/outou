@@ -6,11 +6,12 @@
 //! together before reusing [`crate::expr::lower_parts`]'s gap-filling
 //! shape.
 
-use outou_codegen::{Mode, Writer};
+use outou_codegen::Writer;
 use outou_sourcemap::{MappingKind, Span};
 use outou_syntax::ast::{Block, Expr};
 
 use crate::expr::{expr_span, lower_expr};
+use crate::Cx;
 
 /// Lowers `block`'s content (statements, in source order, then the tail)
 /// and, if the block never found its own closing `}` (grammar §2.2's
@@ -22,7 +23,7 @@ use crate::expr::{expr_span, lower_expr};
 /// Callers must not call this for a block that never opened at all
 /// (`block.span.start == block.span.end`, no real `{` — see
 /// [`outou_syntax::ast::Block::close`]'s doc); there is nothing to lower.
-pub fn lower_block(writer: &mut Writer, source: &str, block: &Block, mode: Mode) {
+pub fn lower_block(writer: &mut Writer, source: &str, block: &Block, cx: Cx<'_>) {
     let mut parts: Vec<&Expr> = block.statements.iter().collect();
     if let Some(tail) = &block.tail {
         parts.push(tail);
@@ -40,7 +41,7 @@ pub fn lower_block(writer: &mut Writer, source: &str, block: &Block, mode: Mode)
                 None,
             );
         }
-        lower_expr(writer, source, part, mode);
+        lower_expr(writer, source, part, cx);
         cursor = span.end.max(cursor);
     }
     if cursor < block.span.end {

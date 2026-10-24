@@ -7,6 +7,7 @@ use outou_syntax::ast::{Function, Item, RustItem};
 use crate::block::lower_block;
 use crate::expr::lower_parts;
 use crate::module::lower_module;
+use crate::Cx;
 use crate::PRIVATE_PATH;
 
 /// The span an [`Item`] occupies, for sorting and gap-filling.
@@ -28,7 +29,7 @@ pub fn lower_items(
     source: &str,
     items: &[Item],
     opts: &GenerateOptions,
-    mode: Mode,
+    cx: Cx<'_>,
     region: Span,
 ) {
     let mut cursor = region.start;
@@ -42,7 +43,7 @@ pub fn lower_items(
                 None,
             );
         }
-        lower_item(writer, source, item, opts, mode);
+        lower_item(writer, source, item, opts, cx);
         cursor = span.end.max(cursor);
     }
     if cursor < region.end {
@@ -55,11 +56,11 @@ pub fn lower_items(
     }
 }
 
-fn lower_item(writer: &mut Writer, source: &str, item: &Item, opts: &GenerateOptions, mode: Mode) {
+fn lower_item(writer: &mut Writer, source: &str, item: &Item, opts: &GenerateOptions, cx: Cx<'_>) {
     match item {
-        Item::Function(function) => lower_function(writer, source, function, opts, mode),
-        Item::Module(module) => lower_module(writer, source, module, opts, mode),
-        Item::Rust(rust_item) => lower_rust_item(writer, source, rust_item, mode),
+        Item::Function(function) => lower_function(writer, source, function, opts, cx),
+        Item::Module(module) => lower_module(writer, source, module, opts, cx),
+        Item::Rust(rust_item) => lower_rust_item(writer, source, rust_item, cx),
         // Reserved-syntax error nodes never reach here in Strict mode
         // (refused earlier by `reject_syntax_errors_in_strict_mode`). In
         // Recovery mode, item-level garbage that could not even be
@@ -109,11 +110,11 @@ fn lower_function(
     source: &str,
     function: &Function,
     opts: &GenerateOptions,
-    mode: Mode,
+    cx: Cx<'_>,
 ) {
     let _ = opts;
     if function.body.span.start == function.body.span.end {
-        match mode {
+        match cx.mode {
             Mode::Strict => writer.verbatim(source, function.span, MappingKind::Expression, None),
             Mode::Recovery => emit_bodyless_function_placeholder(writer, function),
         }
@@ -131,11 +132,11 @@ fn lower_function(
         MappingKind::Expression,
         None,
     );
-    lower_block(writer, source, &function.body, mode);
+    lower_block(writer, source, &function.body, cx);
 }
 
-fn lower_rust_item(writer: &mut Writer, source: &str, rust_item: &RustItem, mode: Mode) {
-    lower_parts(writer, source, &rust_item.parts, rust_item.span, mode);
+fn lower_rust_item(writer: &mut Writer, source: &str, rust_item: &RustItem, cx: Cx<'_>) {
+    lower_parts(writer, source, &rust_item.parts, rust_item.span, cx);
 }
 
 /// Emits the [`Mode::Recovery`] placeholder for a body-less function

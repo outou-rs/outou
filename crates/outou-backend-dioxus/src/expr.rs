@@ -1,12 +1,13 @@
 //! Lowering a Rust-or-JSX [`Expr`] and a span-partitioning sequence of them
 //! (`RustItem::parts`, `Island::parts` — grammar §9's round-trip contract).
 
-use outou_codegen::{Mode, Writer};
+use outou_codegen::Writer;
 use outou_sourcemap::{MappingKind, Span};
 use outou_syntax::ast::Expr;
 
 use crate::element::lower_element_as_rsx;
 use crate::recovery::emit_recovery_expr;
+use crate::Cx;
 
 /// The span an [`Expr`] occupies, for sorting and gap-filling.
 pub fn expr_span(expr: &Expr) -> Span {
@@ -21,10 +22,10 @@ pub fn expr_span(expr: &Expr) -> Span {
 /// `::outou::__private::rsx! { … }`, or a recovery placeholder for an
 /// error node (Strict mode never reaches the error case — the caller
 /// already refused generation if any error diagnostic exists).
-pub fn lower_expr(writer: &mut Writer, source: &str, expr: &Expr, mode: Mode) {
+pub fn lower_expr(writer: &mut Writer, source: &str, expr: &Expr, cx: Cx<'_>) {
     match expr {
         Expr::Rust(rust) => writer.verbatim(source, rust.span, MappingKind::Expression, None),
-        Expr::Jsx(element) => lower_element_as_rsx(writer, source, element, mode),
+        Expr::Jsx(element) => lower_element_as_rsx(writer, source, element, cx),
         Expr::Error(error) => emit_recovery_expr(writer, error.span),
     }
 }
@@ -35,7 +36,7 @@ pub fn lower_expr(writer: &mut Writer, source: &str, expr: &Expr, mode: Mode) {
 /// Gaps are expected to be empty given that invariant; filling them
 /// anyway costs nothing and tolerates a caller that passes a slightly
 /// wider `region` on purpose.
-pub fn lower_parts(writer: &mut Writer, source: &str, parts: &[Expr], region: Span, mode: Mode) {
+pub fn lower_parts(writer: &mut Writer, source: &str, parts: &[Expr], region: Span, cx: Cx<'_>) {
     let mut cursor = region.start;
     for part in parts {
         let span = expr_span(part);
@@ -47,7 +48,7 @@ pub fn lower_parts(writer: &mut Writer, source: &str, parts: &[Expr], region: Sp
                 None,
             );
         }
-        lower_expr(writer, source, part, mode);
+        lower_expr(writer, source, part, cx);
         cursor = span.end.max(cursor);
     }
     if cursor < region.end {

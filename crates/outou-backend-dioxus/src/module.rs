@@ -7,12 +7,13 @@
 //! resolve the module graph itself, it only applies a mapping the caller
 //! already computed.
 
-use outou_codegen::{GenerateOptions, Mode, Writer};
+use outou_codegen::{GenerateOptions, Writer};
 use outou_sourcemap::{MappingKind, Span};
 use outou_syntax::ast as syntax_ast;
 
 use crate::escape::plain_rust_string_literal;
 use crate::item::{item_span, lower_items};
+use crate::Cx;
 
 /// Lowers one module item.
 ///
@@ -33,10 +34,10 @@ pub fn lower_module(
     source: &str,
     module: &syntax_ast::Module,
     opts: &GenerateOptions,
-    mode: Mode,
+    cx: Cx<'_>,
 ) {
     if let Some(items) = &module.items {
-        lower_inline_module(writer, source, module, items, opts, mode);
+        lower_inline_module(writer, source, module, items, opts, cx);
         return;
     }
 
@@ -52,7 +53,7 @@ fn lower_inline_module(
     module: &syntax_ast::Module,
     items: &[syntax_ast::Item],
     opts: &GenerateOptions,
-    mode: Mode,
+    cx: Cx<'_>,
 ) {
     if items.is_empty() {
         writer.verbatim(source, module.span, MappingKind::Expression, None);
@@ -71,7 +72,7 @@ fn lower_inline_module(
         source,
         items,
         opts,
-        mode,
+        cx,
         Span::new(items_start, items_end),
     );
     writer.verbatim(

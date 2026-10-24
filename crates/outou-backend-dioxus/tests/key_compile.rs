@@ -9,6 +9,7 @@
 //! cargo test -p outou-backend-dioxus --test key_compile -- --ignored --nocapture
 //! ```
 
+mod compiler_output;
 mod support;
 
 use std::fs;
@@ -18,6 +19,8 @@ use std::process::{Command, Output};
 use outou_backend_dioxus::DioxusBackend;
 use outou_codegen::{Backend, GenerateOptions, Mode};
 use outou_sourcemap::Uri;
+
+use compiler_output::has_compiler_warning;
 
 const ACCEPTED: &str = r#"use outou::prelude::*;
 
@@ -30,7 +33,7 @@ fn Row(label: String) -> Element {
 fn App() -> Element {
     let id = 7u32;
     let name = String::from("edit");
-    let labels = vec![String::from("a"), String::from("b")];
+    let labels = [String::from("a"), String::from("b")];
     <ul key="root">
         <Row key="new" label={name.clone()} />
         <Row key={format!("edit-{id}")} label={name.clone()} />
@@ -38,6 +41,7 @@ fn App() -> Element {
         <Row key={String::from("x")} label={name.clone()} />
         <Row key={name} label={String::from("moved after the key")} />
         {labels.iter().map(|label| <Row key={label.as_str()} label={label.clone()} />)}
+        {[1u8, 2].iter().map(|n| <li key={*n}>{n.to_string()}</li>)}
     </ul>
 }
 
@@ -82,6 +86,10 @@ fn generate(source: &str) -> String {
 }
 
 fn run(dir_name: &str, source: &str, subcommand: &str) -> Output {
+    run_with(dir_name, source, subcommand, &[])
+}
+
+fn run_with(dir_name: &str, source: &str, subcommand: &str, extra: &[&str]) -> Output {
     let root = support::repo_root();
     let temp_dir = root.join("target").join(dir_name);
     fs::create_dir_all(temp_dir.join("src")).unwrap();
@@ -90,6 +98,7 @@ fn run(dir_name: &str, source: &str, subcommand: &str) -> Output {
     Command::new(env!("CARGO"))
         .arg(subcommand)
         .arg("--color=never")
+        .args(extra)
         .current_dir(&temp_dir)
         .env("CARGO_TARGET_DIR", root.join("target"))
         .output()
@@ -114,6 +123,22 @@ fn static_expression_integer_and_formatted_keys_compile_and_render() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+/// `key={*n}` becomes `key(&(*n))`, which Clippy's `borrow_deref_ref` flags
+/// unless the generated `let` allows it.
+#[test]
+#[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
+fn the_accepted_keys_pass_clippy_without_warnings() {
+    let output = run_with(
+        "outou-key-accepted",
+        ACCEPTED,
+        "clippy",
+        &["--", "-D", "warnings"],
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(output.status.success(), "{stderr}");
+    assert!(!has_compiler_warning(&stderr), "{stderr}");
 }
 
 #[test]

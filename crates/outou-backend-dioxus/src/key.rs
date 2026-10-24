@@ -29,12 +29,13 @@
 //! order, before any other attribute or child of that call
 //! (`docs/grammar.md`, "The `key` attribute").
 
-use outou_codegen::{Mode, Writer};
+use outou_codegen::Writer;
 use outou_sourcemap::MappingKind;
 use outou_syntax::ast::{JsxAttribute, JsxAttributeValue, JsxChild, JsxElement, JsxTag};
 
 use crate::escape::plain_rust_string_literal;
 use crate::expr::lower_parts;
+use crate::Cx;
 use crate::PRIVATE_PATH;
 
 /// The attribute name that is lowered as a key.
@@ -42,7 +43,14 @@ const KEY_ATTRIBUTE: &str = "key";
 
 /// Prefix of every synthesized key binding. Names starting with `__` are
 /// filtered out of completion by the language server.
-const BINDING_PREFIX: &str = "__outou_key_";
+const BINDING_PREFIX: &str = outou_syntax::reserved::KEY_PREFIX;
+
+/// Allows the one lint the generated `key(&(EXPR))` can trip: an `EXPR` that
+/// is itself a dereference (`key={*n}`) becomes `&(*n)`, which Clippy's
+/// `borrow_deref_ref` flags in the user's `outou cargo clippy`. The allow is
+/// on the generated `let` only, and so also covers a reborrow the user writes
+/// inside that expression.
+pub(crate) const BINDING_LINT_ALLOW: &str = "#[allow(clippy::borrow_deref_ref)] ";
 
 /// The `key` attributes of one `rsx!` call, in source order.
 pub struct KeyBindings<'a> {
@@ -74,15 +82,15 @@ impl<'a> KeyBindings<'a> {
     }
 
     /// Writes one `let` per key.
-    pub fn write_bindings(&self, writer: &mut Writer, source: &str, mode: Mode) {
+    pub fn write_bindings(&self, writer: &mut Writer, source: &str, cx: Cx<'_>) {
         for (index, attribute) in self.attributes.iter().enumerate() {
             writer.raw(&format!(
-                "let {} = {PRIVATE_PATH}::key(&(",
+                "{BINDING_LINT_ALLOW}let {} = {PRIVATE_PATH}::key(&(",
                 binding_name(index)
             ));
             match &attribute.value {
                 Some(JsxAttributeValue::Expression(island)) => {
-                    lower_parts(writer, source, &island.parts, island.span, mode);
+                    lower_parts(writer, source, &island.parts, island.span, cx);
                 }
                 Some(JsxAttributeValue::Text(text)) => {
                     let literal = plain_rust_string_literal(&text.value);

@@ -5,16 +5,16 @@
 //! first letter, the same rule Outou's own grammar uses (grammar §5), so
 //! codegen never has to branch on it.
 
-use outou_codegen::{Mode, Writer};
+use outou_codegen::Writer;
 use outou_sourcemap::MappingKind;
 use outou_syntax::ast::{Island, JsxAttributeValue, JsxChild, JsxElement, JsxTag};
 
 use crate::attribute::{is_single_expression, lower_attribute};
+use crate::bindings::CallBindings;
 use crate::escape::rust_string_literal;
 use crate::expr::lower_parts;
-use crate::key::KeyBindings;
 use crate::recovery::emit_recovery_element;
-use crate::PRIVATE_PATH;
+use crate::{Cx, PRIVATE_PATH};
 
 /// Lowers a JSX element that appears in Rust expression position — a
 /// statement, a tail expression, or inside an island — to
@@ -24,7 +24,7 @@ use crate::PRIVATE_PATH;
 /// cannot be reconstructed as `Name { … }` at all, so it is replaced
 /// wholesale by the recovery placeholder instead of being wrapped in
 /// `rsx!` (there is no element syntax to put inside one).
-pub fn lower_element_as_rsx(writer: &mut Writer, source: &str, element: &JsxElement, mode: Mode) {
+pub fn lower_element_as_rsx(writer: &mut Writer, source: &str, element: &JsxElement, cx: Cx<'_>) {
     if is_broken(element) {
         emit_recovery_element(writer, element.span);
         return;
@@ -39,16 +39,16 @@ pub fn lower_element_as_rsx(writer: &mut Writer, source: &str, element: &JsxElem
     // Issue #26: the call's keys are evaluated first and bound in a block
     // around it (`crate::key`); the `rsx!` text then refers to them by a
     // synthesized identifier. The block's own braces map like the call's.
-    let keys = KeyBindings::collect(element);
-    if !keys.is_empty() {
+    let bindings = CallBindings::collect(element, cx.selects);
+    if !bindings.is_empty() {
         writer.mapped("{ ", &[element.span], MappingKind::Other, None);
-        keys.write_bindings(writer, source, mode);
+        bindings.write_bindings(writer, source, cx);
     }
     let prefix = format!("{PRIVATE_PATH}::rsx! {{ ");
     writer.mapped(&prefix, &[element.span], MappingKind::Other, None);
-    lower_element_body(writer, source, element, &keys, mode);
+    lower_element_body(writer, source, element, &bindings, cx);
     writer.mapped(" }", &[element.span], MappingKind::Other, None);
-    if !keys.is_empty() {
+    if !bindings.is_empty() {
         writer.mapped(" }", &[element.span], MappingKind::Other, None);
     }
 }
@@ -59,8 +59,8 @@ fn lower_element_body(
     writer: &mut Writer,
     source: &str,
     element: &JsxElement,
-    keys: &KeyBindings,
-    mode: Mode,
+    bindings: &CallBindings,
+    cx: Cx<'_>,
 ) {
     if is_broken(element) {
         emit_recovery_element(writer, element.span);
@@ -91,13 +91,18 @@ fn lower_element_body(
             continue;
         }
         writer.raw(" ");
-        lower_attribute(writer, source, attribute, keys, mode);
+        lower_attribute(writer, source, attribute, bindings, cx);
         writer.raw(",");
+    }
+    // Issue #28: an `<option>` inside a `<select value>` is selected when its
+    // value is the select's.
+    if let Some(text) = bindings.selected_attribute(element, cx.selects) {
+        writer.raw(&format!(" {text},"));
     }
 
     for child in &element.children {
         writer.raw(" ");
-        lower_child(writer, source, child, keys, mode);
+        lower_child(writer, source, child, bindings, cx);
     }
 
     writer.raw(" }");
@@ -117,8 +122,8 @@ fn lower_child(
     writer: &mut Writer,
     source: &str,
     child: &JsxChild,
-    keys: &KeyBindings,
-    mode: Mode,
+    bindings: &CallBindings,
+    cx: Cx<'_>,
 ) {
     match child {
         JsxChild::Text(text) => {
@@ -127,11 +132,11 @@ fn lower_child(
             writer.raw(",");
         }
         JsxChild::Expression(island) => {
-            lower_child_island(writer, source, island, mode);
+            lower_child_island(writer, source, island, cx);
             writer.raw(",");
         }
         JsxChild::Element(nested) => {
-            lower_element_body(writer, source, nested, keys, mode);
+            lower_element_body(writer, source, nested, bindings, cx);
             writer.raw(",");
         }
         JsxChild::Error(error) => {
@@ -154,12 +159,12 @@ fn lower_child(
 /// `;`, an item, an empty or comment-only island, a broken part) keeps its
 /// braces: `child({ … })`, where the block's value is the child and an empty
 /// block is the unit value, which renders nothing.
-fn lower_child_island(writer: &mut Writer, source: &str, island: &Island, mode: Mode) {
+fn lower_child_island(writer: &mut Writer, source: &str, island: &Island, cx: Cx<'_>) {
     writer.raw(&format!("{{{PRIVATE_PATH}::child("));
     if is_single_expression(island) {
-        lower_parts(writer, source, &island.parts, island.span, mode);
+        lower_parts(writer, source, &island.parts, island.span, cx);
     } else {
-        lower_island(writer, source, island, mode);
+        lower_island(writer, source, island, cx);
     }
     writer.raw(")}");
 }
@@ -170,8 +175,8 @@ fn lower_child_island(writer: &mut Writer, source: &str, island: &Island, mode: 
 /// so a JSX element nested inside an `if`/`match`/closure becomes its own
 /// `rsx! { … }` call and the island keeps whatever type Dioxus needs
 /// there (`Element`, `bool`, an iterator, …).
-pub fn lower_island(writer: &mut Writer, source: &str, island: &Island, mode: Mode) {
+pub fn lower_island(writer: &mut Writer, source: &str, island: &Island, cx: Cx<'_>) {
     writer.raw("{");
-    lower_parts(writer, source, &island.parts, island.span, mode);
+    lower_parts(writer, source, &island.parts, island.span, cx);
     writer.raw("}");
 }

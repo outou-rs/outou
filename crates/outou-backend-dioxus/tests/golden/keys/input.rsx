@@ -16,5 +16,6 @@ fn App() -> Element {
         <Row key={id} label={name.clone()} />
         <Row key={String::from("x")} label={name} />
         {labels.iter().map(|label| <Row key={label.as_str()} label={label.clone()} />)}
+        {[1u8, 2].iter().map(|n| <li key={*n}>{n.to_string()}</li>)}
     </ul>
 }

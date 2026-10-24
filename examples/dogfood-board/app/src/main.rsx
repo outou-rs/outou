@@ -74,6 +74,12 @@ mod tests {
     }
 
     #[component]
+    fn FormForNewTask() -> Element {
+        provide_state();
+        <TaskForm editing={None} />
+    }
+
+    #[component]
     fn DetailForTodoTask() -> Element {
         provide_state();
         <TaskDetail id={1} />
@@ -89,8 +95,9 @@ mod tests {
         dom.rebuild_in_place();
     }
 
-    /// F18: the select must show the task's value on a fresh mount, which
-    /// the backend only does through `selected` on the matching option.
+    /// F18: the select must show the task's value on a fresh mount. The
+    /// source only writes `<select value={..}>`; the lowering (issue #28)
+    /// sets `selected` on the matching option, which is what these tests read.
     #[test]
     fn edit_form_marks_the_tasks_priority_option_selected() {
         // Priority::ALL is Low, Medium, High; task 1 is High.
@@ -98,6 +105,12 @@ mod tests {
             selected_flags(FormForHighPriorityTask),
             [false, false, true]
         );
+    }
+
+    #[test]
+    fn new_task_form_marks_the_default_priority_option_selected() {
+        // Priority::ALL is Low, Medium, High; a new draft is Medium.
+        assert_eq!(selected_flags(FormForNewTask), [false, true, false]);
     }
 
     #[test]

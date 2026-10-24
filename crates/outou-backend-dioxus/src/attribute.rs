@@ -6,29 +6,31 @@
 //! values are omitted, grammar §9), so this module only ever sees a `None`
 //! (bare), `Text` or `Expression` value.
 
-use outou_codegen::{Mode, Writer};
+use outou_codegen::Writer;
 use outou_sourcemap::MappingKind;
 use outou_syntax::ast::{Expr, Island, JsxAttribute, JsxAttributeValue, RustSource};
 use outou_syntax::lexer::rust_token::{next_token, RtKind};
 
+use crate::bindings::CallBindings;
 use crate::element::lower_island;
 use crate::escape::{is_plain_ident, is_raw_identifiable_keyword, rust_string_literal};
 use crate::expr_shape::parts_are_one_expression;
-use crate::key::KeyBindings;
+use crate::Cx;
 
 /// Lowers one attribute: its key, then `: `, then its value.
 pub fn lower_attribute(
     writer: &mut Writer,
     source: &str,
     attribute: &JsxAttribute,
-    keys: &KeyBindings,
-    mode: Mode,
+    bindings: &CallBindings,
+    cx: Cx<'_>,
 ) {
     lower_key(writer, attribute);
     writer.raw(": ");
-    // A `key` was evaluated before the `rsx!` call (`crate::key`); the
-    // backend only sees the synthesized identifier, as a format string.
-    if let Some(binding) = keys.identifier(attribute) {
+    // A `key`, a select's `value` and an option's `value` were evaluated
+    // before the `rsx!` call (`crate::key`, `crate::select`); the backend
+    // only sees the synthesized identifier, as a format string.
+    if let Some(binding) = bindings.identifier(attribute) {
         writer.raw(&format!("\"{{{binding}}}\""));
         return;
     }
@@ -56,7 +58,7 @@ pub fn lower_attribute(
                 // tells `DioxusBackend::generate` this file needs the
                 // allow (docs/backend-leakage.md row 21).
                 writer.mark();
-                lower_island(writer, source, island, mode);
+                lower_island(writer, source, island, cx);
             }
         }
         Some(JsxAttributeValue::Error(_)) => {

@@ -35,9 +35,19 @@ pub use item::attribute_meta_path;
 pub fn parse(source: &str) -> Parsed {
     let mut parser = Parser::new(source);
     let file = parser.parse_file();
+    let mut diagnostics = parser.diagnostics;
+    // Warnings about `<select value>` and reserved names (issue #28) need the
+    // whole AST, so they are found after parsing and merged in source order.
+    let (_, select_warnings) = crate::select::scan(&file);
+    let reserved_names = crate::reserved::check(&file);
+    if !select_warnings.is_empty() || !reserved_names.is_empty() {
+        diagnostics.extend(select_warnings);
+        diagnostics.extend(reserved_names);
+        diagnostics.sort_by_key(|diagnostic| diagnostic.span.start);
+    }
     Parsed {
         file,
-        diagnostics: parser.diagnostics,
+        diagnostics,
         source: source.to_string(),
     }
 }
