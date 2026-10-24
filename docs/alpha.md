@@ -59,6 +59,8 @@ This is the gate Phase 0 deferred on purpose (`docs/adr/0003-dioxus-as-temporary
 
 The decision (ADR 0014, 2026-10-24) is to keep Dioxus as the current backend without making it the specification: Outou's semantics are defined by Outou-owned APIs and by the lowering. A5 therefore also contains the implementation work that decision names, each as its own issue: `outou cargo <build|check|clippy|test>` with diagnostics translated to `.rsx` positions, typed `key`, typed children, `<select value>`, and a state API under Outou's names that never exposes a guard (`State<T>`, `use_state`, `provide_context`, `use_context`, `launch`). In scope: those facade and codegen changes. Still out of scope: an Outou runtime, a scheduler, new update semantics.
 
+**Status (2026-10-24):** ADR 0014 is accepted, issues #25 to #29 are implemented, and `docs/alpha-results.md` is complete with its A5 section (ledger recount: 47 rows, four of the five fixable groups fixed). Gate A5 is met under the condition in the table above. What it leaves open is listed in that section's "Not verified": live-editor checks (the migrated dogfood application was checked in a browser on 2026-10-24, except the form length limits and New task then Cancel), and runtime performance, release bundle size and React interop, which were not evaluated.
+
 ## If a gate cannot be met
 
 The alpha has no macro fallback; `docs/design.md`'s "If the bet fails" applied to Phase 0 only. An unmet gate is recorded rather than treated as passed:

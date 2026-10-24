@@ -1,8 +1,8 @@
 # Alpha results
 
 This document accumulates the alpha's decision report (`docs/alpha.md`, "Decision report"). This
-revision covers **A1: measurement** (issue #17, `docs/alpha/issues/17-measurement.md`), **A2: recovery** (issues #18 and #19), **A3's forwarded-completion work** (issue #21) and, last, **A4: the dogfood application** (issue #22); later gates append their own sections
-here rather than replacing this one. The A5 section (the runtime decision, ADR 0014) is still to be written once its implementation issues close.
+revision covers **A1: measurement** (issue #17, `docs/alpha/issues/17-measurement.md`), **A2: recovery** (issues #18 and #19), **A3's forwarded-completion work** (issue #21), **A4: the dogfood application** (issue #22) and, last, **A5: the runtime decision** (ADR 0014, issues #25 to #30); later sections are appended
+here rather than replacing this one.
 
 Every number in (a), (c) and (d) is from the **settled re-measurement of 2026-10-11** (harness
 fixed after review: samples are taken only once rust-analyzer has settled, RSS covers the whole
@@ -714,7 +714,7 @@ Under `tests/fixtures/incomplete/`: the `*-mid-file` fixtures (`bodyless-fn-mid-
 
 ### Performance and corpus
 
-`crates/outou-syntax/tests/item_recovery.rs` has timing tests with a fixed time bound for large runs after a broken function, many broken functions and many unclosed visibility groups (names ending `_in_linear_time`); the cut cap is tested separately (`cuts_per_file_are_capped`). The parser corpus run (`cargo xtask corpus test`) is not repeated for this section; the recorded Phase 0 corpus result (`docs/phase0-results.md` §2: 20 false positives, all on Rust that rustc itself rejects) is the baseline. TODO(alpha): record the corpus re-run's false-positive count after #18 and #19 here, with how many of those rustc rejects.
+`crates/outou-syntax/tests/item_recovery.rs` has timing tests with a fixed time bound for large runs after a broken function, many broken functions and many unclosed visibility groups (names ending `_in_linear_time`); the cut cap is tested separately (`cuts_per_file_are_capped`). The parser corpus was re-run on 2026-10-24 for the A5 close-out (`cargo xtask corpus test`, repository at `4b741c9`, after #18 and #19), against the same pinned corpus as Phase 0: `rust-lang/rust` tag `1.98.1`, commit `48a229ceaefd`, `tests/ui`, 20,722 files. Result: panics 0, timeouts 0, splice round-trip mismatches 0, JSX mis-detections 20 (same as Phase 0), and **false positives (Outou diagnostics on plain Rust): 33, of which 0 are on valid Rust and 33 on Rust that rustc rejects**; Phase 0 recorded 20 (`docs/phase0-results.md` §2: 0 on valid Rust, 20 on rejected Rust). The corpus tool classifies a file as rejected Rust when it has a `.stderr` companion in rust-lang's test suite; all 33 do (the report's own count: `on_rejected_rust` 33, `on_valid_rust` 0). The 13 additional files, identified from the diagnostic text, are all new #18 diagnostics, ``unclosed body of function `X` `` or `incomplete signature for function `X` ``, on files that rustc itself rejects for an unclosed or mismatched delimiter (`parser/brace-in-let-chain.rs`, `parser/missing_right_paren.rs`, `parser/issues/issue-2354.rs`, `-62894`, `-62895`, `-63135`, `-81804`, `-84148-1`, `-84148-2`, `-111148`, `span/issue-81800.rs`, `suggestions/issue-94171.rs`, `typeck/issue-92481.rs`). The other 20 are the 13 `diff-markers` fixtures and 7 parser-torture or bare-`:`/`<>` files of the Phase 0 list. That rustc rejects these 13 for an unclosed or mismatched delimiter was verified by the model that reviewed #18 and reported to the project manager; it was not repeated here, and the repository itself records only the `.stderr`-companion classification. None is on valid Rust. Source of the numbers: this run (the earlier report of 33 is not written down in any repository document).
 
 ### Known limits (from `docs/grammar.md` §9)
 
@@ -956,7 +956,7 @@ Run by hand by the project's manager: dioxus-cli 0.7.10 (`cargo install`), `~/.c
 
 ### Not verified
 
-- The F18 fix **was** re-checked in a browser (2026-10-24); the headless tests check only the `selected` flags. Browser coverage is still one hand-run of the walkthrough plus that re-check; steps 12 and New task then Cancel were not run.
+- The F18 fix **was** re-checked in a browser (2026-10-24); the headless tests check only the `selected` flags. The first hand-run walkthrough and that re-check were of the application before #26 to #29; the migrated application was checked in the browser the same day (see the A5 section, "Browser check of the migrated application"). Walkthrough step 12 (length limits, covered by `board-core` unit tests only) and New task then Cancel were not run in the browser.
 - The language-server experience on the app's `.rsx` files (completion, hover, diagnostics) was not exercised (F17).
 - The `dogfood-board` CI job has not run on a pushed branch.
 
@@ -964,3 +964,122 @@ Run by hand by the project's manager: dioxus-cli 0.7.10 (`cargo install`), `~/.c
 
 Done: build the app (native and wasm32 compile); prelude re-exports recorded (ADR 0010, rows 31 and 32); app under `examples/` as a non-workspace member; Friction log with dispositions; backend-specific frictions appended as numbered rows (33 to 36); manual walkthrough documented; this summary. Open: the first CI run of the new job (described above). The browser run is done, including the F18 re-check.
 
+
+## A5: runtime decision (ADR 0014, issues #23 and #25 to #30)
+
+Status: decided on 2026-10-24 and carried out the same day. [ADR 0014](adr/0014-dioxus-continues-as-backend-not-as-specification.md) is Accepted (commit `0d75d17`; it supersedes ADR 0003 and amends ADR 0010), and the five implementation issues it names are implemented and pushed. One verification is **open**: a live-editor check of the language-server behavior added by #26 to #28 (see "Not verified"). The migrated dogfood application was checked in a browser on 2026-10-24 (issues #28 and #29; see "Browser check of the migrated application" below). The facts in this section come from `git log`, `docs/backend-leakage.md`, the issue mirrors in `docs/alpha/issues/`, ADR 0014 and a ledger recount made on 2026-10-24.
+
+### The decision
+
+**Dioxus remains the backend for now, but it is not Outou's specification** (ADR 0014). Outou's semantics are defined by Outou-owned APIs and by the lowering; behavior that exists only because of Dioxus is a ledger row, not a rule. No Outou runtime, scheduler or update semantics is built, because the evidence that would justify one is unmeasured (below) and the semantics such a runtime would implement are undefined (ledger row 3). The facade rule that follows: `outou::prelude` does not `pub use` a backend item directly (ADR 0010, "Alpha A5"), except `Element`, `component` and the hidden macro-hygiene names; a test pins the list (`crates/outou-cli/tests/prelude_names.rs`).
+
+### The ledger, recounted
+
+At the time of the decision the ledger had 38 rows (ADR 0014): **25** Dioxus leakage, **2** Dioxus leakage (fixed) (rows 28, 30), **2** Dioxus leakage / Temporary limitation (24, 32), **8** Temporary limitation, **1** Outou intrinsic (marker) / Dioxus leakage (lowering) (row 6) and **0** Accepted permanent behavior. Seven of the 38 only correct, resolve or close earlier rows (16, 17, 22, 23, 25, 28, 38), so about 31 to 32 distinct constraints.
+
+Counted again with `grep` on 2026-10-24, after issues #25 to #30 appended rows 39 to 46 (and a browser-check note, row 47, was added later the same day), the ledger has **47 rows**:
+
+| Classification (as written in the row) | Rows | Count |
+|---|---|---|
+| Dioxus leakage | 1, 2, 3, 4, 5, 8, 9, 11, 14, 15, 16, 17, 18, 19, 22, 25, 27, 29, 31, 33, 34, 35, 36, 37, 38, 45, 46 | 27 |
+| Dioxus leakage (fixed) | 28, 30, 41, 44, 47 | 5 |
+| Dioxus leakage (fixed) / Outou decision | 42 (`bool` is an error), 43 (`<select value>`, fixed within limits; the type set is an Outou decision) | 2 |
+| Dioxus leakage / Temporary limitation | 24, 32 | 2 |
+| Temporary limitation | 7, 10, 12, 13, 20, 21, 23, 26 | 8 |
+| Outou intrinsic (marker) / Dioxus leakage (lowering) | 6 | 1 |
+| Outou intrinsic / leakage | 39 (rustc compiles generated Rust; long lines and registry spans come from `rsx!`) | 1 |
+| Outou intrinsic | 40 (`include_str!` paths resolve against the generated directory) | 1 |
+| Accepted permanent behavior | none | 0 |
+
+Rows 39 to 46 are not new constraints found by the alpha so much as the outcomes of A5: 41, 42, 43 and 44 resolve rows 35/38, 34 (and 20 in part), 37 and 31/33 (and 8 in part); 39 and 40 record F5 and a side effect of ADR 0009's layout (the first resolved for `outou cargo`, the second mitigated, both with plain `cargo` unchanged); 45 lists what #29 deliberately did not fix; 46 restates the correction to rows 4 and 5 (`Element` is `Result<VNode, RenderError>` in `dioxus-core 0.7.10`, not `Option<VNode>`, which ADR 0014 and ADR 0010 already stated) and maps the rows A5 touched. 47 only records that row 43's generated form was checked in a browser. No row was rewritten.
+
+### The nine groups, and what A5 did to them
+
+ADR 0014 sorted the rows that make Outou's semantics unnatural into nine groups: five the facade and codegen can fix, four they cannot.
+
+| Group (rows) | ADR 0014's view | Result after #25 to #29 |
+|---|---|---|
+| Hooks and signals API (8, 31, 33) | Fixable | **Fixed for everyday code** by #29: `State<T>` with `get` / `with` / `set` / `update`, no guard in the API. Kept on purpose: the backend's subscription semantics, hook-ordering rules, and a run-time panic in Outou's words when the same state is used re-entrantly (row 44); `set` or `update` in a component body that reads the same state never settles. |
+| Numeric children (34; 20 in part) | Fixable | **Fixed** by #27: integers, floats and `char` render as text; `bool` is an Outou-worded compile error by decision. Remaining gaps are listed below (row 42). |
+| `key` (35, 38) | Fixable | **Fixed** by #26: a static string and `format!("edit-{id}")` compile; accepted key types are narrower than at HEAD (strings and integers, `IntoKey`). |
+| `<select value>` (37) | Fixable | **Fixed within stated limits** by #28: lexically contained options only; `multiple`, options without `value` and options reached through variables or components are not rewritten (row 43). Browser-checked on 2026-10-24 (new form Medium, edit form of a High task High, remounted detail Status unchanged). |
+| Event types, in part (9) | Fixable | **Not started.** Handler argument types remain the backend's; row 9 is unchanged and the prelude exports no event type. |
+| Props must be `Clone + PartialEq + 'static` (1 to 3) | Not fixable | Unchanged. |
+| The shape of `Element` and `children` (4, 5) | Not fixable | Unchanged (the type is `Result<VNode, RenderError>`; row 46). |
+| Borrowed props (10) | Not fixable | Unchanged. |
+| Hyphenated attribute names (14, 17, 18, 29) | Not fixable | Unchanged. |
+
+So four of the five fixable groups are fixed (one within limits) and one is untouched; the four groups the facade cannot absorb are exactly as they were. Separately, the diagnostics problem F5 (rustc reports generated positions) is resolved for `outou cargo` by #25; plain `cargo` is unchanged.
+
+### What A5 shipped
+
+| Issue | What | Commits |
+|---|---|---|
+| #25 | `outou cargo <build\|check\|clippy\|test>`: generates in Strict mode, runs Cargo with `--message-format=json-diagnostic-rendered-ansi` and reports each span at its `.rsx` line and column through the existing source maps. The translation is a library (`outou_cli::diagnostics`) shared with the UI-test harness. Rules for what cannot be translated are in `crates/outou-cli/README.md`. `outou check` now prints a success line (F16). | `1ecf4e9` |
+| #26 | Typed `key`: the key is evaluated into a local before the `rsx!` call and checked by the sealed `outou::jsx::IntoKey`; the backend's format-string messages cannot be reached. | `22fa9fb`, `6bea1a0` (test: strip ANSI colour from cargo output before the leakage checks) |
+| #27 | Typed children: every child island is passed to the sealed `outou::jsx::IntoChild<M>`; numbers and `char` render, `bool` is an error that points to `if` and `Option`. | `27d851f`, `628fdd3` (test: detect compiler warnings by diagnostic line, not by substring) |
+| #28 | `<select value>`: lexically contained options are bound once and get a computed `selected`; values are restricted to strings, integers and `char` (`IntoOptionValue`); front-end warnings for the shapes it cannot rewrite. | `caaaf3c`; related fix `8157e66` (see below) |
+| #29 | Outou-named state API: `State<T>`, `use_state`, `provide_context`, `use_context`, `launch`; the old names are removed from the prelude; `dogfood-board` and the prelude name list are migrated and pinned. | `997e851`, `4b741c9` (test: avoid `clone_on_copy` flagged by clippy 1.99) |
+| #30 | This close-out: ledger row 46, Friction log dispositions, this section. | (this change) |
+
+The decision itself is `0d75d17` (ADR 0014) and the issue mirrors are `79e1693`. Every dogfood-board friction item F1 to F6 and F18 now has a disposition that matches this table; F13 (no click-capable test renderer) and F17 (editor experience) remain open; see `examples/dogfood-board/README.md`.
+
+### When to switch to an Outou runtime, and the evidence so far
+
+ADR 0014 reopens the decision if any of five conditions holds. The state of the evidence at the end of the alpha:
+
+| Condition | State |
+|---|---|
+| Borrowed props or non-`Clone` props become a 1.0 requirement | No 1.0 requirement has been written; not triggered, not evaluated. |
+| One Dioxus upgrade costs more than a limit to be fixed | No upgrade was made during the alpha (`Cargo.lock` stays at `dioxus-core 0.7.10`), so the cost of absorbing one in `__private` and the wrappers is **unmeasured**, and no limit is set. |
+| React interop needs control of the renderer | Not designed and **not evaluated**. |
+| Release bundle size or indexing cost is unacceptable | **Release bundle size not measured**: only the debug wasm of the dogfood application was built and it was not bundled or loaded. Indexing cost: A1 measured the absolute rust-analyzer cost of the two-process layout; the difference against a smaller runtime was not measured. |
+| Rows keep being added where the same JSX means something different and the facade cannot absorb it | None added after row 37 (fixed by #28). Rows 39 to 46 are resolutions, mitigations and residue, not new "same JSX, different meaning" cases. |
+
+Runtime **performance** was not measured at all. These gaps are the stated reason no runtime is built; they are not evidence for or against one.
+
+### Signs that the recommendation is wrong: current state
+
+- (a) *The facade wrappers break substantially at every Dioxus upgrade.* **Untested**: no upgrade was attempted.
+- (b) *After wrapping the state API, guard or copy semantics still show through.* **Partly present.** No guard is exposed and the F4 form cannot be written. What shows through is the backend's re-entrancy rule: `d.update(|x| *x = Draft { title, ..d.get() })` compiles and panics when it runs (in Outou's words), and subscription behavior is the backend's (row 44). Whether this counts against the recommendation is a judgement left to the next application.
+- (c) *In the next application, friction from the four unfixable groups dominates.* **Untested**: there is no next application. In the one dogfood application, props bounds produced one accepted friction item (F15) and no Friction log item names the other three groups; the friction that did hurt (F1 to F6, F18) was in the fixable groups.
+
+### Side findings during A5, and what was done
+
+- **`outou fmt` failed on any file with eleven or more JSX regions.** The formatter counted its placeholders with a substring match, so `__outou_fmt_jsx_1` matched inside `__outou_fmt_jsx_10`. Not caused by A5: an existing bug at HEAD, found while formatting the dogfood application. Fixed in `967d8d4` (identifier-boundary counting; regression tests for 11, 12 and 100 regions).
+- **`outou fmt` and the language server's formatting refused a file that had only warnings.** The first front-end warning (`<select value>`, #28) made them fail. Fixed in `8157e66`: only a diagnostic of severity Error refuses.
+- **A stale target directory in the matrix publish test.** `cargo package` unpacks `outou` into an overlay registry whose files carry a fixed old mtime, so a target directory shared across runs could treat an earlier `outou` rlib as newer than the new sources and build against the old facade (`cannot find function child`). Fixed in `27d851f` with a per-run target directory and a per-process counter for temp directories. Not a product bug.
+- **Test lessons.** CI output is coloured, so the leakage checks of `outou cargo` strip ANSI before scanning (`6bea1a0`); counting warnings by substring was wrong and became a count by diagnostic line (`628fdd3`); the `outou cargo` tests that build Dioxus from a cold target directory are `#[ignore]`d (`crates/outou-cli/tests/cargo_cli_real.rs`); clippy 1.99 flags `clone_on_copy`, fixed in `4b741c9`.
+
+### Known gaps at the end of A5
+
+Each is recorded where it belongs; none is hidden by a passing test.
+
+- `outou build` and `outou cargo` do not print front-end warnings (the `<select value>` shapes it cannot rewrite); `outou check` and the language server do (ledger row 43, `docs/grammar.md` §5.1, `TODO(alpha)`).
+- A key written as the raw identifier `r#key` is not normalised to `key` (row 41, known gap (b)).
+- In an attribute value, `bare_rust_expr` (`crates/outou-backend-dioxus/src/attribute.rs`) tests only for a top-level `;`, so an island of several statements with no `;` (a block-like expression followed by another expression) is judged a single expression and is lowered without braces. The child side was fixed in #27 (`expr_shape`, row 42); the attribute side was not, and the behavior is the same as at HEAD before A5.
+- Misuse messages can still carry the backend's vocabulary: a `State<T>` or `Signal<T>` used as a child where `T` is not renderable, and `Send`/generational-box types in rustc's error for a non-`Send` state (rows 42 and 45(b)); `IntoChild<Delegated<_>>` notes survive under plain `cargo`. The Outou wording for them is a `TODO(alpha)` that the decision keeps open.
+- `&String`, `&&str`, `Arc<str>`, `Rc<str>`, `Cow<str>`, `Box<str>`, `Vec<Element>`, an iterator of text and `Option<number>` are not children; the diagnostics say how to write each (row 42, Gaps (b) and (d)). The `IntoKey` types are `str` and integer types; `char`, `bool`, floats and a custom `Display` type are no longer keys (row 41).
+- Run-time output is not translated: a panic inside `cargo test` still prints `src/.generated/x.rs:L:C` (row 39), and plain `cargo` prints generated paths. `include_str!`-style relative paths still resolve against the generated directory (row 40). `outou cargo` is Unix-only for the alpha.
+- Editor behavior: hover, references and rename on `key` and other lowered expressions are checked by `outou-lsp`'s mapping-layer unit tests against real generated code, not in a live editor or against a running rust-analyzer. The related-information fields of the `IntoChild` error in the editor were not checked (row 42), and F17 (the editor experience on the dogfood files) is unverified. The keyword-named attribute rename/references gap (row 29, `TODO(phase0)`) is unchanged.
+- Existing bug, recorded in A3 and not fixed: on a case-insensitive filesystem, `outou build`'s `clean_stale` deletes a generated file whose only change is its case, and exits 0 (recorded under "(f)" in A1 above, from issue #20).
+- Flaky tests, as observed during the A5 work: `outou-cli`'s formatter test that runs a generated shell script as `rustfmt` can fail with `ETXTBSY` (text file busy), and the three `outou-syntax` timing tests (`*_in_linear_time` in `crates/outou-syntax/tests/item_recovery.rs`) can fail under load, since they assert a fixed wall-clock bound. This was reported by the work's reviewers; I did not reproduce either and they are not recorded elsewhere in the repository.
+
+### Browser check of the migrated application (2026-10-24)
+
+Driven by Fable through the Chrome extension, `dx serve --platform web`, no console errors in any of the three runs:
+
+- At the state of commits `caaaf3c` / `8157e66` (#28): the new-task form shows Priority Medium, the edit form of a High task shows High, and the detail view keeps Status "In progress" after opening another task and coming back (the generated `<select value>` form, ledger row 43).
+- At the first #29 implementation (the `State<T>` migration, before `Slot`): a full walkthrough - search `ken`; the status chips (To do / Done / All) combined with search; New task (an empty-title error keeps the Assignee already typed, a valid save opens the detail); Edit (current values pre-filled, Save is reflected); a Status change in the detail updates the list and the chip counts; the list checkbox toggles done / not done; opening another task with a form open switches the form to that task's content; Delete returns the panel to the hint.
+- At commit `997e851` (after the review fixes: `Slot`, Outou-worded `try_*` panics, `#[track_caller]`): a smoke run only - checkbox toggle with count update, detail view, search input.
+
+### Not verified
+
+- The parts of the browser walkthrough of `examples/dogfood-board` not run on the migrated application: the form length limits (covered by `board-core` unit tests only) and New task then Cancel. The commit `997e851` (after the `Slot` review fixes) got only a smoke run, not the full walkthrough; the full walkthrough was done at the first #29 implementation, before `Slot`.
+- The `dogfood-board` CI job on a pushed branch after the migration.
+- A live-editor session on any `.rsx` file (F17).
+- Runtime performance, release bundle size, React interop, Dioxus upgrade cost.
+
+### Issue #23 and #30 checklist status
+
+Done: ADR 0014 (supersedes ADR 0003, amends ADR 0010); the ledger weighed (recount above); the A4 evidence folded in (F1 to F18, A4 section); the A1 numbers are the performance evidence available and the runtime-level performance is stated as unmeasured; implementation issues #25 to #29 closed; ledger row 46; Friction log dispositions; this section and the A2 corpus figure. Open, and stated above rather than treated as passed: the browser re-walkthrough of the migrated application and the live-editor checks.
