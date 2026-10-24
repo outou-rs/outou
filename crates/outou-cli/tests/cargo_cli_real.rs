@@ -10,13 +10,90 @@
 //! cargo test -p outou-cli --test cargo_cli_real -- --ignored --nocapture
 //! ```
 //!
+//! `CARGO_TARGET_DIR` is honoured (the repository's `target/` otherwise);
+//! point it at an empty directory to test against a cold build. Cargo's
+//! progress lines are not part of what is checked.
+//!
 //! The example is copied to a temporary directory; the repository's own
 //! `examples/dogfood-board` is never modified.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Both tests build into one shared target directory. Cargo serializes
+/// that with a file lock and prints `Blocking waiting for file lock`; this
+/// lock makes the tests take turns instead, so the output of one never
+/// depends on what the other is compiling.
+static SHARED_TARGET: Mutex<()> = Mutex::new(());
+
+fn lock_shared_target() -> MutexGuard<'static, ()> {
+    SHARED_TARGET.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Cargo's own status words at the start of a progress line
+/// (`   Compiling dioxus-rsx v0.7.10`). They name every dependency, so a
+/// cold `target/` would trip the leak scan on the crate names alone.
+const CARGO_STATUS_WORDS: &[&str] = &[
+    "Compiling",
+    "Checking",
+    "Blocking",
+    "Downloaded",
+    "Downloading",
+    "Updating",
+    "Locking",
+    "Adding",
+    "Removing",
+    "Finished",
+    "Fresh",
+    "Building",
+    "Fetching",
+    "Unpacking",
+    "Packaging",
+    "Running",
+    "Dirty",
+];
+
+/// Removes Cargo's progress lines, which are not diagnostics.
+fn without_cargo_progress(text: &str) -> String {
+    text.lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !CARGO_STATUS_WORDS.iter().any(|word| {
+                trimmed
+                    .strip_prefix(word)
+                    .is_some_and(|rest| rest.starts_with(' '))
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Removes the temporary board when dropped, so a failed assertion does
+/// not leave it behind.
+struct TempBoard(PathBuf);
+
+impl TempBoard {
+    fn path(&self) -> &Path {
+        &self.0
+    }
+}
+
+impl Drop for TempBoard {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.0).ok();
+    }
+}
+
+/// The target directory shared by the tests: `CARGO_TARGET_DIR` when the
+/// caller set one (a cold build in CI or a check), else the repository's.
+fn target_dir() -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo_root().join("target"))
+}
 
 /// Substrings that must never reach a user (`tests/leak.rs`'s list).
 const FORBIDDEN: &[&str] = &[
@@ -55,7 +132,7 @@ fn copy_board(src: &Path, dest: &Path) {
     }
 }
 
-fn temp_board() -> PathBuf {
+fn temp_board() -> TempBoard {
     let dir = std::env::temp_dir().join(format!(
         "outou-cli-cargo-real-{}-{}",
         std::process::id(),
@@ -78,7 +155,7 @@ fn temp_board() -> PathBuf {
         ),
     )
     .unwrap();
-    dir
+    TempBoard(dir)
 }
 
 fn outou_cargo(dir: &Path, args: &[&str]) -> Output {
@@ -86,7 +163,7 @@ fn outou_cargo(dir: &Path, args: &[&str]) -> Output {
         .arg("cargo")
         .args(args)
         .current_dir(dir)
-        .env("CARGO_TARGET_DIR", repo_root().join("target"))
+        .env("CARGO_TARGET_DIR", target_dir())
         .env("NO_COLOR", "1")
         .env_remove("RUSTFLAGS")
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
@@ -106,9 +183,11 @@ fn assert_no_backend_text(text: &str) {
 #[test]
 #[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
 fn dogfood_board_type_error_is_reported_at_the_rsx_position_and_a_clean_board_passes() {
-    let dir = temp_board();
+    let _target = lock_shared_target();
+    let board = temp_board();
+    let dir = board.path();
 
-    let clean = outou_cargo(&dir, &["clippy", "--", "-D", "warnings"]);
+    let clean = outou_cargo(dir, &["clippy", "--", "-D", "warnings"]);
     assert!(
         clean.status.success(),
         "a clean board passes `outou cargo clippy -- -D warnings`:\n{}",
@@ -143,13 +222,11 @@ fn dogfood_board_type_error_is_reported_at_the_rsx_position_and_a_clean_board_pa
             .chars()
             .count()
             + 1;
-        outputs.push((line, column, outou_cargo(&dir, &["check"])));
+        outputs.push((line, column, outou_cargo(dir, &["check"])));
     }
 
-    fs::remove_dir_all(&dir).ok();
-
     for ((line, column, output), (_, _, code)) in outputs.iter().zip(cases) {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = without_cargo_progress(&String::from_utf8_lossy(&output.stderr));
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(!output.status.success(), "{stderr}");
         assert!(
@@ -163,4 +240,47 @@ fn dogfood_board_type_error_is_reported_at_the_rsx_position_and_a_clean_board_pa
         assert_no_backend_text(&stderr);
         assert_no_backend_text(&stdout);
     }
+}
+
+/// Issue #26: a key of an unsupported type is reported through
+/// `outou cargo` at the key expression in the `.rsx` file, in Outou's words.
+#[test]
+#[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
+fn a_key_of_an_unsupported_type_is_reported_at_the_key_expression() {
+    let _target = lock_shared_target();
+    let board = temp_board();
+    let dir = board.path();
+    let file = dir.join("app/src/task_list.rsx");
+    let source = fs::read_to_string(&file).unwrap();
+    let anchor = "key={task.id}";
+    assert!(
+        source.contains(anchor),
+        "the example changed; update this test"
+    );
+    // `Status` is an enum: neither a string nor an integer.
+    let broken = source.replacen(anchor, "key={task.status}", 1);
+    fs::write(&file, &broken).unwrap();
+    let offset = broken.find("task.status}").unwrap();
+    let line = broken[..offset].matches('\n').count() + 1;
+    let column = broken[..offset]
+        .rsplit('\n')
+        .next()
+        .unwrap()
+        .chars()
+        .count()
+        + 1;
+
+    let output = outou_cargo(dir, &["check"]);
+
+    let stderr = without_cargo_progress(&String::from_utf8_lossy(&output.stderr));
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("cannot be used as a JSX `key`"),
+        "expected the Outou message in:\n{stderr}"
+    );
+    assert!(
+        stderr.contains(&format!("app/src/task_list.rsx:{line}:{column}")),
+        "expected app/src/task_list.rsx:{line}:{column} in:\n{stderr}"
+    );
+    assert_no_backend_text(&stderr);
 }

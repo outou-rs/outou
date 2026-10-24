@@ -31,8 +31,8 @@ fn App() -> Element {
                     match panel {
                         Panel::Empty => <p class="hint">Select a task, or create a new one.</p>,
                         Panel::Detail(id) => <TaskDetail id={id} />,
-                        Panel::New => <TaskForm key={0} editing={None} />,
-                        Panel::Edit(id) => <TaskForm key={id} editing={Some(id)} />,
+                        Panel::New => <TaskForm key="new" editing={None} />,
+                        Panel::Edit(id) => <TaskForm key={format!("edit-{id}")} editing={Some(id)} />,
                     }
                 }
             </section>

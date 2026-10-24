@@ -12,6 +12,7 @@ use outou_syntax::ast::{Island, JsxAttributeValue, JsxChild, JsxElement, JsxTag}
 use crate::attribute::lower_attribute;
 use crate::escape::rust_string_literal;
 use crate::expr::lower_parts;
+use crate::key::KeyBindings;
 use crate::recovery::emit_recovery_element;
 use crate::PRIVATE_PATH;
 
@@ -34,15 +35,33 @@ pub fn lower_element_as_rsx(writer: &mut Writer, source: &str, element: &JsxElem
     // element's own span (rather than leaving them entirely unmapped, as
     // `Writer::raw` would) is what lets such an error land back on the
     // JSX element instead of nowhere.
+    //
+    // Issue #26: the call's keys are evaluated first and bound in a block
+    // around it (`crate::key`); the `rsx!` text then refers to them by a
+    // synthesized identifier. The block's own braces map like the call's.
+    let keys = KeyBindings::collect(element);
+    if !keys.is_empty() {
+        writer.mapped("{ ", &[element.span], MappingKind::Other, None);
+        keys.write_bindings(writer, source, mode);
+    }
     let prefix = format!("{PRIVATE_PATH}::rsx! {{ ");
     writer.mapped(&prefix, &[element.span], MappingKind::Other, None);
-    lower_element_body(writer, source, element, mode);
+    lower_element_body(writer, source, element, &keys, mode);
     writer.mapped(" }", &[element.span], MappingKind::Other, None);
+    if !keys.is_empty() {
+        writer.mapped(" }", &[element.span], MappingKind::Other, None);
+    }
 }
 
 /// Lowers a nested element or component already inside an `rsx!` call (a
 /// child of another element) to `Name { attr: value, …, children }`.
-fn lower_element_body(writer: &mut Writer, source: &str, element: &JsxElement, mode: Mode) {
+fn lower_element_body(
+    writer: &mut Writer,
+    source: &str,
+    element: &JsxElement,
+    keys: &KeyBindings,
+    mode: Mode,
+) {
     if is_broken(element) {
         emit_recovery_element(writer, element.span);
         return;
@@ -72,13 +91,13 @@ fn lower_element_body(writer: &mut Writer, source: &str, element: &JsxElement, m
             continue;
         }
         writer.raw(" ");
-        lower_attribute(writer, source, attribute, mode);
+        lower_attribute(writer, source, attribute, keys, mode);
         writer.raw(",");
     }
 
     for child in &element.children {
         writer.raw(" ");
-        lower_child(writer, source, child, mode);
+        lower_child(writer, source, child, keys, mode);
     }
 
     writer.raw(" }");
@@ -94,7 +113,13 @@ fn is_broken(element: &JsxElement) -> bool {
     matches!(element.open, JsxTag::Incomplete(_))
 }
 
-fn lower_child(writer: &mut Writer, source: &str, child: &JsxChild, mode: Mode) {
+fn lower_child(
+    writer: &mut Writer,
+    source: &str,
+    child: &JsxChild,
+    keys: &KeyBindings,
+    mode: Mode,
+) {
     match child {
         JsxChild::Text(text) => {
             let literal = rust_string_literal(&text.value);
@@ -106,7 +131,7 @@ fn lower_child(writer: &mut Writer, source: &str, child: &JsxChild, mode: Mode) 
             writer.raw(",");
         }
         JsxChild::Element(nested) => {
-            lower_element_body(writer, source, nested, mode);
+            lower_element_body(writer, source, nested, keys, mode);
             writer.raw(",");
         }
         JsxChild::Error(error) => {

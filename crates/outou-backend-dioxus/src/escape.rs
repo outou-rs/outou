@@ -116,34 +116,6 @@ pub fn plain_rust_string_literal(value: &str) -> String {
     out
 }
 
-/// Builds the format-string literal Dioxus's `rsx!` requires for the
-/// `key` attribute's value (`key: "{expr}"`; HIGH-2, issue #6 fix list
-/// item 2): `expr_source`, the `key={expr}` island's own source text, is
-/// spliced verbatim inside `{…}` so the expression keeps whatever type it
-/// already had, since `rsx!` rejects `key: {expr}` (the bare island form
-/// every other attribute uses) with "Key must be in the form of a
-/// formatted string like `key: \"{value}\"`".
-///
-/// Unlike [`rust_string_literal`], `{`/`}` are never doubled here — they
-/// are the meaningful ifmt interpolation syntax this function exists to
-/// produce, not literal text — so only `\` and `"` (which could otherwise
-/// end the literal early or misquote it) are escaped. A literal newline
-/// inside `expr_source` is valid unescaped inside a Rust string, so it is
-/// left as-is.
-pub fn key_interpolation_literal(expr_source: &str) -> String {
-    let mut out = String::with_capacity(expr_source.len() + 4);
-    out.push_str("\"{");
-    for ch in expr_source.chars() {
-        match ch {
-            '\\' => out.push_str("\\\\"),
-            '"' => out.push_str("\\\""),
-            _ => out.push(ch),
-        }
-    }
-    out.push_str("}\"");
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,11 +181,6 @@ mod tests {
     }
 
     #[test]
-    fn key_interpolation_literal_wraps_the_expression_in_braces() {
-        assert_eq!(key_interpolation_literal("x.clone()"), "\"{x.clone()}\"");
-    }
-
-    #[test]
     fn plain_rust_string_literal_does_not_double_braces() {
         // MEDIUM-9, issue #6 fix list item 10: `#[path]` is not a format
         // string; doubling braces in its value would corrupt the path.
@@ -226,16 +193,5 @@ mod tests {
     #[test]
     fn plain_rust_string_literal_escapes_quotes_and_backslashes() {
         assert_eq!(plain_rust_string_literal("he\"llo\\"), "\"he\\\"llo\\\\\"");
-    }
-
-    #[test]
-    fn key_interpolation_literal_escapes_quotes_and_backslashes_only() {
-        // `{`/`}` are meaningful ifmt interpolation syntax here, not
-        // literal text, so — unlike `rust_string_literal` — they are
-        // never doubled.
-        assert_eq!(
-            key_interpolation_literal(r#"x.replace("a","b")"#),
-            r#""{x.replace(\"a\",\"b\")}""#
-        );
     }
 }

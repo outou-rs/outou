@@ -19,6 +19,7 @@ mod element;
 mod escape;
 mod expr;
 mod item;
+mod key;
 mod module;
 mod recovery;
 
@@ -203,36 +204,108 @@ mod tests {
         );
     }
 
+    /// Issue #26: a `key` is evaluated into a synthesized binding before
+    /// the `rsx!` call; only that identifier reaches the backend's format
+    /// string, so the key expression itself is never parsed as one.
     #[test]
-    fn key_attribute_value_becomes_a_format_string() {
-        // HIGH-2, issue #6 fix list item 2: `key={expr}` must lower to
-        // `key: "{expr}"`, not the bare island form (`rsx!` rejects the
-        // latter with "Key must be in the form of a formatted string").
+    fn key_expression_is_bound_before_the_rsx_call() {
         let source = "fn f() { let items: Vec<i32> = vec![]; <ul>{items.iter().map(|x| <li key={x.clone()}>{x.clone()}</li>)}</ul>; }";
         let generated = generate(source, Mode::Strict).expect("generation succeeds");
         assert!(
-            generated.rust.contains("key: \"{x.clone()}\""),
+            generated.rust.contains(
+                "{ let __outou_key_0 = ::outou::__private::key(&(x.clone())); ::outou::__private::rsx! { li { key: \"{__outou_key_0}\", {x.clone()}, } } }"
+            ),
             "{}",
             generated.rust
         );
         assert!(
-            !generated.rust.contains("key: {x.clone()}"),
+            !generated.rust.contains("key: \"{x.clone()}\""),
             "{}",
             generated.rust
         );
     }
 
     #[test]
-    fn key_attribute_value_escapes_embedded_quotes() {
-        let source = "fn f() { <li key={x.replace(\"a\", \"b\")}></li>; }";
+    fn key_expression_with_braces_and_quotes_is_copied_verbatim() {
+        let source = "fn f() { <li key={format!(\"edit-{id}\")}></li>; }";
         let generated = generate(source, Mode::Strict).expect("generation succeeds");
         assert!(
-            generated
-                .rust
-                .contains("key: \"{x.replace(\\\"a\\\", \\\"b\\\")}\""),
+            generated.rust.contains("key(&(format!(\"edit-{id}\")));"),
             "{}",
             generated.rust
         );
+        assert!(
+            generated.rust.contains("key: \"{__outou_key_0}\""),
+            "{}",
+            generated.rust
+        );
+    }
+
+    #[test]
+    fn static_string_key_takes_the_same_path() {
+        let source = "fn f() { <TaskForm key=\"new\" />; }";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        assert!(
+            generated.rust.contains(
+                "{ let __outou_key_0 = ::outou::__private::key(&(\"new\")); ::outou::__private::rsx! { TaskForm { key: \"{__outou_key_0}\", } } }"
+            ),
+            "{}",
+            generated.rust
+        );
+    }
+
+    #[test]
+    fn bare_key_attribute_is_bound_as_true_so_it_is_diagnosed_as_a_key() {
+        let source = "fn f() { <li key></li>; }";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        assert!(
+            generated.rust.contains("key(&(true));"),
+            "{}",
+            generated.rust
+        );
+    }
+
+    /// Several keys in one `rsx!` call (an element and its descendants
+    /// written directly as children) share one block, in source order.
+    #[test]
+    fn keys_in_one_rsx_call_share_one_block_in_source_order() {
+        let source = "fn f() { <ul key={a}><li key={b}></li><li key={c}></li></ul>; }";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        let expected = "{ let __outou_key_0 = ::outou::__private::key(&(a)); let __outou_key_1 = ::outou::__private::key(&(b)); let __outou_key_2 = ::outou::__private::key(&(c)); ::outou::__private::rsx! { ul { key: \"{__outou_key_0}\", li { key: \"{__outou_key_1}\", }, li { key: \"{__outou_key_2}\", }, } } }";
+        assert!(generated.rust.contains(expected), "{}", generated.rust);
+    }
+
+    /// An island is a separate `rsx!` call, so it gets its own block and
+    /// numbering; the outer call's bindings are not shared with it.
+    #[test]
+    fn island_rsx_call_gets_its_own_key_block() {
+        let source = "fn f() { <ul key={a}>{v.iter().map(|x| <li key={x}></li>)}</ul>; }";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        let expected = "{ let __outou_key_0 = ::outou::__private::key(&(a)); ::outou::__private::rsx! { ul { key: \"{__outou_key_0}\", {v.iter().map(|x| { let __outou_key_0 = ::outou::__private::key(&(x)); ::outou::__private::rsx! { li { key: \"{__outou_key_0}\", } } })}, } } }";
+        assert!(generated.rust.contains(expected), "{}", generated.rust);
+    }
+
+    #[test]
+    fn an_element_without_a_key_has_no_block() {
+        let source = "fn f() { <li class=\"a\"></li>; }";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        assert!(
+            !generated.rust.contains("__outou_key"),
+            "{}",
+            generated.rust
+        );
+    }
+
+    #[test]
+    fn key_binding_maps_the_key_expression_to_its_source() {
+        let source = "fn f() { <li key={x.clone()}></li>; }";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        let start = source.find("x.clone()").unwrap() as u32;
+        let gen_start = generated.rust.find("x.clone()").unwrap() as u32;
+        let mapped = generated.source_map.mappings.iter().any(|m| {
+            m.generated.start == gen_start && m.sources.iter().any(|s| s.span.start == start)
+        });
+        assert!(mapped, "{:#?}", generated.source_map);
     }
 
     #[test]

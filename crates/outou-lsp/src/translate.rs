@@ -107,6 +107,8 @@ mod tests {
     fn looks_like_generated_name_flags_the_bare_shapes() {
         assert!(looks_like_generated_name("GreetingProps"));
         assert!(looks_like_generated_name("__TEMPLATE_ROOTS"));
+        // Issue #26: the synthesized binding of a `key` stays out of completion.
+        assert!(looks_like_generated_name("__outou_key_0"));
         assert!(!looks_like_generated_name("unwrap"));
         assert!(
             !looks_like_generated_name("Props"),

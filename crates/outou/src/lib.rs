@@ -39,6 +39,133 @@ pub mod prelude {
     pub use crate::__private::launch;
 }
 
+pub mod jsx {
+    //! Types that JSX syntax gives a meaning to: the `key` of a JSX element
+    //! (`<li key={id}>`, `<Row key="new" />`).
+
+    mod sealed {
+        pub trait Sealed {}
+    }
+
+    /// A value that can be used as a JSX `key`: a string or an integer.
+    ///
+    /// Implemented for `str`, `String`, `Cow<'_, str>`, `Box<str>`,
+    /// `Rc<str>`, `Arc<str>`, every integer type, every `NonZero*` type, and
+    /// `&T` / `&mut T` of any of them. This is narrower than before issue
+    /// #26, when any `Display` type was accepted: `char`, `bool`, floating
+    /// point numbers and a custom `Display` type are no longer keys.
+    ///
+    /// The trait is sealed; it cannot be implemented outside Outou. A key
+    /// expression is checked against it, so a value of any other type is
+    /// reported at the `key` in the `.rsx` file:
+    ///
+    /// ```text
+    /// error[E0277]: `Money` cannot be used as a JSX `key`
+    /// ```
+    #[diagnostic::on_unimplemented(
+        message = "`{Self}` cannot be used as a JSX `key`",
+        label = "this is not a string or an integer",
+        note = "a JSX `key` must be a string (`&str`, `String`) or an integer type",
+        note = "convert the value first, for example with `.to_string()`"
+    )]
+    pub trait IntoKey: sealed::Sealed {
+        /// The key as a string. Generated code only; not public API.
+        #[doc(hidden)]
+        fn to_key(&self) -> String;
+    }
+
+    impl sealed::Sealed for str {}
+    impl IntoKey for str {
+        fn to_key(&self) -> String {
+            self.to_owned()
+        }
+    }
+
+    impl sealed::Sealed for String {}
+    impl IntoKey for String {
+        fn to_key(&self) -> String {
+            self.clone()
+        }
+    }
+
+    impl<T: IntoKey + ?Sized> sealed::Sealed for &T {}
+    impl<T: IntoKey + ?Sized> IntoKey for &T {
+        fn to_key(&self) -> String {
+            (**self).to_key()
+        }
+    }
+
+    impl<T: IntoKey + ?Sized> sealed::Sealed for &mut T {}
+    impl<T: IntoKey + ?Sized> IntoKey for &mut T {
+        fn to_key(&self) -> String {
+            (**self).to_key()
+        }
+    }
+
+    macro_rules! string_pointer_keys {
+        ($($pointer:ty),* $(,)?) => {
+            $(
+                impl sealed::Sealed for $pointer {}
+                impl IntoKey for $pointer {
+                    fn to_key(&self) -> String {
+                        str::to_key(self)
+                    }
+                }
+            )*
+        };
+    }
+
+    string_pointer_keys!(
+        std::borrow::Cow<'_, str>,
+        Box<str>,
+        std::rc::Rc<str>,
+        std::sync::Arc<str>,
+    );
+
+    macro_rules! integer_keys {
+        ($($integer:ty),* $(,)?) => {
+            $(
+                impl sealed::Sealed for $integer {}
+                impl IntoKey for $integer {
+                    fn to_key(&self) -> String {
+                        self.to_string()
+                    }
+                }
+            )*
+        };
+    }
+
+    integer_keys!(u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize);
+
+    macro_rules! non_zero_keys {
+        ($($non_zero:ty),* $(,)?) => {
+            $(
+                impl sealed::Sealed for $non_zero {}
+                impl IntoKey for $non_zero {
+                    fn to_key(&self) -> String {
+                        self.get().to_string()
+                    }
+                }
+            )*
+        };
+    }
+
+    non_zero_keys!(
+        std::num::NonZeroU8,
+        std::num::NonZeroU16,
+        std::num::NonZeroU32,
+        std::num::NonZeroU64,
+        std::num::NonZeroU128,
+        std::num::NonZeroUsize,
+        std::num::NonZeroI8,
+        std::num::NonZeroI16,
+        std::num::NonZeroI32,
+        std::num::NonZeroI64,
+        std::num::NonZeroI128,
+        std::num::NonZeroIsize,
+    );
+}
+
 /// Backend re-exports used by generated code. **Not public API.**
 #[doc(hidden)]
 pub mod __private {
@@ -50,6 +177,16 @@ pub mod __private {
 
     #[cfg(feature = "launch")]
     pub use dioxus::launch;
+
+    /// Turns the value of a JSX `key` into the string the backend takes.
+    /// Generated code binds each key with this before the element's own
+    /// call, so a key of an unsupported type is reported here, in Outou's
+    /// words (`crate::jsx::IntoKey`). The value is converted on the spot, so
+    /// the original is not borrowed by the element that follows.
+    #[doc(hidden)]
+    pub fn key<K: crate::jsx::IntoKey + ?Sized>(key: &K) -> String {
+        key.to_key()
+    }
 
     /// Recovery-mode placeholder for a JSX element the parser could not
     /// recover a name for (grammar §9 — `outou-backend-dioxus`'s

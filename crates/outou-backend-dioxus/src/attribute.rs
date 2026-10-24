@@ -12,14 +12,25 @@ use outou_syntax::ast::{Expr, Island, JsxAttribute, JsxAttributeValue, RustSourc
 use outou_syntax::lexer::rust_token::{next_token, RtKind};
 
 use crate::element::lower_island;
-use crate::escape::{
-    is_plain_ident, is_raw_identifiable_keyword, key_interpolation_literal, rust_string_literal,
-};
+use crate::escape::{is_plain_ident, is_raw_identifiable_keyword, rust_string_literal};
+use crate::key::KeyBindings;
 
 /// Lowers one attribute: its key, then `: `, then its value.
-pub fn lower_attribute(writer: &mut Writer, source: &str, attribute: &JsxAttribute, mode: Mode) {
+pub fn lower_attribute(
+    writer: &mut Writer,
+    source: &str,
+    attribute: &JsxAttribute,
+    keys: &KeyBindings,
+    mode: Mode,
+) {
     lower_key(writer, attribute);
     writer.raw(": ");
+    // A `key` was evaluated before the `rsx!` call (`crate::key`); the
+    // backend only sees the synthesized identifier, as a format string.
+    if let Some(binding) = keys.identifier(attribute) {
+        writer.raw(&format!("\"{{{binding}}}\""));
+        return;
+    }
     match &attribute.value {
         // A bare attribute is boolean (grammar §5.1): `<input disabled />`
         // behaves exactly as `disabled={true}` would.
@@ -31,9 +42,7 @@ pub fn lower_attribute(writer: &mut Writer, source: &str, attribute: &JsxAttribu
             writer.mapped(&literal, &[text.span], MappingKind::Expression, None);
         }
         Some(JsxAttributeValue::Expression(island)) => {
-            if attribute.name.name == "key" {
-                lower_key_value(writer, source, island);
-            } else if let Some(rust) = bare_rust_expr(island) {
+            if let Some(rust) = bare_rust_expr(island) {
                 // Decision 4(b), issue #8 fix list step 7: a single plain
                 // Rust expression needs no synthesized braces of its own —
                 // dropping them is what removes the file-wide
@@ -53,18 +62,6 @@ pub fn lower_attribute(writer: &mut Writer, source: &str, attribute: &JsxAttribu
             unreachable!("caller (crate::element) filters out broken attribute values")
         }
     }
-}
-
-/// Lowers `key={expr}`'s value (HIGH-2, issue #6 fix list item 2):
-/// Dioxus's `rsx!` requires `key: "{value}"`, a format-string literal,
-/// not the bare island form every other attribute uses. `expr`'s own
-/// source text is spliced verbatim inside `{…}` so the expression keeps
-/// whatever type it already had — the ledger records that it must be
-/// `Display` and must not itself contain `{`/`}` (`docs/backend-leakage.md`).
-fn lower_key_value(writer: &mut Writer, source: &str, island: &Island) {
-    let expr_source = &source[island.span.start as usize..island.span.end as usize];
-    let literal = key_interpolation_literal(expr_source);
-    writer.mapped(&literal, &[island.span], MappingKind::Expression, None);
 }
 
 /// Lowers the attribute's name.

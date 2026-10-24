@@ -230,8 +230,7 @@ pub enum NarrowOutcome {
     /// The one containing mapping has exactly one source, but its
     /// generated span and that source's span differ in length — a
     /// transformed mapping (e.g. an escaped string literal, or
-    /// `key={tag.clone()}` lowering to `key: "{tag.clone()}"` with quotes
-    /// added), where a proportional guess would be confidently *wrong*
+    /// `type` lowering to `r#type`), where a proportional guess would be confidently *wrong*
     /// rather than merely coarse. The caller must report this as
     /// unmapped, never fall back to a coarser answer.
     LengthMismatch,

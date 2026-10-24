@@ -36,6 +36,13 @@ fn cases() -> Vec<Case> {
             source_path: root.join("examples/phase0-app/src/components.rsx"),
             module_paths: vec![],
         },
+        // Issue #26: every `key` shape, in one `rsx!` call and in an island.
+        Case {
+            name: "keys".to_string(),
+            source_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/golden/keys/input.rsx"),
+            module_paths: vec![],
+        },
     ];
 
     let formatting_dir = root.join("tests/fixtures/formatting");

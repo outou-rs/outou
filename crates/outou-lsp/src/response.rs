@@ -453,6 +453,8 @@ mod tests {
     fn is_backend_leak_flags_dioxus_module_labels() {
         assert!(is_backend_leak(&json!({ "label": "dioxus_core::" })));
         assert!(is_backend_leak(&json!({ "label": "__TEMPLATE_ROOTS" })));
+        // Issue #26: the synthesized binding of a `key` never reaches completion.
+        assert!(is_backend_leak(&json!({ "label": "__outou_key_0" })));
         assert!(is_backend_leak(&json!({ "label": "GreetingProps" })));
         assert!(!is_backend_leak(&json!({ "label": "unwrap" })));
     }

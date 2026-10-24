@@ -660,7 +660,59 @@
         },
         "end": {
           "line": 15,
-          "character": 101
+          "character": 76
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 14,
+            "character": 31
+          },
+          "end": {
+            "line": 14,
+            "character": 71
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 15,
+          "character": 122
+        },
+        "end": {
+          "line": 15,
+          "character": 133
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 14,
+            "character": 40
+          },
+          "end": {
+            "line": 14,
+            "character": 51
+          }
+        }
+      ]
+    },
+    {
+      "kind": "other",
+      "generated": {
+        "start": {
+          "line": 15,
+          "character": 137
+        },
+        "end": {
+          "line": 15,
+          "character": 164
         }
       },
       "sources": [
@@ -682,11 +734,11 @@
       "generated": {
         "start": {
           "line": 15,
-          "character": 101
+          "character": 164
         },
         "end": {
           "line": 15,
-          "character": 103
+          "character": 166
         }
       },
       "sources": [
@@ -719,11 +771,11 @@
       "generated": {
         "start": {
           "line": 15,
-          "character": 106
+          "character": 169
         },
         "end": {
           "line": 15,
-          "character": 109
+          "character": 172
         }
       },
       "sources": [
@@ -745,37 +797,11 @@
       "generated": {
         "start": {
           "line": 15,
-          "character": 111
+          "character": 194
         },
         "end": {
           "line": 15,
-          "character": 126
-        }
-      },
-      "sources": [
-        {
-          "file": 0,
-          "start": {
-            "line": 14,
-            "character": 40
-          },
-          "end": {
-            "line": 14,
-            "character": 51
-          }
-        }
-      ]
-    },
-    {
-      "kind": "expression",
-      "generated": {
-        "start": {
-          "line": 15,
-          "character": 129
-        },
-        "end": {
-          "line": 15,
-          "character": 140
+          "character": 205
         }
       },
       "sources": [
@@ -797,11 +823,37 @@
       "generated": {
         "start": {
           "line": 15,
-          "character": 144
+          "character": 209
         },
         "end": {
           "line": 15,
-          "character": 146
+          "character": 211
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 14,
+            "character": 31
+          },
+          "end": {
+            "line": 14,
+            "character": 71
+          }
+        }
+      ]
+    },
+    {
+      "kind": "other",
+      "generated": {
+        "start": {
+          "line": 15,
+          "character": 211
+        },
+        "end": {
+          "line": 15,
+          "character": 213
         }
       },
       "sources": [
@@ -823,11 +875,11 @@
       "generated": {
         "start": {
           "line": 15,
-          "character": 146
+          "character": 213
         },
         "end": {
           "line": 15,
-          "character": 147
+          "character": 214
         }
       },
       "sources": [
@@ -849,11 +901,11 @@
       "generated": {
         "start": {
           "line": 15,
-          "character": 151
+          "character": 218
         },
         "end": {
           "line": 15,
-          "character": 153
+          "character": 220
         }
       },
       "sources": [
@@ -875,7 +927,7 @@
       "generated": {
         "start": {
           "line": 15,
-          "character": 153
+          "character": 220
         },
         "end": {
           "line": 16,

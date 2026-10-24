@@ -101,8 +101,8 @@ pub fn rsx_position_to_generated(
         .min_by_key(|(source_span, _)| source_span.end - source_span.start)?;
 
     // S1 (issue #9 Gate 3 review): a transformed mapping — source and
-    // generated spans of different lengths, e.g. `key={tag.clone()}`
-    // lowering to `key: "{tag.clone()}"` (quotes added) — cannot be
+    // generated spans of different lengths, e.g. `type` lowering to
+    // `r#type` (ledger row 29) — cannot be
     // translated proportionally without risking a confidently *wrong*
     // answer rather than an honest empty one. Confirmed live: hovering
     // `tag` inside that attribute value returned `extern crate std` at a
@@ -189,7 +189,8 @@ pub fn generated_location_to_source(
         // inside has an unambiguous single source, but the two spans
         // differ in length — a transformed mapping, not a verbatim copy —
         // so a proportional guess is confidently wrong more often than it
-        // is right (`key={tag.clone()}` -> `key: "{tag.clone()}"`, HIGH-7).
+        // is right (`type` -> `r#type`; `key={tag.clone()}` was the original
+        // HIGH-7 example, gone since issue #26 copies key expressions verbatim).
         // Reported as unmapped outright, never falling through to the
         // coarser `reverse()` full-span answer below.
         NarrowOutcome::LengthMismatch => return MappedLocation::Unmapped,
@@ -792,6 +793,88 @@ mod tests {
             ident_range,
             type_range,
         )
+    }
+
+    /// Issue #26: a `key` expression is copied verbatim into a synthesized
+    /// binding, so position requests inside it work in both directions
+    /// (hover, references and rename need exactly this); they used to be
+    /// refused because `key={tag}` became `key: "{tag}"`. Uses the real
+    /// backend output, not a hand-built map.
+    #[test]
+    fn a_key_expression_maps_both_ways_against_real_generated_code() {
+        use outou_codegen::{Backend, GenerateOptions, Mode};
+
+        let rsx_source = "fn f() { <li key={tag.clone()}></li>; }";
+        let rsx_uri = file_uri(Path::new("/app/src/main.rsx"));
+        let generated_uri = file_uri(Path::new("/app/src/.generated/main.rs"));
+        let parsed = outou_syntax::parse(rsx_source);
+        let generated = outou_backend_dioxus::DioxusBackend
+            .generate(
+                &parsed,
+                rsx_source,
+                Mode::Strict,
+                &GenerateOptions::new(generated_uri.clone(), rsx_uri.clone()),
+            )
+            .expect("generation succeeds");
+        let key_start = rsx_source.find("tag.clone()").unwrap() as u32;
+        let generated_start = generated.rust.find("tag.clone()").unwrap() as u32;
+
+        let mut workspace = Workspace {
+            manifest_dir: std::path::PathBuf::from("/app"),
+            plan: None,
+            registry: outou_sourcemap::Registry::new().with_map(generated.source_map.clone()),
+            rsx: std::collections::HashMap::new(),
+            generated: std::collections::HashMap::new(),
+            rsx_to_generated: std::collections::HashMap::new(),
+        };
+        workspace.rsx.insert(
+            rsx_uri.as_str().to_string(),
+            crate::documents::RsxDocument::new(rsx_source.to_string(), 0),
+        );
+        workspace.generated.insert(
+            generated_uri.as_str().to_string(),
+            crate::documents::test_generated_unit(&generated_uri, &rsx_uri, &generated.rust),
+        );
+        workspace.rsx_to_generated.insert(
+            rsx_uri.as_str().to_string(),
+            generated_uri.as_str().to_string(),
+        );
+        let rsx_lsp = uri::to_lsp(&rsx_uri);
+        let generated_lsp = uri::to_lsp(&generated_uri);
+
+        // Forward: a cursor on `tag` (as hover, rename and references do)
+        // lands on the `tag` of the binding, byte for byte.
+        let unit = workspace.generated.get(generated_uri.as_str()).unwrap();
+        let expected = to_lsp_range(
+            unit.line_index
+                .span_to_range(Span::new(generated_start + 1, generated_start + 1)),
+        )
+        .start;
+        let mapped = rsx_position_to_generated(
+            &workspace,
+            &rsx_lsp,
+            lsp_types::Position::new(0, key_start + 1),
+        )
+        .expect("a position inside a key expression maps forward");
+        assert_eq!(mapped.generated_uri, generated_lsp);
+        assert_eq!(mapped.position, expected);
+
+        // Reverse: the identifier in the generated binding maps back to
+        // exactly the `tag` written in the `.rsx` file.
+        let range = to_lsp_range(
+            workspace
+                .generated
+                .get(generated_uri.as_str())
+                .unwrap()
+                .line_index
+                .span_to_range(Span::new(generated_start, generated_start + 3)),
+        );
+        let sources = generated_range_to_all_sources(&workspace, &generated_lsp, range)
+            .expect("a known generated file");
+        assert_eq!(sources.len(), 1, "{sources:#?}");
+        let doc = workspace.rsx.get(rsx_lsp.as_str()).unwrap();
+        let span = doc.line_index.range_to_span(to_outou_range(sources[0].1));
+        assert_eq!(&rsx_source[span.start as usize..span.end as usize], "tag");
     }
 
     /// CRITICAL-1: querying the 8 generated bytes of the identifier

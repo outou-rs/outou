@@ -13,7 +13,7 @@ fn Greeting(name: String) -> Element {
 
 #[component]
 fn TagList(tags: Vec<String>) -> Element {
-    ::outou::__private::rsx! { ul { class: "tags", {tags.iter().map(|tag| ::outou::__private::rsx! { li { key: "{tag.clone()}", {tag.clone()}, } })}, } }
+    ::outou::__private::rsx! { ul { class: "tags", {tags.iter().map(|tag| { let __outou_key_0 = ::outou::__private::key(&(tag.clone())); ::outou::__private::rsx! { li { key: "{__outou_key_0}", {tag.clone()}, } } })}, } }
 }
 
 #[component]

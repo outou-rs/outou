@@ -1,0 +1,4 @@
+error: `Money` cannot be used as a JSX `key`
+ --> $DIR/input.rsx:9:18
+error: `bool` cannot be used as a JSX `key`
+ --> $DIR/input.rsx:10:18

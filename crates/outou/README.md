@@ -10,6 +10,10 @@ Phase 0: Week 4 (Gate 2).
 - `component`, `Element`, and the backend macro-hygiene names (`dioxus_core`, `dioxus_elements`, `dioxus_signals`, `Props`) documented as leakage in `docs/backend-leakage.md` (row 11; row 16 records why generated code cannot avoid needing them in scope).
 - `recovery_element() -> Element` and `recovery<T>() -> T`: recovery-mode placeholders emitted by `outou-backend-dioxus` for a construct it could not reconstruct. Both `unreachable!()` if ever actually called — recovery-mode generated Rust is for rust-analyzer analysis only and is never fed to `rustc` through `cargo build`. See `crates/outou-backend-dioxus/README.md`'s "Recovery-mode placeholders" section for exactly when each is used.
 
+## Public API besides the prelude
+
+- `outou::jsx::IntoKey`: the sealed trait behind a JSX `key` (strings and integers; narrower than before #26, when any `Display` type was accepted: `char`, `bool`, floating point numbers and custom `Display` types are no longer keys). A key of any other type is a compile error in Outou's words, at the key in the `.rsx` file (issue #26, ADR 0014). `__private::key` is the generated-code entry point that binds each key.
+
 ## Opt-in features
 
 - `web`: the only supported public feature. It exposes `outou::prelude::launch` and selects the browser renderer. Used by `examples/dogfood-board`; off by default (ADR 0010 amendment, `docs/backend-leakage.md` row 32).
