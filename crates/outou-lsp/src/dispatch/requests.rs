@@ -751,6 +751,16 @@ mod tests {
         ));
     }
 
+    /// A warning (here: a `<select value>` option without `value`) must not
+    /// stop formatting; only a syntax error does.
+    #[test]
+    fn formatting_edits_formats_a_file_that_has_only_warnings() {
+        let source = "fn f() { <select value=\"a\"><option>a</option></select> }";
+        let edits = formatting_edits(source, &outou_fmt::FormatOptions::default())
+            .expect("a warning does not block formatting");
+        assert_eq!(edits.len(), 1, "{edits:?}");
+    }
+
     /// `textDocument/formatting` for a known, unformatted degraded-mode
     /// document (no crate root, so no [`crate::documents::Workspace`] at
     /// all) must be answered locally, with one full-document edit — never

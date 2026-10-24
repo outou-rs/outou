@@ -87,7 +87,15 @@ impl Default for FormatOptions {
 /// rewritten (`docs/phase0/issues/13-formatter.md`).
 pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, FormatError> {
     let parsed = outou_syntax::parse(source);
-    if !parsed.diagnostics.is_empty() {
+    // Only errors stop formatting. A warning (for example the one about a
+    // `<select value>` whose option has no `value`) does not make the file
+    // unformattable; it is reported by `outou check` and the language server,
+    // not here.
+    if parsed
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.severity == outou_syntax::Severity::Error)
+    {
         return Err(FormatError::SyntaxErrors {
             diagnostics: parsed.render_diagnostics("<input>"),
         });
@@ -127,6 +135,30 @@ mod tests {
     #[test]
     fn refuses_a_file_with_syntax_errors() {
         let source = "fn f() { <div cl";
+        let err = format_source(source, &opts()).unwrap_err();
+        assert!(matches!(err, FormatError::SyntaxErrors { .. }));
+    }
+
+    #[test]
+    fn formats_a_file_that_has_only_warnings() {
+        // `<option>` without `value` inside `<select value>` is a warning.
+        let source = "fn f() { <select value=\"a\"><option>a</option></select> }";
+        assert!(
+            outou_syntax::parse(source)
+                .diagnostics
+                .iter()
+                .all(|d| d.severity == outou_syntax::Severity::Warning),
+            "the input must produce warnings only"
+        );
+        assert!(!outou_syntax::parse(source).diagnostics.is_empty());
+        let out = format_source(source, &opts()).unwrap();
+        assert!(out.contains("<select value=\"a\">"), "{out}");
+        assert!(is_formatted(&out, &opts()).unwrap());
+    }
+
+    #[test]
+    fn still_refuses_a_file_with_an_error_next_to_a_warning() {
+        let source = "fn f() { <select value=\"a\"><option>a</option></select>; <div cl";
         let err = format_source(source, &opts()).unwrap_err();
         assert!(matches!(err, FormatError::SyntaxErrors { .. }));
     }
