@@ -18,14 +18,20 @@ const client = new LanguageClient(
   { command: process.execPath, args: ["-e", "process.exit(0)"] },
   { documentSelector: [{ language: "outou-rsx" }], outputChannel: plain },
 );
-process.on("unhandledRejection", () => {});
+// The library can hit the missing method from a background callback (the
+// child's exit event) before start() settles; that surfaces as an uncaught
+// exception instead of a rejection. Either one is the failure being
+// reproduced, so report whichever comes first and exit.
+let reported = false;
+function report(result) {
+  if (reported) return;
+  reported = true;
+  console.log(JSON.stringify({ ...result, hasError: typeof plain.error }));
+  process.exit(0);
+}
+process.on("unhandledRejection", (error) => report({ rejected: true, message: String(error) }));
+process.on("uncaughtException", (error) => report({ rejected: true, message: String(error) }));
 client.start().then(
-  () => {
-    console.log(JSON.stringify({ rejected: false }));
-    process.exit(0);
-  },
-  (error) => {
-    console.log(JSON.stringify({ rejected: true, message: String(error), hasError: typeof plain.error }));
-    process.exit(0);
-  },
+  () => report({ rejected: false }),
+  (error) => report({ rejected: true, message: String(error) }),
 );

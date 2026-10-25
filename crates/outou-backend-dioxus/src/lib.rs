@@ -175,6 +175,30 @@ mod tests {
         ));
     }
 
+    /// F17 (b): rust-analyzer's own `non_snake_case` check runs on the
+    /// source item before `#[component]` expands, so a PascalCase component
+    /// needs the allow on the function itself. Only that function, and only
+    /// when its name is not already snake_case.
+    #[test]
+    fn pascal_case_component_gets_a_function_scoped_non_snake_case_allow() {
+        let source = "fn helper() {}\n\n#[component]\nfn TaskList() -> Element {\n    <p></p>\n}\n\n#[component]\nfn snake_list() -> Element {\n    <p></p>\n}\n";
+        let generated = generate(source, Mode::Strict).expect("generation succeeds");
+        assert_eq!(
+            generated.rust.matches("non_snake_case").count(),
+            1,
+            "{}",
+            generated.rust
+        );
+        assert!(
+            generated
+                .rust
+                .contains("#[allow(non_snake_case)] #[component]\nfn TaskList()"),
+            "{}",
+            generated.rust
+        );
+        assert!(!generated.rust.contains("#![allow(non_snake_case)]"));
+    }
+
     /// Issue #8 fix list step 7, decision 4(b): a single bare Rust
     /// expression attribute value lowers without the island's own
     /// synthesized braces, and — since no island in this file needed to

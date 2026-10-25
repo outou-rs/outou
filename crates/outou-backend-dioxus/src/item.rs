@@ -120,9 +120,35 @@ fn lower_function(
         }
         return;
     }
+    // `function.span` starts with the trivia before the first attribute.
+    let attributes_start = function
+        .attributes
+        .first()
+        .map_or(function.span.start, |a| a.span.start);
+    let allow_non_snake_case = function.is_component && !is_snake_case(&function.name.name);
+    if allow_non_snake_case {
+        // rust-analyzer's native `non_snake_case` check sees the item before
+        // `#[component]` expands, so it warns on every PascalCase component
+        // (F17 (b)). Unmapped text on the line of the first attribute, so no
+        // line shifts.
+        writer.verbatim(
+            source,
+            Span::new(function.span.start, attributes_start),
+            MappingKind::Expression,
+            None,
+        );
+        writer.raw(NON_SNAKE_CASE_ALLOW);
+    }
     writer.verbatim(
         source,
-        Span::new(function.span.start, function.signature.span.start),
+        Span::new(
+            if allow_non_snake_case {
+                attributes_start
+            } else {
+                function.span.start
+            },
+            function.signature.span.start,
+        ),
         MappingKind::Expression,
         None,
     );
@@ -133,6 +159,14 @@ fn lower_function(
         None,
     );
     lower_block(writer, source, &function.body, cx);
+}
+
+/// Written before a PascalCase `#[component]` function, scoped to it.
+const NON_SNAKE_CASE_ALLOW: &str = "#[allow(non_snake_case)] ";
+
+/// Whether `name` has no uppercase letter.
+fn is_snake_case(name: &str) -> bool {
+    !name.chars().any(char::is_uppercase)
 }
 
 fn lower_rust_item(writer: &mut Writer, source: &str, rust_item: &RustItem, cx: Cx<'_>) {

@@ -6,17 +6,17 @@ mod components;
 
 use components::{Field, UserCard};
 
-#[component]
+#[allow(non_snake_case)] #[component]
 fn Greeting(name: String) -> Element {
     ::outou::__private::rsx! { h1 { "Hello ", {::outou::__private::child(name)}, } }
 }
 
-#[component]
+#[allow(non_snake_case)] #[component]
 fn TagList(tags: Vec<String>) -> Element {
     ::outou::__private::rsx! { ul { class: "tags", {::outou::__private::child(tags.iter().map(|tag| { #[allow(clippy::borrow_deref_ref)] let __outou_key_0 = ::outou::__private::key(&(tag.clone())); ::outou::__private::rsx! { li { key: "{__outou_key_0}", {::outou::__private::child(tag.clone())}, } } }))}, } }
 }
 
-#[component]
+#[allow(non_snake_case)] #[component]
 fn App() -> Element {
     let user = load_user();
     let tags = vec!["rust".to_string(), "jsx".to_string(), "phase0".to_string()];

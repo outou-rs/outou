@@ -285,6 +285,18 @@ Semantic tokens/rename/references (issue #14 review):
   diagnostics at its real path is then opened through the link, or a
   spelling closes), the spelling that had diagnostics gets one empty
   `publishDiagnostics`, so no stale error is left behind.
+- **rust-analyzer's standard error is dropped by default.** It carries
+  rust-analyzer's own log lines and the full text of every `didSave`, which
+  is the generated Rust and its `.generated` path, and the editor would show
+  all of it. Start `outou-lsp` with `OUTOU_LSP_RA_LOG=1` (any value other
+  than empty or `0`) to pass it through to this server's stderr unchanged;
+  that is a developer opt-in and nothing is filtered or rewritten. If
+  rust-analyzer exits, the server's own stderr says so and names the
+  variable. `outou-lsp`'s own messages on stderr are unaffected. The VS Code
+  extension shows the server's stderr at `[info]`.
+- **PascalCase components do not trigger `non_snake_case`.** Codegen writes
+  `#[allow(non_snake_case)] ` before a PascalCase `#[component]` function,
+  because rust-analyzer's own check sees the item before the macro expands.
 - **A `.rsx` file the plan does not reach** (no `mod` declaration leads to
   it) is checked for syntax only and never sent to rust-analyzer; the
   server says so once per file on stderr.

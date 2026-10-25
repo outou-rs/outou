@@ -5,12 +5,12 @@ unsafe fn raw_three() -> usize {
     3
 }
 
-#[component]
+#[allow(non_snake_case)] #[component]
 fn Row(label: String) -> Element {
     ::outou::__private::rsx! { li { {::outou::__private::child(label)}, } }
 }
 
-#[component]
+#[allow(non_snake_case)] #[component]
 fn App() -> Element {
     let count: usize = 3;
     let labels = vec![String::from("a"), String::from("b")];

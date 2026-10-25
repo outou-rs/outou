@@ -139,7 +139,10 @@ fn serve(
             recv(ra_receiver) -> msg => match msg {
                 Ok(message) => dispatch_ra_message(state, proxy, message),
                 Err(_) => {
-                    eprintln!("outou-lsp: rust-analyzer exited; continuing with Outou syntax diagnostics only");
+                    eprintln!(
+                        "outou-lsp: rust-analyzer exited; continuing with Outou syntax diagnostics only (set {} to see its output)",
+                        crate::ra::RA_LOG_ENV
+                    );
                     state.ra = None;
                     // S5 (issue #9 Gate 3 review, MEDIUM-11): every
                     // request still waiting on a response from the
@@ -413,7 +416,10 @@ fn setup_rust_analyzer(
         }
     });
     let Some(response) = response else {
-        eprintln!("outou-lsp: rust-analyzer exited during initialize");
+        eprintln!(
+            "outou-lsp: rust-analyzer exited during initialize (set {} to see its output)",
+            crate::ra::RA_LOG_ENV
+        );
         return false;
     };
     let result = match response.response_result {

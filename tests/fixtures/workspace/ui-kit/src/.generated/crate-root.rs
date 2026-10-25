@@ -28,7 +28,7 @@ pub fn add_one(x: i32) -> i32 {
     x + 1
 }
 
-/// A card built from two other components, one of them (`Button`) from a
+#[allow(non_snake_case)] /// A card built from two other components, one of them (`Button`) from a
 /// nested `.rsx` module and one (`Circle`) reached through an explicit
 /// `#[path]` into a differently named source file.
 #[component]

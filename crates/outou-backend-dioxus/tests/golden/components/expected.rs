@@ -28,12 +28,12 @@ pub fn initial(user: &User) -> Option<char> {
     user.name.chars().next()
 }
 
-#[component]
+#[allow(non_snake_case)] #[component]
 pub fn UserCard(user: User) -> Element {
     ::outou::__private::rsx! { div { class: "user-card", {::outou::__private::child(user.name)}, } }
 }
 
-/// A labeled form field. `type` is a JSX attribute name that happens to
+#[allow(non_snake_case)] /// A labeled form field. `type` is a JSX attribute name that happens to
 /// be a Rust keyword (grammar §5); the component's own parameter must
 /// therefore be written as the raw identifier `r#type` (issue #6 fix
 /// list item 3, HIGH-3: Dioxus's raw string-key syntax for such a name
@@ -55,7 +55,7 @@ pub struct MyProps {
     pub title: String,
 }
 
-#[component]
+#[allow(non_snake_case)] #[component]
 pub fn Card2(config: MyProps) -> Element {
     ::outou::__private::rsx! { div { class: "card2", {::outou::__private::child(config.title)}, } }
 }

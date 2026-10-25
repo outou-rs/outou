@@ -50,15 +50,16 @@ Notes:
 - A workspace opened through a symbolic link works (the server maps the editor's spelling of each URI); if something still looks wrong there, open the real path instead and say so when reporting.
 - If `Ctrl+Space` does nothing on macOS, it is probably taken by the input method (Google Japanese Input): use the Command Palette, "Trigger Suggest". `Shift+F12` and `F2` are function keys on a Mac keyboard; use the context menu ("Find All References", "Rename Symbol") or the Command Palette instead.
 - Grey inline suggestions are an AI feature, not `outou-lsp` completion (completion is the popup list); turn `editor.inlineSuggest.enabled` off to avoid confusing them. VS Code's word-based suggestions may also appear in the same list.
-- The Output channel currently also shows rust-analyzer's standard error, including generated Rust (ledger row 53, #31); that is a known leak, not something you did.
+- The Output channel no longer shows rust-analyzer's standard error (ledger row 54). To see it while debugging rust-analyzer itself, start VS Code from a terminal with `OUTOU_LSP_RA_LOG=1` set. The server's own lines (`outou-lsp: ...`) appear at `[info]`.
 - Where to look when it does not work: Output panel, channel "Outou Language Server" (server stderr and, with `outou.trace.server` set, the LSP traffic); Help > Toggle Developer Tools > Console of the Extension Development Host; the Extensions view (is "Outou" activated? it activates on `onLanguage:outou-rsx`, so open a `.rsx` file).
 
 Checklist (open `app/src/task_list.rsx` unless noted; record gaps in `examples/dogfood-board/README.md`, F17). After checking each item, undo the edit with `Cmd+Z`. Line numbers are based on the current contents of `task_list.rsx`.
 
 | # | What to try | Expected |
 |---|---|---|
-| 1 | Starts: open a `.rsx` file | Output "Outou Language Server" shows `Starting .../outou-lsp`; no error toast. |
+| 1 | Starts: open a `.rsx` file | Output "Outou Language Server" shows `Starting .../outou-lsp`; no error toast. No `WARN`, `PrimeCaches` or generated Rust (that was ledger row 53). |
 | 2 | Progress: right after opening, watch the status bar and notifications | `Outou: indexing`, then `Outou: checking`, appear and eventually disappear. No `rust-analyzer` or crate name appears. |
+| 3-0 | Naming: look at `TaskList` and `TaskRow` (the `fn` names) | No `should have snake_case name` warning (ledger row 54). |
 | 3a | Syntax diagnostic: change `</p>` on line 17 to `</q>` | A red squiggle at that position for the mismatched closing tag. Restoring it clears the squiggle. |
 | 3b | Remove the `/>` on line 25 | An error saying the tag is not closed. Restoring it clears the error. |
 | 3c | Type error: change line 38 to `let id: u8 = task.id;` and save | After the save, `mismatched types` appears on line 38. No `dioxus`, `rsx!` or `.generated` wording. |

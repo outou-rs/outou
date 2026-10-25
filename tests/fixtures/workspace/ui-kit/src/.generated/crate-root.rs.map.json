@@ -429,8 +429,8 @@
           "character": 1
         },
         "end": {
-          "line": 34,
-          "character": 4
+          "line": 30,
+          "character": 0
         }
       },
       "sources": [
@@ -439,6 +439,32 @@
           "start": {
             "line": 24,
             "character": 1
+          },
+          "end": {
+            "line": 26,
+            "character": 0
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 30,
+          "character": 25
+        },
+        "end": {
+          "line": 34,
+          "character": 4
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 26,
+            "character": 0
           },
           "end": {
             "line": 30,

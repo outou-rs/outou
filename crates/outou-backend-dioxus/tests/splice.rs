@@ -122,17 +122,21 @@ fn assert_splice_invariant(label: &str, source: &str) {
         Err(other) => panic!("{label}: unexpected codegen error: {other}"),
     };
 
+    // The one text codegen inserts inside a stretch of non-JSX source: the
+    // function-scoped allow before a PascalCase `#[component]` (F17 (b)). It
+    // is not source, so take it out before checking that the source is intact.
+    let generated_rust = generated.rust.replace("#[allow(non_snake_case)] ", "");
     let mut cursor = 0usize;
     for chunk in &chunks {
         if chunk.is_empty() {
             continue;
         }
-        match generated.rust[cursor..].find(chunk.as_str()) {
+        match generated_rust[cursor..].find(chunk.as_str()) {
             Some(offset) => cursor += offset + chunk.len(),
             None => panic!(
                 "{label}: source chunk {chunk:?} is missing (or out of order) in the \
                  generated Strict-mode output:\n---\n{}",
-                generated.rust
+                generated_rust
             ),
         }
     }

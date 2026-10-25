@@ -169,8 +169,8 @@
           "character": 1
         },
         "end": {
-          "line": 31,
-          "character": 4
+          "line": 30,
+          "character": 0
         }
       },
       "sources": [
@@ -179,6 +179,32 @@
           "start": {
             "line": 27,
             "character": 1
+          },
+          "end": {
+            "line": 29,
+            "character": 0
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 30,
+          "character": 25
+        },
+        "end": {
+          "line": 31,
+          "character": 4
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 29,
+            "character": 0
           },
           "end": {
             "line": 30,
@@ -492,8 +518,8 @@
           "character": 1
         },
         "end": {
-          "line": 42,
-          "character": 4
+          "line": 35,
+          "character": 0
         }
       },
       "sources": [
@@ -502,6 +528,32 @@
           "start": {
             "line": 34,
             "character": 1
+          },
+          "end": {
+            "line": 36,
+            "character": 0
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 35,
+          "character": 25
+        },
+        "end": {
+          "line": 42,
+          "character": 4
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 36,
+            "character": 0
           },
           "end": {
             "line": 43,
@@ -1060,8 +1112,8 @@
           "character": 1
         },
         "end": {
-          "line": 58,
-          "character": 4
+          "line": 57,
+          "character": 0
         }
       },
       "sources": [
@@ -1070,6 +1122,32 @@
           "start": {
             "line": 59,
             "character": 1
+          },
+          "end": {
+            "line": 61,
+            "character": 0
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 57,
+          "character": 25
+        },
+        "end": {
+          "line": 58,
+          "character": 4
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 61,
+            "character": 0
           },
           "end": {
             "line": 62,

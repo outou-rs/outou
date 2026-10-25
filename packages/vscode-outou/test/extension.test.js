@@ -135,12 +135,14 @@ test(
       assert.ok(client.initializeResult, "server answered initialize");
       assert.ok(client.initializeResult.capabilities, "capabilities present");
       assert.ok(!mock.shown.some((m) => m.startsWith("error:")), mock.shown.join("\n"));
-      // The server's own stderr lands in the channel as [error]; only the client's
-      // own failures matter here.
+      // The server's own stderr (here: the degraded-mode notice for an empty
+      // workspace) is progress information, not an error: it must land at
+      // [info], and nothing at all may be [error].
       assert.ok(
-        !mock.lines.some((l) => l.startsWith("[error]") && !l.startsWith("[error] outou-lsp:")),
-        mock.lines.join("\n"),
+        mock.lines.some((l) => l.startsWith("[info] outou-lsp:")),
+        `server stderr should reach the channel as [info]:\n${mock.lines.join("\n")}`,
       );
+      assert.ok(!mock.lines.some((l) => l.startsWith("[error]")), mock.lines.join("\n"));
       await extension.deactivate();
       assert.ok(!client.isRunning());
     } finally {

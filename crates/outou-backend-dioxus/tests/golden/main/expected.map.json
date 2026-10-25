@@ -117,7 +117,7 @@
           "character": 34
         },
         "end": {
-          "line": 9,
+          "line": 8,
           "character": 0
         }
       },
@@ -127,6 +127,32 @@
           "start": {
             "line": 4,
             "character": 34
+          },
+          "end": {
+            "line": 6,
+            "character": 0
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 8,
+          "character": 25
+        },
+        "end": {
+          "line": 9,
+          "character": 0
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 6,
+            "character": 0
           },
           "end": {
             "line": 7,
@@ -414,7 +440,7 @@
           "character": 1
         },
         "end": {
-          "line": 14,
+          "line": 13,
           "character": 0
         }
       },
@@ -424,6 +450,32 @@
           "start": {
             "line": 9,
             "character": 1
+          },
+          "end": {
+            "line": 11,
+            "character": 0
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 13,
+          "character": 25
+        },
+        "end": {
+          "line": 14,
+          "character": 0
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 11,
+            "character": 0
           },
           "end": {
             "line": 12,
@@ -982,7 +1034,7 @@
           "character": 1
         },
         "end": {
-          "line": 19,
+          "line": 18,
           "character": 0
         }
       },
@@ -992,6 +1044,32 @@
           "start": {
             "line": 16,
             "character": 1
+          },
+          "end": {
+            "line": 18,
+            "character": 0
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 18,
+          "character": 25
+        },
+        "end": {
+          "line": 19,
+          "character": 0
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 18,
+            "character": 0
           },
           "end": {
             "line": 19,

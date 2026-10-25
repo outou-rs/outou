@@ -39,7 +39,7 @@
           "character": 22
         },
         "end": {
-          "line": 4,
+          "line": 3,
           "character": 0
         }
       },
@@ -49,6 +49,32 @@
           "start": {
             "line": 0,
             "character": 22
+          },
+          "end": {
+            "line": 2,
+            "character": 0
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 3,
+          "character": 25
+        },
+        "end": {
+          "line": 4,
+          "character": 0
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 2,
+            "character": 0
           },
           "end": {
             "line": 3,
@@ -310,7 +336,7 @@
           "character": 1
         },
         "end": {
-          "line": 9,
+          "line": 8,
           "character": 0
         }
       },
@@ -320,6 +346,32 @@
           "start": {
             "line": 5,
             "character": 1
+          },
+          "end": {
+            "line": 7,
+            "character": 0
+          }
+        }
+      ]
+    },
+    {
+      "kind": "expression",
+      "generated": {
+        "start": {
+          "line": 8,
+          "character": 25
+        },
+        "end": {
+          "line": 9,
+          "character": 0
+        }
+      },
+      "sources": [
+        {
+          "file": 0,
+          "start": {
+            "line": 7,
+            "character": 0
           },
           "end": {
             "line": 8,

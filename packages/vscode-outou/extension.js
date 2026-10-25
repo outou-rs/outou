@@ -4,9 +4,24 @@
 // point is to see what a real editor negotiates with the server.
 
 const fs = require("node:fs");
+const readline = require("node:readline");
 const vscode = require("vscode");
 const { LanguageClient } = require("vscode-languageclient/node");
 const { resolveServerPath } = require("./server-path");
+
+// The library's default shows every line of the server's stderr at [error], so
+// a notice such as "running in degraded mode" looks like a failure. outou-lsp
+// writes progress and degraded-mode notices there, not only errors, so show
+// both streams at [info]. (rust-analyzer's own stderr never gets this far
+// unless OUTOU_LSP_RA_LOG is set for the server; see crates/outou-lsp/README.md.)
+const serverStdioOptions = {
+  stdout: (input, channel) => pipeLines(input, (line) => channel.info(line)),
+  stderr: (input, channel) => pipeLines(input, (line) => channel.info(line)),
+};
+
+function pipeLines(input, onLine) {
+  readline.createInterface({ input, crlfDelay: Infinity, terminal: false, historySize: 0 }).on("line", onLine);
+}
 
 /** @type {LanguageClient | undefined} */
 let client;
@@ -37,6 +52,7 @@ async function activate(context) {
   const clientOptions = {
     documentSelector: [{ language: "outou-rsx" }],
     outputChannel,
+    stdioOptions: serverStdioOptions,
   };
   client = new LanguageClient("outou", "Outou Language Server", serverOptions, clientOptions);
   outputChannel.info(`Starting ${resolved.path}`);
