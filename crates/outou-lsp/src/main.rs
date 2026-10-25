@@ -10,6 +10,7 @@ mod complete;
 mod diagnostics;
 mod dispatch;
 mod documents;
+mod editor_uris;
 mod html_attrs;
 mod mapping;
 mod plan;

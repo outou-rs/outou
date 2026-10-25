@@ -23,6 +23,7 @@ use crate::dispatch::{
     dispatch_ra_message, State,
 };
 use crate::documents::{LoadOutcome, Workspace};
+use crate::editor_uris::{spawn_outbound, EditorUris};
 use crate::ra::RaClient;
 use crate::uri;
 
@@ -82,6 +83,29 @@ fn main_loop(
         }),
     )?;
 
+    // Every message the server sends goes through one thread that turns the
+    // normalized `.rsx` URIs back into the spelling the editor used
+    // (`crate::editor_uris`). `connection` stays the real one, for the
+    // shutdown handshake.
+    let uris = EditorUris::default();
+    let (out, forwarder) = spawn_outbound(connection.sender.clone(), uris.clone());
+    let proxy = Connection {
+        sender: out,
+        receiver: connection.receiver.clone(),
+    };
+    let result = serve(connection, &proxy, &uris, &mut state);
+    drop(proxy);
+    let _ = forwarder.join();
+    result
+}
+
+/// The dispatch loop proper. `proxy` is what every handler sends through.
+fn serve(
+    connection: &Connection,
+    proxy: &Connection,
+    uris: &EditorUris,
+    state: &mut State,
+) -> Result<(), ServerError> {
     loop {
         let ra_receiver = state
             .ra
@@ -90,21 +114,30 @@ fn main_loop(
             .unwrap_or_else(crossbeam_channel::never);
         crossbeam_channel::select! {
             recv(connection.receiver) -> msg => match msg {
-                Ok(Message::Request(req)) => {
-                    if connection.handle_shutdown(&req)? {
-                        if let Some(mut ra) = state.ra.take() {
-                            ra.shutdown();
+                Ok(mut message) => {
+                    uris.normalize_incoming(&mut message);
+                    let forget = EditorUris::forget_after(&message);
+                    match message {
+                        Message::Request(req) => {
+                            if connection.handle_shutdown(&req)? {
+                                if let Some(mut ra) = state.ra.take() {
+                                    ra.shutdown();
+                                }
+                                return Ok(());
+                            }
+                            dispatch_client_request(state, proxy, req);
                         }
-                        return Ok(());
+                        Message::Notification(note) => dispatch_client_notification(state, proxy, note),
+                        Message::Response(response) => dispatch_client_response(state, response),
                     }
-                    dispatch_client_request(&mut state, connection, req);
+                    if let Some(forget) = forget {
+                        let _ = proxy.sender.send(forget);
+                    }
                 }
-                Ok(Message::Notification(note)) => dispatch_client_notification(&mut state, connection, note),
-                Ok(Message::Response(response)) => dispatch_client_response(&mut state, response),
                 Err(_) => return Ok(()),
             },
             recv(ra_receiver) -> msg => match msg {
-                Ok(message) => dispatch_ra_message(&mut state, connection, message),
+                Ok(message) => dispatch_ra_message(state, proxy, message),
                 Err(_) => {
                     eprintln!("outou-lsp: rust-analyzer exited; continuing with Outou syntax diagnostics only");
                     state.ra = None;
@@ -112,7 +145,7 @@ fn main_loop(
                     // request still waiting on a response from the
                     // rust-analyzer that just exited would otherwise hang
                     // the editor forever.
-                    crate::dispatch::fail_all_pending(&mut state, connection);
+                    crate::dispatch::fail_all_pending(state, proxy);
                 }
             },
         }

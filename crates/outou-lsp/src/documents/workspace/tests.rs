@@ -209,3 +209,42 @@ fn regenerating_one_unit_is_fast() {
         "regenerating one unit took a median of {median:?} over {CALLS} calls ({timings:?}), expected well under 10ms"
     );
 }
+
+/// The editor opened the workspace through a symbolic link: its URIs name
+/// the link, the workspace is keyed by real paths. Before URI
+/// normalization (`crate::uri::normalize_file_uri`) the link-side URI
+/// matched nothing and every forwarded request answered `null`.
+#[cfg(unix)]
+#[test]
+fn a_symlinked_editor_uri_maps_once_normalized() {
+    let root = std::env::temp_dir().join(format!(
+        "outou-lsp-test-symlink-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let _ = fs::remove_dir_all(&root);
+    let real = root.join("real");
+    fs::create_dir_all(real.join("src")).expect("creating src dir");
+    fs::write(real.join("src/main.rsx"), "fn main() {}\n").expect("writing crate root");
+    std::os::unix::fs::symlink(&real, root.join("link")).expect("creating the symlink");
+
+    let LoadOutcome::Planned(workspace) = Workspace::load(&real).expect("plans and generates")
+    else {
+        panic!("the temp crate has a `.rsx` crate root");
+    };
+
+    let link_uri = outou_sourcemap::file_uri(&root.join("link/src/main.rsx"));
+    let position = lsp_types::Position::new(0, 3);
+
+    let raw: lsp_types::Uri = link_uri.as_str().parse().unwrap();
+    assert!(
+        crate::mapping::rsx_position_to_generated(&workspace, &raw, position).is_none(),
+        "the lexical link-side URI is not a key of the workspace"
+    );
+
+    let normalized: lsp_types::Uri = crate::uri::normalize_file_uri(link_uri.as_str())
+        .parse()
+        .unwrap();
+    assert!(crate::mapping::rsx_position_to_generated(&workspace, &normalized, position).is_some());
+    let _ = fs::remove_dir_all(&root);
+}

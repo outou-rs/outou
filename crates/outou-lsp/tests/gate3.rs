@@ -1125,3 +1125,86 @@ fn require_range_matches(
     }
     Ok(())
 }
+
+/// The editor opened the workspace through a symbolic link, so every URI it
+/// sends names the link while the server keys its documents by real paths
+/// (`crate::uri::normalize_file_uri`, `crate::editor_uris`). Before the
+/// fix a forwarded member completion answered `null` and no diagnostic
+/// reached the editor's URI at all. Two probes are enough to show both
+/// directions: `completion-member` (editor URI in, forwarded request) and
+/// `diagnostic-type-error` (rust-analyzer's flycheck result out, which must
+/// be published to the *editor's* URI for the open tab to show it).
+///
+/// Ignored with the rest of this file; run with
+/// `cargo test -p outou-lsp --test gate3 -- --ignored symlinked`.
+#[cfg(unix)]
+#[test]
+#[ignore = "spawns outou-lsp + rust-analyzer; run explicitly, see module docs"]
+fn gate3_symlinked_workspace_uses_the_editors_uri_spelling() {
+    if !node_available() {
+        eprintln!("gate3 symlink: skipping — `node` is not available on PATH");
+        return;
+    }
+    let Some(ra) = rust_analyzer_binary() else {
+        eprintln!("gate3 symlink: skipping — no rust-analyzer binary found");
+        return;
+    };
+    let root = repo_root();
+    let outou_lsp = PathBuf::from(env!("CARGO_BIN_EXE_outou-lsp"));
+    let main_rsx_text = std::fs::read_to_string(root.join("examples/phase0-app/src/main.rsx"))
+        .expect("reading examples/phase0-app/src/main.rsx");
+    let components_rsx_text =
+        std::fs::read_to_string(root.join("examples/phase0-app/src/components.rsx"))
+            .expect("reading examples/phase0-app/src/components.rsx");
+
+    for probe in ["completion-member", "diagnostic-type-error"] {
+        let crate_dir = fresh_copy(&root, &format!("symlink-{probe}"));
+        seed_build(&crate_dir);
+        // A sibling name for the same directory, reached through the
+        // (non-canonical) system temp dir like a user's symlinked checkout.
+        let link = std::env::temp_dir().join(format!(
+            "{}-link",
+            crate_dir.file_name().unwrap().to_string_lossy()
+        ));
+        let _ = std::fs::remove_file(&link);
+        std::os::unix::fs::symlink(&crate_dir, &link).expect("creating the workspace symlink");
+
+        let result = run_probe(&root, &link, &outou_lsp, &ra, probe);
+        assert_no_leakage(probe, &result);
+        check_probe(
+            probe,
+            &result,
+            &crate_dir,
+            None,
+            &main_rsx_text,
+            &components_rsx_text,
+        )
+        .unwrap_or_else(|message| panic!("{probe} through a symlinked workspace: {message}"));
+
+        if probe == "diagnostic-type-error" {
+            let editor_uri_suffix = format!("{}/src/main.rsx", link.display());
+            let published_to_editor_uri = result
+                .get("diagnostics")
+                .and_then(|d| d.as_object())
+                .is_some_and(|d| {
+                    d.iter().any(|(uri, diagnostics)| {
+                        uri.ends_with(&editor_uri_suffix)
+                            && diagnostics.as_array().is_some_and(|list| {
+                                list.iter()
+                                    .any(|diag| message_contains(diag, "mismatched types"))
+                            })
+                    })
+                });
+            assert!(
+                published_to_editor_uri,
+                "the type error must be published to the editor's (symlink) URI: {}",
+                result
+                    .get("diagnostics")
+                    .unwrap_or(&serde_json::Value::Null)
+            );
+        }
+
+        let _ = std::fs::remove_file(&link);
+        let _ = std::fs::remove_dir_all(&crate_dir);
+    }
+}

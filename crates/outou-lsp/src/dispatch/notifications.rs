@@ -205,6 +205,11 @@ fn handle_rsx_save(state: &mut State, connection: &Connection, rsx_uri: &lsp_typ
         .iter()
         .find(|unit| outou_sourcemap::file_uri(&unit.source_file).as_str() == rsx_uri_string)
     else {
+        super::warn_unplanned_once(
+            &mut state.unplanned_reported,
+            &rsx_uri_string,
+            "is not part of the planned crate; saving it does not run rust-analyzer's checks",
+        );
         return;
     };
     let generated_uri = outou_sourcemap::file_uri(&saved_unit.generated_file);
@@ -310,6 +315,12 @@ fn handle_rsx_change(
             }
         }
         Ok(None) => {
+            super::warn_unplanned_once(
+                &mut state.unplanned_reported,
+                &rsx_uri_string,
+                "is not part of the planned crate (no `mod` declaration reaches it); it is \
+                 checked for syntax errors only and is not sent to rust-analyzer",
+            );
             workspace.rsx.insert(
                 rsx_uri_string.clone(),
                 documents::RsxDocument::new(new_text, version),

@@ -6,19 +6,22 @@
 //! this module is the one place that does it, so a future encoding change
 //! only has to be made here.
 //!
-//! `TODO(alpha) (#31)` (issue #14 review, LOW-14): every URI comparison in this
-//! crate (`HashMap<String, _>` keys built from [`to_outou`]'s output,
-//! `Registry::is_generated`, equality checks throughout `crate::rename`/
-//! `crate::references`/`crate::semantic_tokens`) is **lexical**, on the
-//! exact string this module produces — not normalized per RFC 3986
-//! (percent-encoding case, `..`/`.` segments, an equivalent but
-//! differently-spelled authority). Two equivalent spellings of the same
-//! `file://` URI would therefore fail to match and could be treated as an
-//! ordinary `.rs` file (not generated) or a different document than they
-//! actually are. Not reproduced against a real editor: every `outou-lsp`
-//! or rust-analyzer output observed so far always uses one canonical
-//! spelling (this module's own [`path_to_lsp`]/[`file_uri`]-derived
-//! form), so this is a latent risk, not a confirmed bug.
+//! # Identity of a `.rsx` document
+//!
+//! Every internal key (`HashMap<String, _>` keys built from [`to_outou`],
+//! `Registry::is_generated`, the equality checks in `crate::rename`/
+//! `crate::references`/`crate::semantic_tokens`) is a **lexical** string
+//! comparison. That is only sound if every `.rsx` URI the server sees has
+//! one spelling, so the editor's URI is normalized at the boundary
+//! ([`normalize_file_uri`]: percent-decode, canonicalize on disk, re-encode)
+//! and the editor's own spelling is restored on the way out
+//! (`crate::editor_uris`). Reproduced with a real editor: a workspace
+//! opened through a symbolic link (or `/tmp` -> `/private/tmp` on macOS)
+//! made every key mismatch.
+//!
+//! `TODO(alpha) (#31)`: a full RFC 3986 normalization (an equivalent
+//! authority such as `file://localhost/`, Windows drive letters and UNC
+//! paths) is not implemented; such a URI is passed through unchanged.
 
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -64,9 +67,44 @@ pub fn outou_uri_str_to_path(uri: &str) -> Option<PathBuf> {
 /// the alpha runs on (macOS/Linux); fixing it properly needs a URL crate
 /// dependency this server does not otherwise have a reason to take.
 pub fn to_path(uri: &lsp_types::Uri) -> Option<PathBuf> {
-    let text = uri.as_str();
+    path_from_file_uri(uri.as_str())
+}
+
+fn path_from_file_uri(text: &str) -> Option<PathBuf> {
     let rest = text.strip_prefix("file://")?;
     Some(PathBuf::from(percent_decode(rest)))
+}
+
+/// Rewrites a `file://` URI into the one spelling this crate keys on: the
+/// path is percent-decoded, resolved on disk with [`canonicalize_lenient`]
+/// (symbolic links, `..`, the on-disk spelling of a case-insensitive file
+/// system) and re-encoded by [`file_uri`]. Anything that is not an
+/// absolute `file://` URI is returned unchanged.
+pub fn normalize_file_uri(uri: &str) -> String {
+    let Some(path) = path_from_file_uri(uri).filter(|p| p.is_absolute()) else {
+        return uri.to_string();
+    };
+    file_uri(&canonicalize_lenient(&path)).as_str().to_string()
+}
+
+/// `fs::canonicalize`, except that a path which does not exist (yet) is
+/// resolved through its nearest existing ancestor, so a new file in a
+/// symlinked directory still gets its directory's real spelling. A path
+/// with no resolvable ancestor is returned as written.
+pub fn canonicalize_lenient(path: &Path) -> PathBuf {
+    if let Ok(real) = path.canonicalize() {
+        return real;
+    }
+    for ancestor in path.ancestors().skip(1) {
+        let Ok(real) = ancestor.canonicalize() else {
+            continue;
+        };
+        return match path.strip_prefix(ancestor) {
+            Ok(rest) => real.join(rest),
+            Err(_) => path.to_path_buf(),
+        };
+    }
+    path.to_path_buf()
 }
 
 /// Percent-decodes a URI path component back into raw UTF-8 bytes,
@@ -126,5 +164,105 @@ mod tests {
         let outou_uri = OutouUri::new("file:///app/src/main.rsx");
         let lsp_uri = to_lsp(&outou_uri);
         assert_eq!(to_outou(&lsp_uri), outou_uri);
+    }
+
+    fn scratch_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("outou-lsp-uri-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.canonicalize().unwrap()
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn normalizes_a_symlinked_path_to_the_real_one() {
+        let root = scratch_dir("link");
+        let real = root.join("real");
+        std::fs::create_dir_all(real.join("src")).unwrap();
+        std::fs::write(real.join("src/main.rsx"), "").unwrap();
+        std::os::unix::fs::symlink(&real, root.join("link")).unwrap();
+
+        let via_link = file_uri(&root.join("link/src/main.rsx"));
+        let expected = file_uri(&real.join("src/main.rsx"));
+        assert_eq!(normalize_file_uri(via_link.as_str()), expected.as_str());
+        // Already normal: unchanged.
+        assert_eq!(normalize_file_uri(expected.as_str()), expected.as_str());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn normalizes_a_link_to_a_link_and_dot_dot_segments() {
+        let root = scratch_dir("chain");
+        let real = root.join("real");
+        std::fs::create_dir_all(real.join("src")).unwrap();
+        std::fs::write(real.join("src/a.rsx"), "").unwrap();
+        std::os::unix::fs::symlink(&real, root.join("l1")).unwrap();
+        std::os::unix::fs::symlink(root.join("l1"), root.join("l2")).unwrap();
+
+        let expected = file_uri(&real.join("src/a.rsx"));
+        let chained = file_uri(&root.join("l2/src/a.rsx"));
+        assert_eq!(normalize_file_uri(chained.as_str()), expected.as_str());
+        let dotted = file_uri(&root.join("l2/src/../src/a.rsx"));
+        assert_eq!(normalize_file_uri(dotted.as_str()), expected.as_str());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn normalizes_percent_encoding_spelling() {
+        let root = scratch_dir("pct");
+        let dir = root.join("a b");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("x.rsx"), "").unwrap();
+        let expected = file_uri(&dir.join("x.rsx"));
+        // An unnecessarily escaped letter.
+        let odd = expected.as_str().replace("/x.", "/%78.");
+        assert_ne!(odd, expected.as_str());
+        assert_eq!(normalize_file_uri(&odd), expected.as_str());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_missing_file_is_resolved_through_its_existing_directory() {
+        let root = scratch_dir("missing");
+        let real = root.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        std::os::unix::fs::symlink(&real, root.join("link")).unwrap();
+
+        let via_link = file_uri(&root.join("link/new.rsx"));
+        let expected = file_uri(&real.join("new.rsx"));
+        assert_eq!(normalize_file_uri(via_link.as_str()), expected.as_str());
+    }
+
+    #[test]
+    fn a_wholly_nonexistent_path_is_left_alone() {
+        let uri = "file:///outou-no-such-root-xyz/a/b.rsx";
+        assert_eq!(normalize_file_uri(uri), uri);
+    }
+
+    #[test]
+    fn non_file_uris_are_returned_unchanged() {
+        for uri in [
+            "untitled:Untitled-1",
+            "vscode-notebook://x/y",
+            "file://relative",
+        ] {
+            assert_eq!(normalize_file_uri(uri), uri);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_tmp_resolves_to_private_tmp() {
+        let dir = Path::new("/tmp").join(format!("outou-lsp-uri-tmp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("f.rsx"), "").unwrap();
+        let via_tmp = file_uri(&dir.join("f.rsx"));
+        let real = file_uri(
+            &Path::new("/private/tmp")
+                .join(dir.strip_prefix("/tmp").unwrap())
+                .join("f.rsx"),
+        );
+        assert_eq!(normalize_file_uri(via_tmp.as_str()), real.as_str());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

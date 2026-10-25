@@ -226,7 +226,8 @@ since it is read-only. See
 | `src/response.rs` | Rewrites and sanitizes hover/definition/completion response payloads through `mapping.rs`. |
 | `src/diagnostics.rs` | Merges Outou syntax diagnostics with mapped rust-analyzer/flycheck diagnostics; never drops or downgrades an unmapped `ERROR`. |
 | `src/translate.rs` | Backend-vocabulary translation table and marker list, shared by diagnostics, completion and hover (`docs/backend-leakage.md` rows 24-26). |
-| `src/uri.rs` | Conversions between `outou_sourcemap::Uri` and `lsp_types::Uri`. |
+| `src/uri.rs` | Conversions between `outou_sourcemap::Uri` and `lsp_types::Uri`, and `normalize_file_uri` (the one spelling every internal key uses). |
+| `src/editor_uris.rs` | Normalizes `.rsx` URIs from the editor on the way in and restores the editor's spelling on the way out (diagnostics, definition, references, rename); the identity when the editor already uses real paths. |
 | `src/semantic_tokens/mod.rs` | `textDocument/semanticTokens/full` orchestration: decode, map, merge, re-encode. |
 | `src/semantic_tokens/legend.rs` | The legend advertised/translated against (rust-analyzer's own, or the standard LSP list in degraded mode). |
 | `src/semantic_tokens/token.rs` | Pure delta-encode/decode, per-line splitting and overlay-merge transforms, independently unit-tested. |
@@ -263,11 +264,23 @@ Semantic tokens/rename/references (issue #14 review):
   hover/definition) — the request is still answered correctly in
   substance, just highlighted at the wrong end of the element.
   `TODO(alpha) (#31)` in `crate::rename::translate_prepare_rename_response`.
-- **URI comparisons throughout this crate are lexical**, not normalized
-  per RFC 3986 (`crate::uri`'s own `TODO(alpha) (#31)`): two differently-spelled
-  but equivalent URIs would not match. Not reproduced against a real
-  editor — every URI observed so far uses one canonical spelling — but a
-  latent risk worth normalizing before relying on it more.
+- **`.rsx` URIs are normalized on disk, not per RFC 3986.** Every
+  internal key is a lexical string, so the editor's URI is canonicalized at
+  the boundary (`crate::uri::normalize_file_uri`: percent-decoding,
+  symbolic links, `..`, the on-disk spelling on a case-insensitive file
+  system) and the editor's own spelling is restored in
+  `publishDiagnostics`, definition, references and rename results
+  (`crate::editor_uris`). This was reproduced and fixed against a real
+  editor that opened the workspace through a symbolic link (and on macOS
+  `/tmp` and `/var` are such links): completion, hover and definition
+  answered `null`, `didSave` never reached rust-analyzer, and its
+  diagnostics landed on a different resource than the open tab. Still
+  open, `TODO(alpha) (#31)`: an equivalent `file://localhost/` authority,
+  Windows drive letters and UNC paths, and non-`file:` schemes are passed
+  through unchanged.
+- **A `.rsx` file the plan does not reach** (no `mod` declaration leads to
+  it) is checked for syntax only and never sent to rust-analyzer; the
+  server says so once per file on stderr.
 - **`textDocument/semanticTokens/full` re-parses the whole `.rsx` file
   on every request** (both for Outou's own overlay tokens and, when a
   live rust-analyzer is attached, to build the source map lookup),

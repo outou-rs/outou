@@ -168,6 +168,10 @@ pub(crate) struct State {
     /// this to answer locally rather than forward a request rust-analyzer
     /// would only ever answer `MethodNotFound`.
     pub(crate) ra_supports_semantic_tokens: bool,
+    /// `.rsx` documents already reported as outside the plan
+    /// ([`warn_unplanned_once`]), so a document edited on every
+    /// keystroke is reported once rather than on every `didChange`.
+    unplanned_reported: std::collections::HashSet<String>,
 }
 
 impl State {
@@ -187,6 +191,7 @@ impl State {
             epoch: 0,
             semantic_legend: crate::semantic_tokens::Legend::default_legend(),
             ra_supports_semantic_tokens: false,
+            unplanned_reported: std::collections::HashSet::new(),
         }
     }
 
@@ -197,9 +202,32 @@ impl State {
     }
 }
 
+/// Logs `message` to stderr the first time `rsx_uri` is reported as being
+/// outside the planned crate (no module declaration reaches it), and never
+/// again for that document (`State::unplanned_reported`). Outou's own log,
+/// not rust-analyzer's output (#31).
+fn warn_unplanned_once(
+    reported: &mut std::collections::HashSet<String>,
+    rsx_uri: &str,
+    message: &str,
+) {
+    if reported.insert(rsx_uri.to_string()) {
+        eprintln!("outou-lsp: {rsx_uri} {message}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_unplanned_document_is_reported_once() {
+        let mut reported = std::collections::HashSet::new();
+        warn_unplanned_once(&mut reported, "file:///a.rsx", "x");
+        assert_eq!(reported.len(), 1);
+        warn_unplanned_once(&mut reported, "file:///a.rsx", "x");
+        assert_eq!(reported.len(), 1);
+    }
 
     #[test]
     fn next_forwarded_client_id_never_repeats() {
