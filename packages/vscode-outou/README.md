@@ -48,20 +48,33 @@ Notes:
 - Code changes to `extension.js` need `Developer: Reload Window` in the Extension Development Host (or restart it); changing only `outou.server.path` needs a reload too. `Failed to start: TypeError: ... is not a function` in the Output channel means the client library was given the wrong kind of object (it needs `createOutputChannel(name, { log: true })`); `node --test test/*.test.js` in this package reproduces that without VS Code.
 - Where to look when it does not work: Output panel, channel "Outou Language Server" (server stderr and, with `outou.trace.server` set, the LSP traffic); Help > Toggle Developer Tools > Console of the Extension Development Host; the Extensions view (is "Outou" activated? it activates on `onLanguage:outou-rsx`, so open a `.rsx` file).
 
-Checklist (open `app/src/task_list.rsx` unless noted; record gaps in `examples/dogfood-board/README.md`, F17):
+Checklist (open `app/src/task_list.rsx` unless noted; record gaps in `examples/dogfood-board/README.md`, F17). After checking each item, undo the edit with `Cmd+Z`. Line numbers are based on the current contents of `task_list.rsx`.
 
-| Check | How | Expected |
+| # | What to try | Expected |
 |---|---|---|
-| Starts | Open any `.rsx` file | Output "Outou Language Server" shows `Starting .../outou-lsp`; no error toast |
-| Progress | Right after opening | Status bar shows `Outou: indexing` (later `Outou: checking`), then disappears |
-| Diagnostics | Delete a closing `>` or a closing tag, or save a type error | A red squiggle at the `.rsx` position, Outou wording (no `rsx!`/`dioxus` words); fixing it clears it (type errors appear after save) |
-| Completion: tag | Type `<` then `Ta` | Component names (`TaskList`, ...) and HTML elements |
-| Completion: attribute | In `<input ` type `pl` / `val` | Attribute names |
-| Completion: Rust expression | Inside `{ ... }`, type `app.` | Fields/methods of the Rust type; no `__outou_*` names |
-| Hover | Hover a variable, e.g. `board` | Type info; on a tag name hover shows nothing |
-| Go to definition | F12 on a component tag or on `use_app_state` | Jumps to the definition (`.rsx` or `.rs`), never to `src/.generated/` |
-| References | Shift+F12 on `TaskList` | Locations in `.rsx` files only |
-| Rename | F2 on a component name, e.g. `FilterBar` | All uses renamed across `.rsx`/`.rs`; a rename it cannot map is refused with an Outou message |
-| Formatting | Misindent a block, then Format Document (Shift+Alt+F) | Rust and JSX are re-formatted; a second run changes nothing |
-| Semantic tokens | Command "Developer: Inspect Editor Tokens and Scopes" | Components, elements, attributes carry semantic token types on top of the TextMate scopes |
-| serverStatus | Make rust-analyzer unhappy (e.g. break `Cargo.toml`) | One Outou-worded warning/error toast when health is not `ok` |
+| 1 | Starts: open a `.rsx` file | Output "Outou Language Server" shows `Starting .../outou-lsp`; no error toast. |
+| 2 | Progress: right after opening, watch the status bar and notifications | `Outou: indexing`, then `Outou: checking`, appear and eventually disappear. No `rust-analyzer` or crate name appears. |
+| 3a | Syntax diagnostic: change `</p>` on line 17 to `</q>` | A red squiggle at that position for the mismatched closing tag. Restoring it clears the squiggle. |
+| 3b | Remove the `/>` on line 25 | An error saying the tag is not closed. Restoring it clears the error. |
+| 3c | Type error: change line 38 to `let id: u8 = task.id;` and save | After the save, `mismatched types` appears on line 38. No `dioxus`, `rsx!` or `.generated` wording. |
+| 3d | Old API: change `get()` on line 9 to `read()` and save | An error saying `State` has no method `read`. The word `Signal` does not appear. |
+| 4a | Tag completion: add a new line between lines 14 and 15 (inside `<section>`) and type `<Ta` | `TaskList`, `TaskRow`. Typing `<d` offers HTML elements such as `div`. |
+| 4b | Attribute completion: add a new line between lines 52 and 53 (inside `<input`) and type `ch` | `checked`. Typing `on` offers `onchange`, `onclick`, and so on. |
+| 4c | Rust completion: on line 36 (`let board = app.board;`), stop right after `app.` | `board`, `filter`, `panel`. No name starting with `__outou_`. (Unconfirmed expectation: methods such as `clone` may also be listed.) |
+| 4d | State completion: on line 9 (`app.board.get()`), stop right after `app.board.` | `get`, `with`, `set`, `update`; no `read` or `write`. (Unconfirmed expectation: whether anything beyond these four, such as `clone`, is listed.) |
+| 5 | Hover: hover `board` on line 9 and `filter` on line 10 | A `State<...>` type. No `Signal<...>`. Hovering a tag name such as `section` shows nothing. |
+| 6a | Go to definition: `Cmd+click` `use_app_state` on line 8 | Jumps to line 43 of `state.rs`. |
+| 6b | `Cmd+click` `TaskRow` on line 21 | Jumps to line 34 of the same file. |
+| 6c | `Cmd+click` `Panel` on line 4 | Jumps to line 9 of `state.rs`. It must never open anything under `src/.generated/`. |
+| 7 | References: `Shift+F12` on `TaskRow` on line 34 | Lines 21 and 34. Nothing from `.generated`. |
+| 8a | Rename: `F2` on `TaskRow` on line 34, enter `TaskItem` | Both line 21 and line 34 change. Undo afterwards. |
+| 8b | Rename (known limitation): `F2` on `type` on line 51 | Refused, or nothing happens. Known (#31, ledger row 29). |
+| 9 | Formatting: add 8 spaces at the start of line 60, then `Option+Shift+F` | The original indentation returns. A second run changes nothing. |
+| 10 | Semantic tokens: run "Developer: Inspect Editor Tokens and Scopes", then click `TaskRow` on line 21 and `checked` on line 52 | A semantic token type entry (such as component / property) is shown. (Unconfirmed expectation: the exact type names.) |
+| 11 | serverStatus: add a deliberately invalid line to `app/Cargo.toml` and save | A single `Outou: ...` toast within a few seconds. (Unconfirmed expectation: timing and wording.) Afterwards run `git checkout -- examples/dogfood-board/app/Cargo.toml`. |
+
+Notes for the checklist:
+
+- The progress in item 2 may not be visible when the server is fast.
+- Also hover `crate` in `use crate::state::...` (line 4) and report what it shows.
+- Reporting: for each item write OK, or NG with what you saw, or "could not try". For NG, include the relevant part of the Output channel (with `outou.trace.server` set and the channel's log level at `Trace`, as described above, the LSP traffic is there too).
