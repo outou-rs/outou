@@ -23,7 +23,7 @@ The extension also has a development-only client for `outou-lsp` (below). It is 
 
 `extension.js` is plain CommonJS (no build step). It starts `outou-lsp` over stdio and uses `vscode-languageclient` with its default client capabilities, so the server sees what a real editor declares (`window.workDoneProgress`, `workspace.didChangeWatchedFiles`, ...). That negotiation is the point of this client (F17); the headless Node clients cannot check it.
 
-Settings: `outou.server.path` (the `outou-lsp` binary; empty means `target/debug/outou-lsp`, then `target/release`, in this repository, then in the ancestors of the workspace folder; a missing file is an error message, not a silent fallback) and `outou.trace.server` (`off` / `messages` / `verbose`, written to the Output channel "Outou Language Server").
+Settings: `outou.server.path` (the `outou-lsp` binary; empty means `target/debug/outou-lsp`, then `target/release`, in this repository, then in the ancestors of the workspace folder; a missing file is an error message, not a silent fallback) and `outou.trace.server` (`off` / `messages` / `verbose`). The channel "Outou Language Server" is a VS Code log channel, so the LSP trace appears only after its log level is set to `Trace` (`Developer: Set Log Level...` > Outou Language Server > Trace); the setting then selects `messages` or `verbose`.
 
 Once, from the repository root:
 
@@ -45,6 +45,7 @@ Notes:
 
 - `outou build` is not required: `outou-lsp` writes the generated files itself, with the same Strict path as `outou build`, if any is missing. Run it if you want a fresh `app/src/.generated/` first (stale but complete files are left alone until the first save).
 - The `rust-analyzer` extension, if installed, runs on the same workspace in addition to the rust-analyzer process `outou-lsp` spawns (see "Two processes, not one" in `crates/outou-lsp/README.md`). Expect two. To keep them apart, disable the rust-analyzer extension in the Extension Development Host. `outou-lsp` needs a `rust-analyzer` on `PATH` (or `OUTOU_RUST_ANALYZER`); VS Code must be started from a shell that has it, or set the variable.
+- Code changes to `extension.js` need `Developer: Reload Window` in the Extension Development Host (or restart it); changing only `outou.server.path` needs a reload too. `Failed to start: TypeError: ... is not a function` in the Output channel means the client library was given the wrong kind of object (it needs `createOutputChannel(name, { log: true })`); `node --test test/*.test.js` in this package reproduces that without VS Code.
 - Where to look when it does not work: Output panel, channel "Outou Language Server" (server stderr and, with `outou.trace.server` set, the LSP traffic); Help > Toggle Developer Tools > Console of the Extension Development Host; the Extensions view (is "Outou" activated? it activates on `onLanguage:outou-rsx`, so open a `.rsx` file).
 
 Checklist (open `app/src/task_list.rsx` unless noted; record gaps in `examples/dogfood-board/README.md`, F17):

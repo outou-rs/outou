@@ -63,13 +63,13 @@
             "verbose"
           ],
           "default": "off",
-          "description": "Trace LSP traffic between VS Code and outou-lsp in the Outou Language Server output channel."
+          "markdownDescription": "Verbosity of the LSP traffic trace in the Outou Language Server output channel. The trace is only emitted while that channel's log level is `Trace` (command: `Developer: Set Log Level...`, or the gear icon in the Output panel); this setting then picks `messages` or `verbose`."
         }
       }
     }
   },
   "scripts": {
-    "test": "node --test syntaxes/*.test.mjs *.test.js"
+    "test": "node --test syntaxes/*.test.mjs *.test.js test/*.test.js"
   },
   "dependencies": {
     "vscode-languageclient": "10.1.2"

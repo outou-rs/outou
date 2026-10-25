@@ -5,7 +5,7 @@
 
 const fs = require("node:fs");
 const vscode = require("vscode");
-const { LanguageClient, TransportKind } = require("vscode-languageclient/node");
+const { LanguageClient } = require("vscode-languageclient/node");
 const { resolveServerPath } = require("./server-path");
 
 /** @type {LanguageClient | undefined} */
@@ -24,30 +24,35 @@ async function activate(context) {
     return;
   }
 
-  const outputChannel = vscode.window.createOutputChannel("Outou Language Server");
-  const serverOptions = {
-    command: resolved.path,
-    args: [],
-    transport: TransportKind.stdio,
-    options: { env: { ...process.env } },
-  };
+  // vscode-languageclient 10 logs through `LogOutputChannel` methods
+  // (`error`/`warn`/`info`/`debug`/`trace`) and reads `logLevel`; a plain
+  // OutputChannel has none of them and start() fails with "this.outputChannel.error
+  // is not a function". `{ log: true }` is what makes VS Code create one. The same
+  // channel carries the trace output (the library's default for traceOutputChannel).
+  const outputChannel = vscode.window.createOutputChannel("Outou Language Server", { log: true });
+  context.subscriptions.push(outputChannel);
+  // No `transport`: an Executable with `TransportKind.stdio` gets `--stdio`
+  // appended to its args, which outou-lsp does not take; the default is stdio.
+  const serverOptions = { command: resolved.path, args: [] };
   const clientOptions = {
     documentSelector: [{ language: "outou-rsx" }],
     outputChannel,
-    traceOutputChannel: outputChannel,
   };
   client = new LanguageClient("outou", "Outou Language Server", serverOptions, clientOptions);
-  outputChannel.appendLine(`Starting ${resolved.path}`);
+  outputChannel.info(`Starting ${resolved.path}`);
   try {
     await client.start();
   } catch (error) {
-    outputChannel.appendLine(`Failed to start: ${error}`);
+    outputChannel.error(`Failed to start: ${error}`);
     void vscode.window.showErrorMessage(`Outou: failed to start outou-lsp: ${error}`);
   }
 }
 
 async function deactivate() {
-  if (client !== undefined) await client.stop();
+  const stopping = client;
+  client = undefined;
+  // stop() throws when the client never reached Running (e.g. start() failed).
+  if (stopping !== undefined && stopping.isRunning()) await stopping.stop();
 }
 
 module.exports = { activate, deactivate };
