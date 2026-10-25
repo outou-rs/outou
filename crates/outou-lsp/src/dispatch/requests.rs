@@ -206,7 +206,7 @@ fn dispatch_completion_request(state: &mut State, connection: &Connection, req: 
             if let Some(items) = complete::local_completion(workspace, &rsx_uri_string, position) {
                 let _ = connection.sender.send(Message::Response(Response::new_ok(
                     req.id,
-                    json!({ "isIncomplete": false, "items": items }),
+                    complete::completion_response(items),
                 )));
                 return;
             }

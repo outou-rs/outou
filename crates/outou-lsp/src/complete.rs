@@ -107,6 +107,9 @@ enum Cursor {
     AttrName {
         /// The enclosing element's tag name, if it has one.
         tag_name: Option<String>,
+        /// The names of the element's *other* attributes, already written
+        /// (the attribute being typed is not among them).
+        existing: Vec<String>,
         /// What has been typed of the attribute name so far.
         partial: String,
         /// Span of the partial name, for the completion's `textEdit`.
@@ -156,6 +159,7 @@ pub fn local_completion(
         }
         Cursor::AttrName {
             tag_name,
+            existing,
             partial,
             span,
         } => {
@@ -163,6 +167,7 @@ pub fn local_completion(
             Some(attr_name_items(
                 workspace,
                 tag_name.as_deref(),
+                &existing,
                 &partial,
                 range,
             ))
@@ -176,6 +181,12 @@ pub fn local_completion(
         }
         Cursor::Expression => None,
     }
+}
+
+/// The `textDocument/completion` response for locally answered `items`.
+/// Always complete: the lists are small and fully filtered on the server.
+pub fn completion_response(items: Vec<Value>) -> Value {
+    json!({ "isIncomplete": false, "items": items })
 }
 
 /// Whether `position` inside `rsx_uri` sits on a JSX tag name — element or
@@ -325,7 +336,7 @@ fn classify_element(element: &ast::JsxElement, text: &str, offset: u32) -> Optio
         return Some(cursor);
     }
     for attribute in &element.attributes {
-        if let Some(cursor) = classify_attribute(&element.open, attribute, text, offset) {
+        if let Some(cursor) = classify_attribute(element, attribute, text, offset) {
             return Some(cursor);
         }
     }
@@ -403,15 +414,30 @@ fn tag_name(tag: &ast::JsxTag) -> Option<String> {
     }
 }
 
+/// The names of every attribute on `element` except `except` (the one
+/// being typed, matched by span so a duplicate elsewhere still counts).
+fn other_attribute_names(
+    element: &ast::JsxElement,
+    except: Option<outou_sourcemap::Span>,
+) -> Vec<String> {
+    element
+        .attributes
+        .iter()
+        .filter(|attribute| Some(attribute.span) != except)
+        .map(|attribute| attribute.name.name.clone())
+        .collect()
+}
+
 fn classify_attribute(
-    open: &ast::JsxTag,
+    element: &ast::JsxElement,
     attribute: &ast::JsxAttribute,
     text: &str,
     offset: u32,
 ) -> Option<Cursor> {
     if attribute.value.is_none() && touches(attribute.name.span, offset) {
         return Some(Cursor::AttrName {
-            tag_name: tag_name(open),
+            tag_name: tag_name(&element.open),
+            existing: other_attribute_names(element, Some(attribute.span)),
             partial: prefix_before_cursor(&attribute.name, offset),
             span: attribute.name.span,
         });
@@ -449,8 +475,9 @@ fn classify_blank_attribute_position(
     text: &str,
     offset: u32,
 ) -> Option<Cursor> {
-    let ast::JsxTag::Named { name, .. } = &element.open else {
-        return None;
+    let name = match &element.open {
+        ast::JsxTag::Named { name, .. } => name,
+        ast::JsxTag::Incomplete(incomplete) => incomplete.name.as_ref()?,
     };
     let previous_end = element
         .attributes
@@ -477,12 +504,15 @@ fn classify_blank_attribute_position(
         .min()
         .and_then(|start| text.get(offset as usize..start as usize))
         .is_some_and(|gap| gap.chars().all(char::is_whitespace));
-    let ends_tag = matches!(next, Some('>') | Some('/'));
+    // End of file counts as the end of the tag: `<input ‸` typed last in a
+    // buffer. Text after a `>` never gets here (`before` would hold the `>`).
+    let ends_tag = matches!(next, Some('>') | Some('/') | None);
     if !(next_attribute_starts_here || ends_tag) {
         return None;
     }
     Some(Cursor::AttrName {
         tag_name: Some(name.name.clone()),
+        existing: other_attribute_names(element, None),
         partial: String::new(),
         span: outou_sourcemap::Span::new(offset, offset),
     })
@@ -542,21 +572,29 @@ fn tag_name_items(workspace: &Workspace, partial: &str, range: lsp_types::Range)
     items
 }
 
+/// Whether `tag_name` names a component (grammar §5: an uppercase initial
+/// is a component reference, any other name an intrinsic element).
+fn is_component_tag(tag_name: &str) -> bool {
+    tag_name.chars().next().is_some_and(char::is_uppercase)
+}
+
 fn attr_name_items(
     workspace: &Workspace,
     tag_name: Option<&str>,
+    existing: &[String],
     partial: &str,
     range: lsp_types::Range,
 ) -> Vec<Value> {
     let Some(tag_name) = tag_name else {
         return Vec::new();
     };
-    if HTML_ELEMENTS.contains(&tag_name) {
+    let offered = |name: &str| name.starts_with(partial) && !existing.iter().any(|e| e == name);
+    if !is_component_tag(tag_name) {
         // Outou's own small vocabulary (`crate::html_attrs`); never
         // forwarded to rust-analyzer, which would leak `dioxus_html::…`.
         return crate::html_attrs::attribute_names(tag_name)
             .into_iter()
-            .filter(|name| name.starts_with(partial))
+            .filter(|name| offered(name))
             .map(|name| completion_item(name, CompletionKind::Field, range))
             .collect();
     }
@@ -565,7 +603,7 @@ fn attr_name_items(
             if function.name.name == tag_name {
                 return function_params(&function.signature.text)
                     .into_iter()
-                    .filter(|param| param.starts_with(partial))
+                    .filter(|param| offered(param))
                     .map(|param| completion_item(&param, CompletionKind::Field, range))
                     .collect();
             }
@@ -664,6 +702,9 @@ fn param_name(param: &str) -> Option<String> {
     let name = name.strip_prefix("r#").unwrap_or(name);
     (!name.is_empty()).then(|| name.to_string())
 }
+
+#[cfg(test)]
+mod attr_tests;
 
 #[cfg(test)]
 mod tests {
@@ -892,7 +933,8 @@ mod tests {
         let source = checkbox_source("ch");
         let offset = source.find("ch\n").unwrap() + "ch".len();
         let items = local_completion_at(&source, offset).expect("answered locally");
-        assert_eq!(labels(&items), vec!["checked"]);
+        // `checked` is already written on the next line: not offered again.
+        assert!(labels(&items).is_empty());
 
         let source = checkbox_source("on");
         let offset = source.find("on\n").unwrap() + "on".len();
@@ -909,9 +951,9 @@ mod tests {
             source.find("type=\"checkbox\"\n").unwrap() + "type=\"checkbox\"\n        ".len();
         let items = local_completion_at(&source, offset).expect("answered locally");
         let labels = labels(&items);
-        assert!(
-            labels.contains(&"checked") && labels.contains(&"class") && labels.contains(&"onclick")
-        );
+        assert!(labels.contains(&"class") && labels.contains(&"onclick"));
+        // Written below (`checked`) and above (`type`): not offered again.
+        assert!(!labels.contains(&"checked") && !labels.contains(&"type"));
     }
 
     /// Between an island-valued attribute and the next one, with a typed prefix
@@ -924,7 +966,8 @@ mod tests {
         assert!(labels(&items).contains(&"onclick"));
         let offset = source.find("on\n").unwrap();
         let items = local_completion_at(source, offset).expect("answered locally");
-        assert!(labels(&items).contains(&"checked"));
+        let labels = labels(&items);
+        assert!(labels.contains(&"class") && !labels.contains(&"checked"));
     }
 
     #[test]
