@@ -227,7 +227,7 @@ since it is read-only. See
 | `src/diagnostics.rs` | Merges Outou syntax diagnostics with mapped rust-analyzer/flycheck diagnostics; never drops or downgrades an unmapped `ERROR`. |
 | `src/translate.rs` | Backend-vocabulary translation table and marker list, shared by diagnostics, completion and hover (`docs/backend-leakage.md` rows 24-26). |
 | `src/uri.rs` | Conversions between `outou_sourcemap::Uri` and `lsp_types::Uri`, and `normalize_file_uri` (the one spelling every internal key uses). |
-| `src/editor_uris.rs` | Normalizes `.rsx` URIs from the editor on the way in and restores the editor's spelling on the way out (diagnostics, definition, references, rename); the identity when the editor already uses real paths. |
+| `src/editor_uris.rs` | Normalizes `.rsx` URIs from the editor on the way in (tracking the set of spellings a document is open under) and restores the editor's spelling on the way out (diagnostics, definition, references, rename); the identity when the editor already uses real paths. |
 | `src/semantic_tokens/mod.rs` | `textDocument/semanticTokens/full` orchestration: decode, map, merge, re-encode. |
 | `src/semantic_tokens/legend.rs` | The legend advertised/translated against (rust-analyzer's own, or the standard LSP list in degraded mode). |
 | `src/semantic_tokens/token.rs` | Pure delta-encode/decode, per-line splitting and overlay-merge transforms, independently unit-tested. |
@@ -278,6 +278,13 @@ Semantic tokens/rename/references (issue #14 review):
   open, `TODO(alpha) (#31)`: an equivalent `file://localhost/` authority,
   Windows drive letters and UNC paths, and non-`file:` schemes are passed
   through unchanged.
+  The same file may be open under several spellings (real path and link):
+  diagnostics go to every one of them, a response uses the spelling of
+  its request, and the document is reloaded from disk only when the last
+  spelling closes. When the spelling in use changes (a file that had
+  diagnostics at its real path is then opened through the link, or a
+  spelling closes), the spelling that had diagnostics gets one empty
+  `publishDiagnostics`, so no stale error is left behind.
 - **A `.rsx` file the plan does not reach** (no `mod` declaration leads to
   it) is checked for syntax only and never sent to rust-analyzer; the
   server says so once per file on stderr.

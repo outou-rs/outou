@@ -1126,6 +1126,24 @@ fn require_range_matches(
     Ok(())
 }
 
+/// Deletes a symlink test's temp copy and its link on drop, so a failing
+/// assertion does not leave them in `$TMPDIR`.
+#[cfg(unix)]
+struct SymlinkCleanup {
+    crate_dir: PathBuf,
+    link: Option<PathBuf>,
+}
+
+#[cfg(unix)]
+impl Drop for SymlinkCleanup {
+    fn drop(&mut self) {
+        if let Some(link) = &self.link {
+            let _ = std::fs::remove_file(link);
+        }
+        let _ = std::fs::remove_dir_all(&self.crate_dir);
+    }
+}
+
 /// The editor opened the workspace through a symbolic link, so every URI it
 /// sends names the link while the server keys its documents by real paths
 /// (`crate::uri::normalize_file_uri`, `crate::editor_uris`). Before the
@@ -1159,6 +1177,12 @@ fn gate3_symlinked_workspace_uses_the_editors_uri_spelling() {
 
     for probe in ["completion-member", "diagnostic-type-error"] {
         let crate_dir = fresh_copy(&root, &format!("symlink-{probe}"));
+        // Removes the copy and its link when this iteration ends, also when
+        // an assertion below panics.
+        let mut cleanup = SymlinkCleanup {
+            crate_dir: crate_dir.clone(),
+            link: None,
+        };
         seed_build(&crate_dir);
         // A sibling name for the same directory, reached through the
         // (non-canonical) system temp dir like a user's symlinked checkout.
@@ -1167,6 +1191,7 @@ fn gate3_symlinked_workspace_uses_the_editors_uri_spelling() {
             crate_dir.file_name().unwrap().to_string_lossy()
         ));
         let _ = std::fs::remove_file(&link);
+        cleanup.link = Some(link.clone());
         std::os::unix::fs::symlink(&crate_dir, &link).expect("creating the workspace symlink");
 
         let result = run_probe(&root, &link, &outou_lsp, &ra, probe);
@@ -1203,8 +1228,5 @@ fn gate3_symlinked_workspace_uses_the_editors_uri_spelling() {
                     .unwrap_or(&serde_json::Value::Null)
             );
         }
-
-        let _ = std::fs::remove_file(&link);
-        let _ = std::fs::remove_dir_all(&crate_dir);
     }
 }

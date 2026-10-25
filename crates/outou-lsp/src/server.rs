@@ -115,9 +115,9 @@ fn serve(
         crossbeam_channel::select! {
             recv(connection.receiver) -> msg => match msg {
                 Ok(mut message) => {
-                    uris.normalize_incoming(&mut message);
-                    let forget = EditorUris::forget_after(&message);
+                    let incoming = uris.normalize_incoming(&mut message);
                     match message {
+                        _ if incoming.swallow => {}
                         Message::Request(req) => {
                             if connection.handle_shutdown(&req)? {
                                 if let Some(mut ra) = state.ra.take() {
@@ -130,7 +130,7 @@ fn serve(
                         Message::Notification(note) => dispatch_client_notification(state, proxy, note),
                         Message::Response(response) => dispatch_client_response(state, response),
                     }
-                    if let Some(forget) = forget {
+                    if let Some(forget) = incoming.forget {
                         let _ = proxy.sender.send(forget);
                     }
                 }
