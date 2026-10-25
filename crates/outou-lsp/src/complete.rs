@@ -146,9 +146,10 @@ pub fn local_completion(
             position.line,
             position.character,
         ));
-    let parsed = outou_syntax::parse(doc.line_index.text());
+    let text = doc.line_index.text();
+    let parsed = outou_syntax::parse(text);
 
-    match classify(&parsed.file, offset) {
+    match classify(&parsed.file, text, offset) {
         Cursor::TagName { partial, span } => {
             let range = mapping::to_lsp_range(doc.line_index.span_to_range(span));
             Some(tag_name_items(workspace, &partial, range))
@@ -203,8 +204,9 @@ pub fn is_tag_name_position(
             position.line,
             position.character,
         ));
-    let parsed = outou_syntax::parse(doc.line_index.text());
-    matches!(classify(&parsed.file, offset), Cursor::TagName { .. })
+    let text = doc.line_index.text();
+    let parsed = outou_syntax::parse(text);
+    matches!(classify(&parsed.file, text, offset), Cursor::TagName { .. })
 }
 
 /// The full (not partial-before-cursor) tag name at `position`, if it
@@ -253,19 +255,19 @@ fn touches(span: outou_sourcemap::Span, offset: u32) -> bool {
     span.contains(outou_sourcemap::Span::new(offset, offset))
 }
 
-fn classify(file: &ast::File, offset: u32) -> Cursor {
+fn classify(file: &ast::File, text: &str, offset: u32) -> Cursor {
     for item in &file.items {
-        if let Some(cursor) = classify_item(item, offset) {
+        if let Some(cursor) = classify_item(item, text, offset) {
             return cursor;
         }
     }
     Cursor::Expression
 }
 
-fn classify_item(item: &ast::Item, offset: u32) -> Option<Cursor> {
+fn classify_item(item: &ast::Item, text: &str, offset: u32) -> Option<Cursor> {
     match item {
         ast::Item::Function(function) => {
-            touches(function.span, offset).then(|| classify_block(&function.body, offset))?
+            touches(function.span, offset).then(|| classify_block(&function.body, text, offset))?
         }
         ast::Item::Module(module) => {
             if !touches(module.span, offset) {
@@ -275,7 +277,7 @@ fn classify_item(item: &ast::Item, offset: u32) -> Option<Cursor> {
                 .items
                 .as_ref()?
                 .iter()
-                .find_map(|item| classify_item(item, offset))
+                .find_map(|item| classify_item(item, text, offset))
         }
         ast::Item::Rust(rust) => {
             if !touches(rust.span, offset) {
@@ -283,39 +285,39 @@ fn classify_item(item: &ast::Item, offset: u32) -> Option<Cursor> {
             }
             rust.parts
                 .iter()
-                .find_map(|expr| classify_expr(expr, offset))
+                .find_map(|expr| classify_expr(expr, text, offset))
         }
         ast::Item::Error(_) => None,
     }
 }
 
-fn classify_block(block: &ast::Block, offset: u32) -> Option<Cursor> {
+fn classify_block(block: &ast::Block, text: &str, offset: u32) -> Option<Cursor> {
     if !touches(block.span, offset) {
         return None;
     }
     for statement in &block.statements {
-        if let Some(cursor) = classify_expr(statement, offset) {
+        if let Some(cursor) = classify_expr(statement, text, offset) {
             return Some(cursor);
         }
     }
     block
         .tail
         .as_ref()
-        .and_then(|tail| classify_expr(tail, offset))
+        .and_then(|tail| classify_expr(tail, text, offset))
 }
 
-fn classify_expr(expr: &ast::Expr, offset: u32) -> Option<Cursor> {
+fn classify_expr(expr: &ast::Expr, text: &str, offset: u32) -> Option<Cursor> {
     match expr {
         // Verbatim Rust never contains JSX itself — any JSX nested inside
         // it already surfaced as its own sibling `Expr::Jsx` at parse
         // time (`ast::Island`/`ast::RustItem`'s own partitioning
         // guarantee) — so there is nothing further to classify here.
         ast::Expr::Rust(_) | ast::Expr::Error(_) => None,
-        ast::Expr::Jsx(element) => classify_element(element, offset),
+        ast::Expr::Jsx(element) => classify_element(element, text, offset),
     }
 }
 
-fn classify_element(element: &ast::JsxElement, offset: u32) -> Option<Cursor> {
+fn classify_element(element: &ast::JsxElement, text: &str, offset: u32) -> Option<Cursor> {
     if !touches(element.span, offset) {
         return None;
     }
@@ -323,12 +325,15 @@ fn classify_element(element: &ast::JsxElement, offset: u32) -> Option<Cursor> {
         return Some(cursor);
     }
     for attribute in &element.attributes {
-        if let Some(cursor) = classify_attribute(&element.open, attribute, offset) {
+        if let Some(cursor) = classify_attribute(&element.open, attribute, text, offset) {
             return Some(cursor);
         }
     }
+    if let Some(cursor) = classify_blank_attribute_position(element, text, offset) {
+        return Some(cursor);
+    }
     for child in &element.children {
-        if let Some(cursor) = classify_child(child, offset) {
+        if let Some(cursor) = classify_child(child, text, offset) {
             return Some(cursor);
         }
     }
@@ -401,6 +406,7 @@ fn tag_name(tag: &ast::JsxTag) -> Option<String> {
 fn classify_attribute(
     open: &ast::JsxTag,
     attribute: &ast::JsxAttribute,
+    text: &str,
     offset: u32,
 ) -> Option<Cursor> {
     if attribute.value.is_none() && touches(attribute.name.span, offset) {
@@ -424,7 +430,7 @@ fn classify_attribute(
     }
     if let Some(ast::JsxAttributeValue::Expression(island)) = &attribute.value {
         for part in &island.parts {
-            if let Some(cursor) = classify_expr(part, offset) {
+            if let Some(cursor) = classify_expr(part, text, offset) {
                 return Some(cursor);
             }
         }
@@ -432,14 +438,64 @@ fn classify_attribute(
     None
 }
 
-fn classify_child(child: &ast::JsxChild, offset: u32) -> Option<Cursor> {
+/// A blank spot between attributes of an opening tag (a fresh line the
+/// user just made): only whitespace from the previous attribute (or the
+/// tag name) to the cursor, and the next non-blank byte starts another
+/// attribute or ends the tag. Returns an empty-partial attribute-name
+/// cursor; anything else (element content, a stray `>` before the cursor)
+/// is not claimed.
+fn classify_blank_attribute_position(
+    element: &ast::JsxElement,
+    text: &str,
+    offset: u32,
+) -> Option<Cursor> {
+    let ast::JsxTag::Named { name, .. } = &element.open else {
+        return None;
+    };
+    let previous_end = element
+        .attributes
+        .iter()
+        .map(|attribute| attribute.span.end)
+        .filter(|end| *end <= offset)
+        .max()
+        .unwrap_or(name.span.end)
+        .max(name.span.end);
+    if previous_end > offset {
+        return None;
+    }
+    let before = text.get(previous_end as usize..offset as usize)?;
+    if !before.chars().all(char::is_whitespace) {
+        return None;
+    }
+    let after = text.get(offset as usize..)?;
+    let next = after.trim_start().chars().next();
+    let next_attribute_starts_here = element
+        .attributes
+        .iter()
+        .filter(|attribute| attribute.span.start >= offset)
+        .map(|attribute| attribute.span.start)
+        .min()
+        .and_then(|start| text.get(offset as usize..start as usize))
+        .is_some_and(|gap| gap.chars().all(char::is_whitespace));
+    let ends_tag = matches!(next, Some('>') | Some('/'));
+    if !(next_attribute_starts_here || ends_tag) {
+        return None;
+    }
+    Some(Cursor::AttrName {
+        tag_name: Some(name.name.clone()),
+        partial: String::new(),
+        span: outou_sourcemap::Span::new(offset, offset),
+    })
+}
+
+fn classify_child(child: &ast::JsxChild, text: &str, offset: u32) -> Option<Cursor> {
     match child {
         ast::JsxChild::Text(_) | ast::JsxChild::Error(_) => None,
-        ast::JsxChild::Element(element) => classify_element(element, offset),
+        ast::JsxChild::Element(element) => classify_element(element, text, offset),
         ast::JsxChild::Expression(island) => island
             .parts
             .iter()
-            .find_map(|part| classify_expr(part, offset)),
+            .find_map(|part| classify_expr(part, text, offset)),
     }
 }
 
@@ -496,10 +552,13 @@ fn attr_name_items(
         return Vec::new();
     };
     if HTML_ELEMENTS.contains(&tag_name) {
-        // Phase 0 has no HTML attribute vocabulary of its own
-        // (`docs/backend-leakage.md` row 12); an honest empty list beats
-        // forwarding to rust-analyzer and leaking `dioxus_html::…`.
-        return Vec::new();
+        // Outou's own small vocabulary (`crate::html_attrs`); never
+        // forwarded to rust-analyzer, which would leak `dioxus_html::…`.
+        return crate::html_attrs::attribute_names(tag_name)
+            .into_iter()
+            .filter(|name| name.starts_with(partial))
+            .map(|name| completion_item(name, CompletionKind::Field, range))
+            .collect();
     }
     for parsed in parsed_files(workspace) {
         for function in plan::component_functions(&parsed.file) {
@@ -639,7 +698,7 @@ mod tests {
         let source = "#[component]\nfn App() -> Element {\n    <UserC\n}\n";
         let parsed = outou_syntax::parse(source);
         let offset = source.find("<UserC").unwrap() as u32 + "<UserC".len() as u32;
-        match classify(&parsed.file, offset) {
+        match classify(&parsed.file, source, offset) {
             Cursor::TagName { partial, .. } => assert_eq!(partial, "UserC"),
             _ => panic!("expected a TagName cursor"),
         }
@@ -650,7 +709,7 @@ mod tests {
         let source = "#[component]\nfn App() -> Element {\n    <UserCard us\n}\n";
         let parsed = outou_syntax::parse(source);
         let offset = source.find("<UserCard us").unwrap() as u32 + "<UserCard us".len() as u32;
-        match classify(&parsed.file, offset) {
+        match classify(&parsed.file, source, offset) {
             Cursor::AttrName {
                 tag_name, partial, ..
             } => {
@@ -667,7 +726,7 @@ mod tests {
         let parsed = outou_syntax::parse(source);
         let offset = source.find("class=").unwrap() as u32 + "class=".len() as u32;
         assert!(matches!(
-            classify(&parsed.file, offset),
+            classify(&parsed.file, source, offset),
             Cursor::AttrValue { .. }
         ));
     }
@@ -681,12 +740,12 @@ mod tests {
         let parsed = outou_syntax::parse(source);
         let offset = source.find("class=").unwrap() as u32 + "class=".len() as u32;
         assert!(matches!(
-            classify(&parsed.file, offset),
+            classify(&parsed.file, source, offset),
             Cursor::AttrValue { .. }
         ));
         // The sibling is still its own element: its tag name classifies.
         let greeting = source.find("<Greeting").unwrap() as u32 + "<Gre".len() as u32;
-        match classify(&parsed.file, greeting) {
+        match classify(&parsed.file, source, greeting) {
             Cursor::TagName { partial, .. } => assert_eq!(partial, "Gre"),
             _ => panic!("expected a TagName cursor on the sibling"),
         }
@@ -700,7 +759,7 @@ mod tests {
         let source = "#[component]\nfn App() -> Element {\n    <p>hi</p>\n}\n";
         let parsed = outou_syntax::parse(source);
         let offset = source.find("</p>").unwrap() as u32 + "</p".len() as u32;
-        match classify(&parsed.file, offset) {
+        match classify(&parsed.file, source, offset) {
             Cursor::TagName { partial, .. } => assert_eq!(partial, "p"),
             _ => panic!("expected a TagName cursor for the closing tag"),
         }
@@ -719,7 +778,7 @@ mod tests {
         let source = "#[component]\nfn App() -> Element {\n    <div>\n        <\n    </div>\n}\n";
         let parsed = outou_syntax::parse(source);
         let offset = source.find("<\n").unwrap() as u32 + 1;
-        match classify(&parsed.file, offset) {
+        match classify(&parsed.file, source, offset) {
             Cursor::TagName { partial, .. } => assert_eq!(partial, ""),
             _ => panic!("expected an empty TagName cursor"),
         }
@@ -733,7 +792,7 @@ mod tests {
         let source = "#[component]\nfn App() -> Element {\n    <TagList\n}\n";
         let parsed = outou_syntax::parse(source);
         let offset = source.find("<TagList").unwrap() as u32 + "<TagL".len() as u32;
-        match classify(&parsed.file, offset) {
+        match classify(&parsed.file, source, offset) {
             Cursor::TagName { partial, .. } => assert_eq!(partial, "TagL"),
             _ => panic!("expected a TagName cursor"),
         }
@@ -811,6 +870,68 @@ mod tests {
         assert_eq!(local_completion_at(source, before_equals), None);
         let after_equals = source.find('=').unwrap() + 1;
         assert_eq!(local_completion_at(source, after_equals), Some(Vec::new()));
+    }
+
+    fn labels(items: &[Value]) -> Vec<&str> {
+        items
+            .iter()
+            .filter_map(|item| item["label"].as_str())
+            .collect()
+    }
+
+    /// The dogfood board's checkbox row, mid-edit: a half-typed bare
+    /// attribute sits between two complete ones.
+    fn checkbox_source(typed: &str) -> String {
+        format!(
+            "#[component]\nfn Row() -> Element {{\n    <input\n        type=\"checkbox\"\n        {typed}\n        checked={{done}}\n    />\n}}\n"
+        )
+    }
+
+    #[test]
+    fn local_completion_offers_html_attributes_for_a_typed_prefix() {
+        let source = checkbox_source("ch");
+        let offset = source.find("ch\n").unwrap() + "ch".len();
+        let items = local_completion_at(&source, offset).expect("answered locally");
+        assert_eq!(labels(&items), vec!["checked"]);
+
+        let source = checkbox_source("on");
+        let offset = source.find("on\n").unwrap() + "on".len();
+        let items = local_completion_at(&source, offset).expect("answered locally");
+        let labels = labels(&items);
+        assert!(labels.contains(&"onclick") && labels.contains(&"onchange"));
+        assert!(labels.iter().all(|label| label.starts_with("on")));
+    }
+
+    #[test]
+    fn local_completion_offers_html_attributes_on_an_empty_line_between_attributes() {
+        let source = checkbox_source("");
+        let offset =
+            source.find("type=\"checkbox\"\n").unwrap() + "type=\"checkbox\"\n        ".len();
+        let items = local_completion_at(&source, offset).expect("answered locally");
+        let labels = labels(&items);
+        assert!(
+            labels.contains(&"checked") && labels.contains(&"class") && labels.contains(&"onclick")
+        );
+    }
+
+    /// Between an island-valued attribute and the next one, with a typed prefix
+    /// (the second spot the user tries on `task_list.rsx`).
+    #[test]
+    fn local_completion_offers_html_attributes_after_an_island_valued_attribute() {
+        let source = "#[component]\nfn Row() -> Element {\n    <input\n        checked={done}\n        on\n        onchange={move |_| {}}\n    />\n}\n";
+        let offset = source.find("on\n").unwrap() + 2;
+        let items = local_completion_at(source, offset).expect("answered locally");
+        assert!(labels(&items).contains(&"onclick"));
+        let offset = source.find("on\n").unwrap();
+        let items = local_completion_at(source, offset).expect("answered locally");
+        assert!(labels(&items).contains(&"checked"));
+    }
+
+    #[test]
+    fn local_completion_does_not_claim_whitespace_inside_element_content() {
+        let source = "#[component]\nfn App() -> Element {\n    <div class=\"a\">\n        hi\n    </div>\n}\n";
+        let offset = source.find("hi").unwrap();
+        assert_eq!(local_completion_at(source, offset), None);
     }
 
     fn workspace_with(source: &str) -> Workspace {
