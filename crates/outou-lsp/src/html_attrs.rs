@@ -19,8 +19,11 @@
 //!   (deprecated), `dangerous_inner_html`, `is`, `exportparts`.
 //! - `ARIA`: the `aria_*` entries of the same file, hyphenated.
 //! - `EVENTS`: the standard DOM handlers declared under `src/events/`.
-//!   Left out: `onmounted`, `onvisible`, `onresize`, `ondoubleclick`,
-//!   `ondragexit` (not standard DOM events or duplicates of one).
+//!   Left out: `onmounted`, `onvisible`, `onresize`, `ondragexit` (not
+//!   standard DOM events or duplicates of one). `ondblclick` is
+//!   `#[deprecated]` in dioxus-html 0.7.10 (`-D warnings` rejects it), so
+//!   the table offers its replacement `ondoubleclick`; no other name is
+//!   deprecated except `prevent_default`, already left out.
 //!
 //! `crates/outou-backend-dioxus/tests/attr_names_compile.rs` includes this
 //! file and compiles every name for every element in `OWN_ATTRIBUTES`
@@ -131,7 +134,7 @@ const EVENTS: &[&str] = &[
     "oncontextmenu",
     "oncopy",
     "oncut",
-    "ondblclick",
+    "ondoubleclick",
     "ondrag",
     "ondragend",
     "ondragenter",

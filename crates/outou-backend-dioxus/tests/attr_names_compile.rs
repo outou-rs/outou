@@ -11,6 +11,7 @@
 //! cargo test -p outou-backend-dioxus --test attr_names_compile -- --ignored --nocapture
 //! ```
 
+mod compiler_output;
 mod support;
 
 #[path = "../../outou-lsp/src/html_attrs.rs"]
@@ -19,6 +20,7 @@ mod html_attrs;
 use std::fs;
 use std::process::{Command, Output};
 
+use compiler_output::has_compiler_warning;
 use outou_backend_dioxus::DioxusBackend;
 use outou_codegen::{Backend, GenerateOptions, Mode};
 use outou_sourcemap::Uri;
@@ -95,5 +97,11 @@ fn every_offered_attribute_name_compiles_on_its_element() {
     assert!(
         output.status.success(),
         "{stderr}\n--- source ---\n{source}"
+    );
+    // A deprecated name is only a warning to rustc, but CI builds with
+    // `-D warnings`, so an offered name that warns is a name that fails.
+    assert!(
+        !has_compiler_warning(&stderr),
+        "an offered attribute name produced a compiler warning:\n{stderr}"
     );
 }
