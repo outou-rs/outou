@@ -959,10 +959,7 @@ Run by hand by the project's manager: dioxus-cli 0.7.10 (`cargo install`), `~/.c
 ### Not verified
 
 - The F18 fix **was** re-checked in a browser (2026-10-24); the headless tests check only the `selected` flags. The first hand-run walkthrough and that re-check were of the application before #26 to #29; the migrated application was checked in the browser the same day (see the A5 section, "Browser check of the migrated application"). Walkthrough step 12 (length limits, covered by `board-core` unit tests only) and New task then Cancel were not run in the browser.
-- The language-server experience on the app's `.rsx` files (completion, hover, diagnostics) was not exercised (F17). A development-only VS Code client for `outou-lsp` has since been added (`packages/vscode-outou`, separate from #31); its results are to follow.
-
-  The first sessions in a real VS Code found three defects, all fixed:
-  (1) the workspace was opened through a symbolic link (`~/company/workspace/outou-rs/...` to `~/Documents/projects/outou-rs/...`), so every URI the editor sent named the link while the server keyed documents by the real path: forwarded completion (`app.`), hover and definition answered `null`, `didSave` never reached rust-analyzer (no E0599 or E0308 on save) and its diagnostics were published to a URI the open tab does not own. `.rsx` URIs are now canonicalized on the way in and the editor's spelling is restored on the way out (ledger row 52); a headless reproduction against the link and a gate-3 end-to-end test (`gate3_symlinked_workspace_uses_the_editors_uri_spelling`) cover it. A `.rsx` file outside the plan is now logged once instead of failing silently. (2) Attribute-name completion returned an empty list for HTML elements, and a blank line between attributes was not an attribute position, so typing `ch` or `on` inside `<input />` showed nothing; a small attribute table now backs it (`f7f052b`, `f29ee1e`; the table's gaps are owned by #31). (3) `vscode-languageclient` 10 calls `error`/`info` on its output channel, so the plain output channel made the client fail to start; the extension now creates a log output channel (`2753023`).
+- The language-server experience on the app's `.rsx` files (F17) was not exercised when the A4 run was made. It was exercised later, in a real VS Code, on 2026-10-25; see "Real-editor check of outou-lsp (F17, 2026-10-25)" in the A5 section below.
 - The `dogfood-board` CI job has not run on a pushed branch.
 
 ### Issue #22 checklist status
@@ -972,7 +969,7 @@ Done: build the app (native and wasm32 compile); prelude re-exports recorded (AD
 
 ## A5: runtime decision (ADR 0014, issues #23 and #25 to #30)
 
-Status: decided on 2026-10-24 and carried out the same day. [ADR 0014](adr/0014-dioxus-continues-as-backend-not-as-specification.md) is Accepted (commit `0d75d17`; it supersedes ADR 0003 and amends ADR 0010), and the five implementation issues it names are implemented and pushed. One verification is **open**: a live-editor check of the language-server behavior added by #26 to #28 (see "Not verified"). The migrated dogfood application was checked in a browser on 2026-10-24 (issues #28 and #29; see "Browser check of the migrated application" below). The facts in this section come from `git log`, `docs/backend-leakage.md`, the issue mirrors in `docs/alpha/issues/`, ADR 0014 and a ledger recount made on 2026-10-24.
+Status: decided on 2026-10-24 and carried out the same day. [ADR 0014](adr/0014-dioxus-continues-as-backend-not-as-specification.md) is Accepted (commit `0d75d17`; it supersedes ADR 0003 and amends ADR 0010), and the five implementation issues it names are implemented and pushed. The language-server behavior was checked in a real VS Code on 2026-10-25 (see "Real-editor check of outou-lsp (F17, 2026-10-25)"); what that check did not cover is listed there. The migrated dogfood application was checked in a browser on 2026-10-24 (issues #28 and #29; see "Browser check of the migrated application" below). The facts in this section come from `git log`, `docs/backend-leakage.md`, the issue mirrors in `docs/alpha/issues/`, ADR 0014 and a ledger recount made on 2026-10-24.
 
 ### The decision
 
@@ -1027,7 +1024,7 @@ So four of the five fixable groups are fixed (one within limits) and one is unto
 | #29 | Outou-named state API: `State<T>`, `use_state`, `provide_context`, `use_context`, `launch`; the old names are removed from the prelude; `dogfood-board` and the prelude name list are migrated and pinned. | `997e851`, `4b741c9` (test: avoid `clone_on_copy` flagged by clippy 1.99) |
 | #30 | This close-out: ledger row 46, Friction log dispositions, this section. | (this change) |
 
-The decision itself is `0d75d17` (ADR 0014) and the issue mirrors are `79e1693`. Every dogfood-board friction item F1 to F6 and F18 now has a disposition that matches this table; F13 (no click-capable test renderer) and F17 (editor experience) remain open; see `examples/dogfood-board/README.md`.
+The decision itself is `0d75d17` (ADR 0014) and the issue mirrors are `79e1693`. Every dogfood-board friction item F1 to F6 and F18 now has a disposition that matches this table; F13 (no click-capable test renderer) remains open; F17 (editor experience) was checked in a real editor on 2026-10-25 (below); see `examples/dogfood-board/README.md`.
 
 ### When to switch to an Outou runtime, and the evidence so far
 
@@ -1066,7 +1063,7 @@ Each is recorded where it belongs; none is hidden by a passing test.
 - Misuse messages can still carry the backend's vocabulary: a `State<T>` or `Signal<T>` used as a child where `T` is not renderable, and `Send`/generational-box types in rustc's error for a non-`Send` state (rows 42 and 45(b)); `IntoChild<Delegated<_>>` notes survive under plain `cargo`. The Outou wording for them is a `TODO(alpha) (#31)` that the decision keeps open.
 - `&String`, `&&str`, `Arc<str>`, `Rc<str>`, `Cow<str>`, `Box<str>`, `Vec<Element>`, an iterator of text and `Option<number>` are not children; the diagnostics say how to write each (row 42, Gaps (b) and (d)). The `IntoKey` types are `str` and integer types; `char`, `bool`, floats and a custom `Display` type are no longer keys (row 41).
 - Run-time output is not translated: a panic inside `cargo test` still prints `src/.generated/x.rs:L:C` (row 39), and plain `cargo` prints generated paths. `include_str!`-style relative paths still resolve against the generated directory (row 40). `outou cargo` is Unix-only for the alpha.
-- Editor behavior: hover, references and rename on `key` and other lowered expressions are checked by `outou-lsp`'s mapping-layer unit tests against real generated code, not in a live editor or against a running rust-analyzer. The related-information fields of the `IntoChild` error in the editor were not checked (row 42), and F17 (the editor experience on the dogfood files) is unverified. The keyword-named attribute rename/references gap (row 29, now `TODO(alpha) (#31)`) is unchanged.
+- Editor behavior: hover, references and rename on `key` and other lowered expressions are checked by `outou-lsp`'s mapping-layer unit tests against real generated code, and the 2026-10-25 editor check did not touch them. The editor experience on the dogfood files (F17) was checked by hand in VS Code on 2026-10-25 (below); the related-information fields of the `IntoChild` error were not looked at there (row 42). The keyword-named attribute rename/references gap (row 29, now `TODO(alpha) (#31)`) is unchanged.
 - Existing bug, recorded in A3 and not fixed: on a case-insensitive filesystem, `outou build`'s `clean_stale` deletes a generated file whose only change is its case, and exits 0 (recorded under "(f)" in A1 above, from issue #20).
 - Flaky tests, as observed during the A5 work: `outou-cli`'s formatter test that runs a generated shell script as `rustfmt` can fail with `ETXTBSY` (text file busy), and the three `outou-syntax` timing tests (`*_in_linear_time` in `crates/outou-syntax/tests/item_recovery.rs`) can fail under load, since they assert a fixed wall-clock bound. This was reported by the work's reviewers; I did not reproduce either and they are not recorded elsewhere in the repository.
 
@@ -1082,12 +1079,52 @@ Driven by Fable through the Chrome extension, `dx serve --platform web`, no cons
 
 - The parts of the browser walkthrough of `examples/dogfood-board` not run on the migrated application: the form length limits (covered by `board-core` unit tests only) and New task then Cancel. The commit `997e851` (after the `Slot` review fixes) got only a smoke run, not the full walkthrough; the full walkthrough was done at the first #29 implementation, before `Slot`.
 - The `dogfood-board` CI job on a pushed branch after the migration.
-- A live-editor session on any `.rsx` file (F17).
+- What the 2026-10-25 editor check left open: see its "Not verified" list below (other editors, Windows and Linux, long sessions, large or multi-folder workspaces).
 - Runtime performance, release bundle size, React interop, Dioxus upgrade cost.
+
+### Real-editor check of outou-lsp (F17, 2026-10-25)
+
+Run by hand by the project's manager: VS Code 1.142.0 (not Cursor), an Extension Development Host started with `code --extensionDevelopmentPath=.../packages/vscode-outou .../examples/dogfood-board/app`, `vscode-languageclient` 10.1.2, on `app/src/task_list.rsx`, following the checklist in `packages/vscode-outou/README.md`. This is the first time `outou-lsp` was used in a real editor; the browser checks above did not involve one. Every item was OK when the workspace was opened by its real path. Opened through a symbolic link, the items needing rust-analyzer failed until fix 3 below; after it, items 4c/4d, 3d and 7 were re-run through the link and worked.
+
+| Item | Result |
+|---|---|
+| 1 Starts | OK: Output shows `Starting .../outou-lsp` |
+| 2 Progress | OK: status bar `Outou: indexing: 63/283`, then `Outou: checking`, then gone; no rust-analyzer or crate name |
+| 3a Syntax diagnostic (`</p>` to `</q>`) | OK: ``closing tag `</q>` does not match opening tag `<p>` ``, source `outou` |
+| 3b Unclosed tag (`/>` removed) | OK: ``unexpected `}` inside tag `<TaskRow>`, expected an attribute or `>` `` |
+| 3c Type error | OK after save: `mismatched types` (E0308); the related location is a line and column of the `.rsx` file; source `rustc` |
+| 3d Old API (`get` to `read`) | OK after save: ``no method named `read` found for struct `outou::prelude::State<T>` `` (E0599); no `Signal` or Dioxus wording |
+| 4a Tag completion | OK: shown on `<`, narrows as typed, includes `TaskDetail` and `TaskForm` from other files and HTML elements |
+| 4b Attribute-name completion | OK after fix 2: `ch` offers `checked`, `on` offers `onclick` and the other handlers |
+| 4c, 4d Rust-expression completion | OK after fix 3: `app.` offers `board`, `filter`, `panel`; `app.board.` offers `get`, `with`, `set`, `update` |
+| 5 Hover | OK: `pub board: State<Board>` and its doc comment; no `Signal` |
+| 6 Go to definition | OK (`Cmd`+click) |
+| 7 References | OK (context menu, Find All References) |
+| 8a Rename | OK (context menu, Rename Symbol) |
+| 8b Rename of the keyword-named prop `type` | Refused, as the known limitation says (ledger row 29, #31) |
+| 9 Formatting | OK |
+| 10 Semantic highlighting | OK |
+| 11 serverStatus | OK: a toast |
+
+**Defects found only by the real editor, and what was done:**
+
+1. The extension passed an ordinary `OutputChannel`, and `vscode-languageclient` 10 calls `outputChannel.error(...)`; the client failed to start with `outputChannel.error is not a function`. Fixed by creating a log output channel (`2753023`).
+2. Attribute-name completion on HTML elements always returned an empty list: the Phase 0 limitation "no attribute vocabulary" was only found in an editor. Fixed with an attribute table taken from `dioxus-html 0.7.10` (262 names, every name compiled on its element), excluding attributes already on the tag and treating a lowercase tag as an element (`f7f052b`, `f29ee1e`; ledger row 51; the table's gaps are owned by #31).
+3. A workspace opened through a symbolic link (`~/company/workspace/outou-rs` to `~/Documents/projects/outou-rs`) made the editor send `.rsx` URIs in the link's spelling while `outou-lsp` keyed documents by the real path. Forwarded completion, hover and definition answered `null`, `didSave` never reached rust-analyzer, and no rustc diagnostics appeared. Fixed by normalizing URIs at the server boundary, recording the editor's spelling in an alias table, and writing it back into diagnostics, `Location`s and `WorkspaceEdit`s (`875e766`; the next commit, `6024556`, handles several spellings of one document at once, clears diagnostics when the spelling switches, and closes a document only when its last spelling closes). Ledger row 52. Confirmed in the editor on 2026-10-25: through the link, completion after `app.`, the `read` diagnostic and references work.
+
+**Findings about the environment and the design:**
+
+- The workspace has to be the crate directory (`examples/dogfood-board/app`). Opening the Cargo workspace root `examples/dogfood-board` puts `outou-lsp` in its degraded mode (syntax diagnostics only).
+- On macOS `Ctrl+Space` collides with Google Japanese Input; use the Command Palette's "Trigger Suggest". `Shift+F12` and `F2` are function keys on a Mac keyboard; use the context menu or the Command Palette.
+- The grey inline AI suggestions are not completions; `editor.inlineSuggest.enabled` off avoids the confusion. VS Code's word-based suggestions can also appear mixed into the list.
+
+**New known gaps, owned by #31:** (a) the Output channel "Outou Language Server" shows rust-analyzer's whole standard error (`WARN overly long loop turn ...`, `PrimeCaches`, the full text of each `didSave`, which is the generated Rust and its `.generated` path), every line at `[error]` level (ledger row 53; a leak of generated code and backend vocabulary to the user); (b) rust-analyzer's own `non_snake_case` warning appears on `#[component]` functions (``Function `TaskList` should have snake_case name``); (c) opening a `.rsx` file that already has flycheck diagnostics publishes an empty set until the next save (an existing behavior, seen with the real path too); (d) rust-analyzer's file-watch globs use the real path, so with a symlinked workspace on-disk `.rs` edits may not reach it (a guess, not checked); (e) non-`file:` URIs, Windows and `file://localhost/` URIs (already in #31).
+
+**Not verified:** other editors (Cursor and so on), VS Code on Windows or Linux, a session of half a day or longer, a large workspace, several workspace folders, VS Code's native "Save changes" delay, and the Trace log (`outou.trace.server` with the channel's log level at Trace). The mapping-layer claims about `key` and other lowered expressions (rows 41 and 42) are still backed by unit tests only; the checklist did not touch them.
 
 ### Issue #23 and #30 checklist status
 
-Done: ADR 0014 (supersedes ADR 0003, amends ADR 0010); the ledger weighed (recount above); the A4 evidence folded in (F1 to F18, A4 section); the A1 numbers are the performance evidence available and the runtime-level performance is stated as unmeasured; implementation issues #25 to #29 closed; ledger row 46; Friction log dispositions; this section and the A2 corpus figure. Open, and stated above rather than treated as passed: the browser re-walkthrough of the migrated application and the live-editor checks.
+Done: ADR 0014 (supersedes ADR 0003, amends ADR 0010); the ledger weighed (recount above); the A4 evidence folded in (F1 to F18, A4 section); the A1 numbers are the performance evidence available and the runtime-level performance is stated as unmeasured; implementation issues #25 to #29 closed; ledger row 46; Friction log dispositions; this section and the A2 corpus figure. Open, and stated above rather than treated as passed: the editor check's remaining gaps (see its list).
 
 ## Cross-cutting: disposition of the Phase 0 deferred-work markers (issue #24)
 
