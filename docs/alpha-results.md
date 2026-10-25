@@ -959,7 +959,7 @@ Run by hand by the project's manager: dioxus-cli 0.7.10 (`cargo install`), `~/.c
 ### Not verified
 
 - The F18 fix **was** re-checked in a browser (2026-10-24); the headless tests check only the `selected` flags. The first hand-run walkthrough and that re-check were of the application before #26 to #29; the migrated application was checked in the browser the same day (see the A5 section, "Browser check of the migrated application"). Walkthrough step 12 (length limits, covered by `board-core` unit tests only) and New task then Cancel were not run in the browser.
-- The language-server experience on the app's `.rsx` files (completion, hover, diagnostics) was not exercised (F17).
+- The language-server experience on the app's `.rsx` files (completion, hover, diagnostics) was not exercised (F17). A development-only VS Code client for `outou-lsp` has since been added (`packages/vscode-outou`, separate from #31); its results are to follow.
 - The `dogfood-board` CI job has not run on a pushed branch.
 
 ### Issue #22 checklist status

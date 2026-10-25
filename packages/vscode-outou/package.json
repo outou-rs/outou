@@ -3,18 +3,35 @@
   "displayName": "Outou",
   "version": "0.0.1",
   "private": true,
-  "description": "Language support for Outou (.rsx). Currently a TextMate-grammar syntax highlighter standing in for semantic tokens; the language server (outou-lsp) exists but is not yet wired into this extension.",
+  "description": "Language support for Outou (.rsx): a TextMate grammar plus a development-only language client for outou-lsp. Not published.",
   "publisher": "outou-rs",
   "license": "MIT OR Apache-2.0",
-  "repository": { "type": "git", "url": "https://github.com/outou-rs/outou", "directory": "packages/vscode-outou" },
-  "engines": { "vscode": "^1.90.0" },
-  "categories": ["Programming Languages"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/outou-rs/outou",
+    "directory": "packages/vscode-outou"
+  },
+  "engines": {
+    "vscode": "^1.91.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "main": "./extension.js",
+  "activationEvents": [
+    "onLanguage:outou-rsx"
+  ],
   "contributes": {
     "languages": [
       {
         "id": "outou-rsx",
-        "aliases": ["Outou", "outou"],
-        "extensions": [".rsx"],
+        "aliases": [
+          "Outou",
+          "outou"
+        ],
+        "extensions": [
+          ".rsx"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
@@ -28,6 +45,33 @@
           "source.rust": "rust"
         }
       }
-    ]
+    ],
+    "configuration": {
+      "title": "Outou",
+      "properties": {
+        "outou.server.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine-overridable",
+          "markdownDescription": "Path to the `outou-lsp` binary. Empty: look for `target/debug/outou-lsp` (then `target/release`) in the repository this extension lives in, then in the ancestors of the workspace folder. A relative path is resolved against each workspace folder."
+        },
+        "outou.trace.server": {
+          "type": "string",
+          "enum": [
+            "off",
+            "messages",
+            "verbose"
+          ],
+          "default": "off",
+          "description": "Trace LSP traffic between VS Code and outou-lsp in the Outou Language Server output channel."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test syntaxes/*.test.mjs *.test.js"
+  },
+  "dependencies": {
+    "vscode-languageclient": "10.1.2"
   }
 }
