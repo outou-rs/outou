@@ -7,6 +7,7 @@
 //! binary (`src/main.rs`) is a thin argument-parsing wrapper around the
 //! same [`build::build`] this library exposes.
 
+mod atomic_write;
 pub mod build;
 pub mod cargo;
 pub mod check;

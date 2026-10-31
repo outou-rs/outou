@@ -6,17 +6,19 @@
 //! function `textDocument/formatting` in `outou-lsp` calls
 //! (`docs/phase0/issues/13-formatter.md`: "one pipeline, not two").
 //!
-//! Writing a formatted file (`std::fs::write` in [`format_one_file`]) is
-//! in place and not atomic. That is accepted for the alpha (issue #24): a
-//! failure part-way through the write, such as a full disk, can leave the
-//! file truncated (reproducible with `ulimit -f`). Writing a temporary file
-//! next to the resolved target and renaming it over the target would fix
-//! that and still keep a symlinked `.rsx` file a symlink; it was left out of
-//! the alpha (`TODO(alpha) (#31)`).
+//! A formatted file is written atomically ([`crate::atomic_write`]): the
+//! text goes to a temporary file next to the resolved target and is renamed
+//! over it, so a failure part-way through (a full disk, `ulimit -f`) never
+//! leaves a truncated `.rsx` file. A symlinked `.rsx` file stays a symlink
+//! and its real target is updated; file permissions are preserved, and the
+//! data is fsynced before the rename. The temporary file is removed on I/O
+//! errors, but a killed process (e.g. SIGXFSZ under `ulimit -f`) may leave
+//! a `.<name>.outou-tmp-*` file behind.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use crate::atomic_write::{write_atomic, Durability};
 use outou_fmt::{FormatError, FormatOptions};
 
 use crate::rsx_files::collect_rsx_files;
@@ -93,7 +95,7 @@ fn format_one_file(path: &Path, options: &FormatOptions, check_only: bool) -> Fi
         Classified::Changed(formatted) => {
             if check_only {
                 println!("{}", path.display());
-            } else if let Err(err) = std::fs::write(path, formatted) {
+            } else if let Err(err) = write_atomic(path, formatted.as_bytes(), Durability::Sync) {
                 eprintln!("error: writing {}: {err}", path.display());
                 return FileOutcome::Refused(err.to_string());
             } else {
@@ -239,6 +241,33 @@ mod tests {
             count, 1,
             "format_source (and so rustfmt) must be invoked exactly once per changed file, not twice"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn formatting_a_symlinked_file_updates_its_target_and_keeps_the_link() {
+        let dir = std::env::temp_dir().join(format!(
+            "outou-cli-fmt-test-symlink-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let real = dir.join("real.rsx");
+        std::fs::write(&real, "fn f() { <div  /> }").unwrap();
+        let link = dir.join("link.rsx");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        let outcome = format_one_file(&link, &FormatOptions::default(), false);
+
+        let is_link = std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink();
+        let content = std::fs::read_to_string(&real).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(outcome, FileOutcome::Changed);
+        assert!(is_link);
+        assert_eq!(content, "fn f() {\n    <div />\n}\n");
     }
 
     #[test]

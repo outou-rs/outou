@@ -229,29 +229,24 @@ pub fn generate_unit(
         })
 }
 
-/// Writes `contents` to `path` by first writing a sibling temporary file
-/// and renaming it into place, so a reader never observes a partial
-/// write and a failed write never corrupts a previously good file.
+/// Writes `contents` to `path` atomically (see
+/// [`crate::atomic_write::write_atomic`], without fsync: generated output is
+/// rebuildable and `outou-lsp` calls emit on every save), creating its
+/// directory first.
 fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), EmitError> {
     let dir = path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(dir).map_err(|source| EmitError::Write {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    let file_name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let tmp_path = dir.join(format!(".{file_name}.outou-tmp-{}", std::process::id()));
-
-    fs::write(&tmp_path, contents).map_err(|source| EmitError::Write {
-        path: tmp_path.clone(),
-        source,
-    })?;
-    fs::rename(&tmp_path, path).map_err(|source| EmitError::Write {
-        path: path.to_path_buf(),
-        source,
-    })
+    fs::create_dir_all(dir)
+        .and_then(|()| {
+            crate::atomic_write::write_atomic(
+                path,
+                contents,
+                crate::atomic_write::Durability::NoSync,
+            )
+        })
+        .map_err(|source| EmitError::Write {
+            path: path.to_path_buf(),
+            source,
+        })
 }
 
 #[cfg(test)]

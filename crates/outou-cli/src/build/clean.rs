@@ -1,8 +1,8 @@
 //! Removes stale files from `src/.generated/` that this tool manages but
 //! did not just (re)write: a module that was renamed or deleted leaves
 //! its old generated `.rs` and `.rs.map.json` behind otherwise. Also
-//! removes a leftover `.<name>.outou-tmp-<pid>` file (`emit::atomic_write`'s
-//! temporary-file naming) that a crashed run never got to rename into
+//! removes a leftover `.<name>.outou-tmp-<pid>-<n>` file
+//! (`atomic_write::write_atomic`'s temporary-file naming) that a crashed run never got to rename into
 //! place (N4, issue #8 fix list step 5).
 //!
 //! Only files this tool manages are ever touched: a file whose name ends
@@ -70,7 +70,8 @@ pub(crate) fn walk_managed_files(generated_dir: &Path) -> std::io::Result<Vec<Pa
 /// Whether `path`'s file name is one `outou build` would have produced or
 /// left behind: a generated Rust file (`*.rs`), its source-map sidecar
 /// (`*.rs.map.json`), or a crashed run's leftover atomic-write temp file
-/// (`.<name>.outou-tmp-<pid>`, `emit::atomic_write`'s exact naming).
+/// (`.<name>.outou-tmp-<pid>-<n>`, `atomic_write::write_atomic`'s exact
+/// naming).
 pub(crate) fn is_managed_file(path: &Path) -> bool {
     let name = match path.file_name().and_then(|n| n.to_str()) {
         Some(name) => name,
@@ -79,8 +80,8 @@ pub(crate) fn is_managed_file(path: &Path) -> bool {
     name.ends_with(".rs.map.json") || name.ends_with(".rs") || is_leftover_temp_file(name)
 }
 
-/// Whether `name` matches `emit::atomic_write`'s temporary-file pattern,
-/// `.<original-name>.outou-tmp-<pid>` — a leftover from a run that
+/// Whether `name` matches `atomic_write::write_atomic`'s temporary-file
+/// pattern, `.<original-name>.outou-tmp-<pid>-<n>` — a leftover from a run that
 /// crashed between writing the temp file and renaming it into place.
 fn is_leftover_temp_file(name: &str) -> bool {
     name.starts_with('.') && name.contains(".outou-tmp-")
@@ -125,7 +126,7 @@ mod tests {
     /// MEDIUM-6 / N4 (issue #8 fix list step 5): `is_managed_file` matched
     /// any `*.map.json`, broader than the module's own documented
     /// `*.rs.map.json` — a foreign `notes.map.json` was silently deleted.
-    /// A crashed run's leftover `.name.outou-tmp-<pid>` file also matched
+    /// A crashed run's leftover `.name.outou-tmp-<pid>-<n>` file also matched
     /// neither suffix and was never cleaned up.
     #[test]
     fn narrows_to_rs_map_json_and_also_removes_leftover_temp_files() {
@@ -148,7 +149,7 @@ mod tests {
         );
         assert!(
             !leftover_temp.exists(),
-            "a leftover `.name.outou-tmp-<pid>` file must be removed"
+            "a leftover `.name.outou-tmp-<pid>-<n>` file must be removed"
         );
         assert!(removed.contains(&leftover_temp));
 
