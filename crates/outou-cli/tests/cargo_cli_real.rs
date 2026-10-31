@@ -387,19 +387,19 @@ fn a_bool_child_is_reported_at_the_child_expression() {
     assert!(!stderr.contains("Iterator"), "{stderr}");
 }
 
-/// Issue #27: an `Option` of a number is not a child, and the note says how
-/// to write it; the `IntoChild<..Delegated<_>>` note is not shown.
+/// Issue #27 and #31: an `Option` of a number is a child (`Option<bool>` is
+/// not, like `bool`); the `IntoChild<..>` note is not shown.
 #[test]
 #[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
-fn an_option_of_a_number_child_is_told_to_map_to_text() {
-    let (stderr, position) = check_with_child("Some(board.tasks().len())");
+fn an_option_of_a_bool_child_is_told_to_use_if_or_option() {
+    let (stderr, position) = check_with_child("Some(board.tasks().is_empty())");
 
     assert!(
-        stderr.contains("`Option<usize>` cannot be rendered as a JSX child"),
+        stderr.contains("`Option<bool>` cannot be rendered as a JSX child"),
         "expected the Outou message in:\n{stderr}"
     );
     assert!(
-        stderr.contains(".map(|n| n.to_string())"),
+        stderr.contains("`if` or `Option`"),
         "expected the advice in:\n{stderr}"
     );
     assert!(

@@ -4,3 +4,5 @@ error: `bool` cannot be rendered as a JSX child
  --> $DIR/input.rsx:11:14
 error: `bool` cannot be rendered as a JSX child
  --> $DIR/input.rsx:12:14
+error: `Option<bool>` cannot be rendered as a JSX child
+ --> $DIR/input.rsx:13:14

@@ -45,12 +45,20 @@ fn App() -> Element {
     let cond = false;
     let value = 1;
     let maybe_n: Option<usize> = Some(2);
+    let name = String::from("n");
+    let shared: std::sync::Arc<str> = "arc".into();
+    let words = [String::from("w")];
     <div>
         {count}
         {ratio}
         {-2}
         {'c'}
         {"literal"}
+        {&name}
+        {&"slice"}
+        {shared}
+        {Some(count)}
+        {words.iter().cloned()}
         {maybe}
         {labels.iter().map(|label| <Row key={label.as_str()} label={label.clone()} />)}
         {if open { <b>{count}</b> } else { <i>closed</i> }}
@@ -98,6 +106,7 @@ fn App() -> Element {
         <li>{price}</li>
         <li>{open}</li>
         <li>{open && 1 > 0}</li>
+        <li>{Some(open)}</li>
     </ul>
 }
 
@@ -175,6 +184,10 @@ fn a_child_of_an_unsupported_type_is_reported_in_outou_words() {
     );
     assert!(
         stderr.contains("`bool` cannot be rendered as a JSX child"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("`Option<bool>` cannot be rendered as a JSX child"),
         "{stderr}"
     );
 }

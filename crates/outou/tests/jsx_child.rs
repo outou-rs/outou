@@ -132,3 +132,71 @@ fn the_unit_value_renders_nothing() {
     }
     assert!(texts_of(app).is_empty());
 }
+
+#[test]
+fn string_pointer_types_render_as_text() {
+    fn app() -> Element {
+        let owned = String::from("string");
+        let slice = "slice";
+        let boxed: Box<str> = "boxed".into();
+        let arc: std::sync::Arc<str> = "arc".into();
+        let rc: std::rc::Rc<str> = "rc".into();
+        let borrowed: std::borrow::Cow<'_, str> = std::borrow::Cow::Borrowed("cow-b");
+        let cow_owned: std::borrow::Cow<'_, str> = std::borrow::Cow::Owned(String::from("cow-o"));
+        rsx! {
+            p {
+                {child(&owned)}, {child(&slice)}, {child(boxed)}, {child(arc)},
+                {child(rc)}, {child(borrowed)}, {child(cow_owned)},
+            }
+        }
+    }
+    assert_eq!(
+        texts_of(app),
+        strings(&["string", "slice", "boxed", "arc", "rc", "cow-b", "cow-o"])
+    );
+}
+
+#[test]
+fn an_option_of_a_number_renders_its_text_or_nothing() {
+    fn app() -> Element {
+        let some: Option<usize> = Some(2);
+        let none: Option<i32> = None;
+        let float = Some(1.5f64);
+        let number = 7u8;
+        let by_ref: Option<&u8> = Some(&number);
+        rsx! { p { {child(some)}, {child(none)}, {child(float)}, {child(by_ref)}, } }
+    }
+    assert_eq!(texts_of(app), strings(&["2", "1.5", "7"]));
+}
+
+#[test]
+fn an_iterator_of_strings_renders_every_item() {
+    fn app() -> Element {
+        let names = [String::from("x"), String::from("y")];
+        rsx! { p { {child(names.iter().cloned())}, } }
+    }
+    assert_eq!(texts_of(app), strings(&["x", "y"]));
+}
+
+#[test]
+fn an_option_of_a_string_reference_or_cow_renders_its_text_or_nothing() {
+    fn app() -> Element {
+        let owned = String::from("by-ref");
+        let some_ref: Option<&String> = Some(&owned);
+        let none_ref: Option<&String> = None;
+        let some_cow: Option<std::borrow::Cow<'_, str>> = Some(std::borrow::Cow::Borrowed("cow"));
+        let none_cow: Option<std::borrow::Cow<'_, str>> = None;
+        rsx! {
+            p { {child(some_ref)}, {child(none_ref)}, {child(some_cow)}, {child(none_cow)}, }
+        }
+    }
+    assert_eq!(texts_of(app), strings(&["by-ref", "cow"]));
+}
+
+#[test]
+fn an_empty_iterator_of_strings_renders_nothing() {
+    fn app() -> Element {
+        rsx! { p { {child(std::iter::empty::<String>())}, } }
+    }
+    assert_eq!(texts_of(app), Vec::<String>::new());
+}

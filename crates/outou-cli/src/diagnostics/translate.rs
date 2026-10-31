@@ -339,13 +339,16 @@ const TYPE_NAME_FILE_NOTES: &[&str] = &[
 
 /// The message of the facade's child diagnostic (`outou::jsx::IntoChild`,
 /// issue #27). rustc follows it with helps that describe the trait's
-/// machinery rather than the user's mistake: the first, from the delegating
-/// implementation, says `Iterator` is not implemented for the type. It is
-/// dropped; the facade's own notes carry the advice. For a `Vec` it is the
-/// one real hint (a `Vec` is not an iterator), so it becomes [`VEC_HELP`].
+/// machinery rather than the user's mistake: older rustc output had a first
+/// help, from the delegating implementation, saying `Iterator` is not
+/// implemented for the type. Current rustc no longer prints it (the facade's
+/// `on_unimplemented` note carries the `.into_iter()` hint), so this
+/// handling is kept for older output and as a defensive measure. When it is
+/// present it is dropped; for a `Vec` it becomes [`VEC_HELP`].
 const CHILD_DIAGNOSTIC: &str = "cannot be rendered as a JSX child";
 
-/// The help that `Iterator` is not implemented for the child's type.
+/// The help that `Iterator` is not implemented for the child's type (older
+/// rustc output only, see [`CHILD_DIAGNOSTIC`]).
 const NOT_AN_ITERATOR_HELP: &str = "the trait `Iterator` is not implemented for";
 
 /// What to say instead of [`NOT_AN_ITERATOR_HELP`] when the child is a `Vec`.

@@ -57,6 +57,10 @@ pub mod jsx {
         /// Seals [`super::IntoChild`]: the marker parameter is as free as
         /// the trait's own, so sealing needs the same parameter.
         pub trait SealedChild<M> {}
+
+        /// A text value that an iterator of text can hold: the item types
+        /// of an iterator child. Not a child by itself.
+        pub trait TextItem: ToString {}
     }
 
     /// Marker for the children the backend already knows how to render.
@@ -69,31 +73,35 @@ pub mod jsx {
     #[doc(hidden)]
     pub struct Displayed;
 
+    /// Marker for an `Option` of a number or `char`, rendered as the
+    /// number's text or as nothing.
+    #[doc(hidden)]
+    pub struct OptionalDisplayed;
+
+    /// Marker for an iterator of text, one text node per item.
+    #[doc(hidden)]
+    pub struct TextItems;
+
     /// A value that can be a JSX child: `<p>{value}</p>`.
     ///
-    /// Implemented for text (`&str`, `String`, formatted strings), for
-    /// integers, floating point numbers and `char`, and for references to
-    /// them (`&usize`, what `v.iter()` hands out), all rendered as their
-    /// `Display` text (so `{3.5}` is the text `3.5`), for an `Element`, for
-    /// an `Option` of text or of an `Element` (`None` renders nothing) and
-    /// for an iterator of elements.
+    /// Implemented for text (`&str`, `String`, `&String`, `&&str`,
+    /// `Box<str>`, `Rc<str>`, `Arc<str>`, `Cow<'_, str>`, formatted
+    /// strings), for integers, floating point numbers and `char`, and for
+    /// references to them (`&usize`, what `v.iter()` hands out), all
+    /// rendered as their `Display` text (so `{3.5}` is the text `3.5`), for
+    /// an `Element`, for an `Option` of text, of a number or `char`, or of an
+    /// `Element` (`None` renders nothing), and for an iterator of elements or
+    /// of text (one text node per item).
     ///
     /// Not children, with the way to write them:
     ///
-    /// - an `Option` of a number or `char`: `{maybe.map(|n| n.to_string())}`;
     /// - a `Vec<Element>`: `{items.into_iter()}` (or `.iter()`), because a
     ///   `Vec` is not an iterator;
-    /// - an iterator of text: map each item to an element first;
-    /// - `&String`, `&&str`, `Arc<str>`, `Rc<str>`, `Cow<str>`, `Box<str>`:
-    ///   `{s.as_str()}` or `{s.to_string()}`;
+    /// - an iterator of numbers: map each item to text or to an element.
     ///
     /// A [`State`](crate::prelude::State) of any of these is a child too:
     /// `<p>{count}</p>` with `count: State<usize>` renders the current value
     /// and renders it again when the state changes (issue #29).
-    ///
-    /// `TODO(alpha) (#31)`: the `&String`/`&&str`/smart-pointer strings and the
-    /// `Option` of a number are gaps to close or to keep deliberately, see
-    /// `docs/grammar.md` (Child types).
     ///
     /// **`bool` is not a child.** Rust has no `cond && <x />` that keeps its
     /// type, so a condition is written with `if` or with `Option`:
@@ -115,10 +123,11 @@ pub mod jsx {
     /// always inferred and never written.
     #[diagnostic::on_unimplemented(
         message = "`{Self}` cannot be rendered as a JSX child",
-        label = "this is not text, a number, an element, an `Option` of text or an element, or an iterator of elements",
-        note = "a JSX child can be text (`&str`, `String`), a number, a `char`, an element, an `Option` of text or of an element, or an iterator of elements",
+        label = "this is not text, a number, an element, an `Option` of one of those, or an iterator of elements or of text",
+        note = "a JSX child can be text (`&str`, `String`, `Cow<str>`, ..), a number, a `char`, an element, an `Option` of one of those, or an iterator of elements or of text",
         note = "`bool` is not a child; write a conditional child with `if` or `Option`, for example `{{if ready {{ <b>done</b> }} else {{ <i>wait</i> }}}}` or `{{ready.then(|| <b>done</b>)}}`",
-        note = "convert any other value to text first, for example with `.to_string()`; an `Option` of a number needs `.map(|n| n.to_string())`",
+        note = "convert any other value to text first, for example with `.to_string()`",
+        note = "a collection such as a `Vec` is not an iterator; use `.into_iter()` (or `.iter()`) to render its items",
         note = "a `State<T>` is a child only when `T` is one; for any other `T`, such as a `State<Vec<_>>`, read the value first with `.with(|value| ..)` or `.get()`"
     )]
     pub trait IntoChild<M>: sealed::SealedChild<M> {
@@ -175,6 +184,61 @@ pub mod jsx {
     displayed_children!(
         u8, u16, u32, u64, u128, usize, i8, i16, i32, i64, i128, isize, f32, f64, char,
     );
+
+    // Text the backend has no conversion for. `&str` and `String` are the
+    // backend's own (`Delegated`), so they are only text *items*.
+    macro_rules! text_children {
+        ($($text:ty),* $(,)?) => {
+            $(
+                impl sealed::SealedChild<Displayed> for $text {}
+                impl IntoChild<Displayed> for $text {
+                    fn into_child(self) -> DynamicNode {
+                        self.to_string().into_dyn_node()
+                    }
+                }
+                impl sealed::TextItem for $text {}
+            )*
+        };
+    }
+
+    text_children!(
+        &String,
+        &&str,
+        std::sync::Arc<str>,
+        std::rc::Rc<str>,
+        std::borrow::Cow<'_, str>,
+        Box<str>,
+    );
+
+    impl sealed::TextItem for &str {}
+    impl sealed::TextItem for String {}
+
+    // `Option<usize>`: a number renders as text and `None` as nothing. Only
+    // numbers, `char` and references to them: `Option<bool>` stays an error,
+    // and the backend's own `Option` of text or element is unchanged.
+    impl<T: IntoChild<Displayed>> sealed::SealedChild<OptionalDisplayed> for Option<T> {}
+    impl<T: IntoChild<Displayed>> IntoChild<OptionalDisplayed> for Option<T> {
+        fn into_child(self) -> DynamicNode {
+            match self {
+                Some(value) => value.into_child(),
+                None => DynamicNode::default(),
+            }
+        }
+    }
+
+    // `names.iter().map(|name| name.clone())`: one text node per item.
+    impl<I: Iterator<Item = T>, T: sealed::TextItem> sealed::SealedChild<TextItems> for I {}
+    impl<I: Iterator<Item = T>, T: sealed::TextItem> IntoChild<TextItems> for I {
+        fn into_child(self) -> DynamicNode {
+            // The backend's `rsx!` names these two crates unqualified.
+            use crate::__private::{dioxus_core, dioxus_signals};
+            self.map(|text| {
+                let text = text.to_string();
+                dioxus::prelude::rsx! { "{text}" }
+            })
+            .into_dyn_node()
+        }
+    }
 
     /// A value that can be used as a JSX `key`: a string or an integer.
     ///

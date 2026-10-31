@@ -10,5 +10,6 @@ fn App() -> Element {
         <li>{price}</li>
         <li>{open}</li>
         <li>{open && 1 > 0}</li>
+        <li>{Some(open)}</li>
     </ul>
 }

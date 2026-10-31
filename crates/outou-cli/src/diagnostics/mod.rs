@@ -65,10 +65,12 @@
 //!    prints; one implementation). The notes that list error codes then
 //!    name only the codes shown ([`translate::ExplanationNotes`]).
 //! 10. **The trait helps around a JSX child diagnostic** (issue #27). Under a
-//!     message ending in "cannot be rendered as a JSX child", rustc's help
-//!     that `Iterator` is not implemented for the type is dropped (for a
-//!     `Vec` it becomes "a `Vec` is not an iterator; use `.into_iter()`"),
-//!     and `Vec<Result<VNode, RenderError>>` is first named `Vec<Element>`
+//!     message ending in "cannot be rendered as a JSX child", a help that
+//!     `Iterator` is not implemented for the type is dropped (for a `Vec` it
+//!     becomes "a `Vec` is not an iterator; use `.into_iter()`"). Current
+//!     rustc no longer prints that help (the facade's `on_unimplemented`
+//!     note carries the hint), so this is kept for older output. A
+//!     `Vec<Result<VNode, RenderError>>` is first named `Vec<Element>`
 //!     so the message is not mistaken for backend vocabulary. Under any
 //!     message, a note or help that names `IntoChild<..>` (the list of
 //!     implementing types, `required for .. to implement
