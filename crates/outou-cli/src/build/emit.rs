@@ -30,6 +30,10 @@ pub struct EmitOutput {
     /// on disk. Every other produced file was left untouched, mtime
     /// included (issue #20).
     pub written_files: Vec<PathBuf>,
+    /// Rendered front-end warnings (the `outou check` text, one entry per
+    /// file that has any), in plan order. They come from the source, not
+    /// from the write, so a run that writes nothing reports them too.
+    pub warnings: Vec<String>,
 }
 
 /// Errors from [`emit`]. Every message is Outou vocabulary: a syntax
@@ -123,6 +127,9 @@ pub enum EmitError {
 pub fn emit(plan: &Plan) -> Result<EmitOutput, EmitError> {
     let mut output = EmitOutput::default();
     let mut writes: Vec<(PathBuf, Vec<u8>)> = Vec::new();
+    // Read once per emit; warnings show paths by the same rule as rustc
+    // diagnostics (relative to the current directory, else absolute).
+    let cwd = crate::diagnostics::resolve::current_dir_canonical();
 
     for unit in &plan.units {
         let source =
@@ -131,10 +138,20 @@ pub fn emit(plan: &Plan) -> Result<EmitOutput, EmitError> {
                 source,
             })?;
 
-        // `TODO(alpha) (#31)`: front-end warnings (the `<select value>`
-        // shapes Outou cannot rewrite) are not printed here; `outou check`
-        // and the language server show them (`docs/grammar.md` §5.1).
         let generated = generate_unit(unit, &source, Mode::Strict)?;
+
+        // The source is parsed a second time here (`generate_unit` parses
+        // it too); sharing the parse would mean reshaping codegen.
+        // Front-end warnings (such as the `<select value>` shapes Outou
+        // cannot rewrite) are rendered exactly as `outou check` renders
+        // them. Strict generation succeeded, so none is an error.
+        let report = crate::check::check_source(
+            &crate::diagnostics::resolve::display_path_in(cwd.as_deref(), &unit.source_file),
+            &source,
+        );
+        if !report.rendered.is_empty() {
+            output.warnings.push(report.rendered);
+        }
 
         let mut map_json = generated
             .source_map

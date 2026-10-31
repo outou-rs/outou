@@ -2,7 +2,9 @@
 //!
 //! 1. Generate Rust for the crate (or workspace) exactly like `outou
 //!    build`: always Strict, so a syntax error stops here, in Outou's own
-//!    words, before Cargo runs.
+//!    words, before Cargo runs. Front-end warnings (as `outou check`
+//!    prints them) go to standard error first, whether or not any file
+//!    was rewritten.
 //! 2. Run `cargo <sub> --message-format=json-diagnostic-rendered-ansi
 //!    <args>` and read its standard output line by line.
 //! 3. A compiler diagnostic is translated to its `.rsx` position
@@ -127,9 +129,12 @@ pub fn run(subcommand: CargoSubcommand, args: &[String]) -> ExitCode {
         }
     };
 
-    if let Err(err) = build::build(&BuildOptions::new(&parsed.manifest_dir)) {
-        eprintln!("error: {err}");
-        return ExitCode::FAILURE;
+    match build::build(&BuildOptions::new(&parsed.manifest_dir)) {
+        Ok(report) => report.print_warnings(),
+        Err(err) => {
+            eprintln!("error: {err}");
+            return ExitCode::FAILURE;
+        }
     }
 
     let mut child = match Command::new(cargo_binary())

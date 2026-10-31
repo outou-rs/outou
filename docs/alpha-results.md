@@ -1057,7 +1057,7 @@ Runtime **performance** was not measured at all. These gaps are the stated reaso
 
 Each is recorded where it belongs; none is hidden by a passing test.
 
-- `outou build` and `outou cargo` do not print front-end warnings (the `<select value>` shapes it cannot rewrite); `outou check` and the language server do (ledger row 43, `docs/grammar.md` §5.1, `TODO(alpha) (#31)`).
+- `outou build` and `outou cargo` did not print front-end warnings (the `<select value>` shapes it cannot rewrite) when this was written; fixed afterwards in #31 (ledger row 56, `docs/grammar.md` §5.1).
 - A key written as the raw identifier `r#key` is not normalised to `key` (row 41, known gap (b)).
 - In an attribute value, `bare_rust_expr` (`crates/outou-backend-dioxus/src/attribute.rs`) tests only for a top-level `;`, so an island of several statements with no `;` (a block-like expression followed by another expression) is judged a single expression and is lowered without braces. The child side was fixed in #27 (`expr_shape`, row 42); the attribute side was not, and the behavior is the same as at HEAD before A5.
 - Misuse messages can still carry the backend's vocabulary: a `State<T>` or `Signal<T>` used as a child where `T` is not renderable, and `Send`/generational-box types in rustc's error for a non-`Send` state (rows 42 and 45(b)); `IntoChild<Delegated<_>>` notes survive under plain `cargo`. The Outou wording for them is a `TODO(alpha) (#31)` that the decision keeps open.

@@ -137,6 +137,7 @@ fn run_build(manifest_dir: Option<PathBuf>) -> ExitCode {
             ExitCode::SUCCESS
         }
         Ok(report) => {
+            report.print_warnings();
             let produced = report.generated_files.len() + report.map_files.len();
             println!(
                 "outou build: wrote {} file(s), {} unchanged, removed {} stale file(s)",

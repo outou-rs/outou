@@ -129,11 +129,21 @@ fn read_unit(generated: &Path) -> Option<Unit> {
 /// A path for output: relative to the current directory when inside it
 /// (what a terminal can click), absolute otherwise.
 fn display_path(path: &Path) -> String {
-    let cwd = std::env::current_dir()
+    display_path_in(current_dir_canonical().as_deref(), path)
+}
+
+/// The canonical current directory, or `None` when it cannot be read.
+pub(crate) fn current_dir_canonical() -> Option<PathBuf> {
+    std::env::current_dir()
         .ok()
-        .and_then(|cwd| cwd.canonicalize().ok());
+        .and_then(|cwd| cwd.canonicalize().ok())
+}
+
+/// [`display_path`] with the (canonical) current directory given, so a
+/// caller showing many paths reads it once.
+pub(crate) fn display_path_in(cwd: Option<&Path>, path: &Path) -> String {
     let real = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    match cwd.as_deref().and_then(|cwd| real.strip_prefix(cwd).ok()) {
+    match cwd.and_then(|cwd| real.strip_prefix(cwd).ok()) {
         Some(relative) => relative.display().to_string(),
         None => real.display().to_string(),
     }

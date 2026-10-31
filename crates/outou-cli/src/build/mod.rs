@@ -67,6 +67,20 @@ pub struct Report {
     pub written_files: Vec<PathBuf>,
     /// Stale managed files removed from `src/.generated/`.
     pub removed_files: Vec<PathBuf>,
+    /// Rendered front-end warnings, as `outou check` prints them. Present
+    /// whether or not anything was written. Print them with
+    /// [`Report::print_warnings`].
+    pub warnings: Vec<String>,
+}
+
+impl Report {
+    /// Prints the front-end warnings to standard error, in the `file:line:col`
+    /// form `outou check` uses. Never changes an exit code.
+    pub fn print_warnings(&self) {
+        for warning in &self.warnings {
+            eprintln!("{warning}");
+        }
+    }
 }
 
 /// Errors from [`build`].
@@ -125,6 +139,7 @@ fn build_workspace(members: &[PathBuf]) -> Result<Report, BuildError> {
         aggregate.map_files.extend(report.map_files);
         aggregate.written_files.extend(report.written_files);
         aggregate.removed_files.extend(report.removed_files);
+        aggregate.warnings.extend(report.warnings);
     }
     Ok(aggregate)
 }
@@ -159,6 +174,7 @@ fn build_crate(manifest_dir: &Path) -> Result<Report, BuildError> {
         map_files: output.map_files,
         written_files: output.written_files,
         removed_files: removed,
+        warnings: output.warnings,
     })
 }
 
