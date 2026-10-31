@@ -431,6 +431,129 @@ fn a_vec_of_elements_child_is_told_to_use_into_iter() {
     assert_no_child_trait_text(&stderr);
 }
 
+/// The diagnostics of the probed error: from the first `error` line to
+/// cargo's closing `error: could not compile`. The dogfood board's own
+/// source mentions `RefCell` (`app/src/main.rsx`), so a scan that is not
+/// limited to rustc's diagnostic must not rely on the whole stderr.
+fn diagnostic_block(stderr: &str) -> &str {
+    let start = stderr
+        .find("error")
+        .expect("the probed error is in the output");
+    let end = stderr
+        .find("error: could not compile")
+        .unwrap_or(stderr.len());
+    &stderr[start..end]
+}
+
+/// Words of the state backend that must not appear in a `State` misuse
+/// message (issue #31, ledger row 59): the signal types, the read/write
+/// traits and the storage cell rustc blames for a `Send` failure. Only the
+/// diagnostic block is scanned ([`diagnostic_block`]).
+fn assert_no_state_backend_text(stderr: &str) {
+    let stderr = diagnostic_block(stderr);
+    assert_no_child_trait_text(stderr);
+    for word in [
+        "Signal",
+        "Readable",
+        "Writable",
+        "IntoDynNode",
+        "Storage",
+        "RefCell",
+        "Generational",
+        "SignalData",
+        "CopyValue",
+    ] {
+        assert!(
+            !stderr.contains(word),
+            "output must not contain {word:?}:\n{stderr}"
+        );
+    }
+}
+
+/// Issue #31: a `State<T>` whose `T` is not a child is reported in
+/// Outou's words with the `State` advice, and no signal vocabulary.
+#[test]
+#[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
+fn a_state_child_with_an_unrenderable_value_is_told_to_read_it_first() {
+    for (replacement, message) in [
+        (
+            "use_state(|| Vec::<u8>::new())",
+            "State<Vec<u8>>` cannot be rendered as a JSX child",
+        ),
+        (
+            "use_state(|| true)",
+            "State<bool>` cannot be rendered as a JSX child",
+        ),
+    ] {
+        let (stderr, position) = check_with_child(replacement);
+
+        assert!(stderr.contains(message), "expected {message} in:\n{stderr}");
+        assert!(
+            stderr.contains("a `State<T>` is a child only when `T` is one and is `Clone`"),
+            "expected the State advice in:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(".with(|value| ..)"),
+            "expected the advice in:\n{stderr}"
+        );
+        assert!(
+            stderr.contains(&position),
+            "expected {position} in:\n{stderr}"
+        );
+        assert_no_state_backend_text(&stderr);
+    }
+}
+
+/// Issue #31: a `State` captured by a closure that must be `Send` is
+/// reported as a `State`, not as the backend's storage cell.
+#[test]
+#[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
+fn a_state_moved_to_another_thread_is_reported_as_a_state() {
+    let (stderr, _) = check_with_child(
+        "let n = use_state(|| 1u32); std::thread::spawn(move || { n.set(2); }); 0",
+    );
+
+    assert!(
+        stderr.contains("a `State` cannot be sent to or shared with another thread"),
+        "expected the Outou message in:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("read the value with `.get()`"),
+        "expected the advice in:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("app/src/filter_bar.rsx:"),
+        "expected the .rsx file in:\n{stderr}"
+    );
+    assert_no_state_backend_text(&stderr);
+}
+
+/// Issue #31 (review): the same `State`, captured by a future that must be
+/// `Send` (what `tokio::spawn(async move { .. })` requires). rustc's message
+/// does not name the storage cell, only a child help does; the `State` note
+/// is still added and the backend's help is dropped.
+#[test]
+#[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
+fn a_state_moved_into_a_send_future_gets_the_state_note() {
+    let (stderr, _) = check_with_child(
+        "{ fn needs_send<F: Send>(_: F) {} let n = use_state(|| 1u32); needs_send(async move { n.set(2); }); 0 }",
+    );
+
+    assert!(
+        stderr.contains("future cannot be sent between threads safely"),
+        "expected rustc's message in:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("a `State` belongs to the component"),
+        "expected the State note in:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("read the value with `.get()`"),
+        "expected the advice in:\n{stderr}"
+    );
+    assert_no_state_backend_text(&stderr);
+}
+
 #[test]
 fn colored_progress_lines_are_removed_and_diagnostics_kept() {
     let colored = "\x1b[1m\x1b[92m   Compiling\x1b[0m dioxus-rsx v0.7.10\n\

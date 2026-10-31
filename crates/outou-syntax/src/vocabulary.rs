@@ -38,6 +38,13 @@ pub const BACKEND_MARKERS: &[&str] = &[
     "_completions",
     "typed_builder",
     "::outou::__private::",
+    // Issue #31: a `State` used where `Send` or `Sync` is required (a
+    // thread spawn) fails on the backend's storage cell; rustc names the
+    // cell, never `State`. Only names a user type would not carry: the bare
+    // `StorageEntry` is deliberately not a marker (a cache or key-value
+    // type can be called that).
+    "RefCellStorageEntryData",
+    "UnsyncStorage",
     // Issue #9 Gate 3 review, H2: an HTML element's rustdoc routinely
     // carries a "## Usage in rsx" section with a `ChildComponent {}`
     // example in backend brace syntax; neither substring was covered by
@@ -85,7 +92,17 @@ pub fn contains_backend_marker(text: &str) -> bool {
 /// comment already draws exactly this "safe to over-suppress a
 /// completion/hover, never safe to destroy a diagnostic message" line).
 /// Only [`translate_message`]'s full-message replacement is narrowed.
-pub const AMBIGUOUS_MARKERS: &[&str] = &["Properties", "ChildComponent", "Usage in rsx"];
+///
+/// `UnsyncStorage` is listed too (issue #31): it appears in many backend
+/// messages, so alone it is no reason to replace the message; the thread
+/// failure of a `State` is recognised by [`is_state_thread_message`], which
+/// also needs rustc's "between threads safely".
+pub const AMBIGUOUS_MARKERS: &[&str] = &[
+    "Properties",
+    "ChildComponent",
+    "Usage in rsx",
+    "UnsyncStorage",
+];
 
 /// Whether `text` contains a [`BACKEND_MARKERS`] substring reliable enough
 /// to justify [`translate_message`] replacing the whole message: every
@@ -117,6 +134,35 @@ const KNOWN_REWRITES: &[(&str, &str)] = &[
     ),
 ];
 
+/// What rustc prints when a `State` is captured by something that must be
+/// `Send` or `Sync` (`std::thread::spawn`, a future handed to a spawner):
+/// the backend's storage cell, never `State`.
+const STATE_STORAGE_NAMES: &[&str] = &["RefCellStorageEntryData", "UnsyncStorage"];
+
+/// The sentence rustc uses for a failed `Send` / `Sync` bound.
+const THREAD_FAILURE: &str = "between threads safely";
+
+/// The Outou wording of [`is_state_thread_message`].
+pub const STATE_THREAD_MESSAGE: &str = "a `State` cannot be sent to or shared with another thread";
+
+/// Whether `text` names the storage cell a `State` is built on.
+pub fn names_state_storage(text: &str) -> bool {
+    STATE_STORAGE_NAMES.iter().any(|name| text.contains(name))
+}
+
+/// Whether `message` is the `Send` / `Sync` failure of a `State`: rustc's
+/// "between threads safely" together with the storage cell. Both are
+/// required, so a user type that merely shares a name with one of them is
+/// never taken for it.
+pub fn is_state_thread_message(message: &str) -> bool {
+    message.contains(THREAD_FAILURE) && names_state_storage(message)
+}
+
+/// Whether `message` is a `Send` / `Sync` failure at all.
+pub fn is_thread_failure(message: &str) -> bool {
+    message.contains(THREAD_FAILURE)
+}
+
 /// Rewrites `message` if it contains backend vocabulary reliable enough to
 /// act on ([`contains_reliable_marker`], not the broader
 /// [`contains_backend_marker`] — F12), per the table above. Returns the
@@ -125,6 +171,9 @@ const KNOWN_REWRITES: &[(&str, &str)] = &[
 /// rustc/rust-analyzer diagnostics for ordinary Rust code, which need no
 /// translation, plus the deliberately excluded ambiguous-marker case.
 pub fn translate_message(message: &str) -> String {
+    if is_state_thread_message(message) {
+        return STATE_THREAD_MESSAGE.to_string();
+    }
     if !contains_reliable_marker(message) {
         return message.to_string();
     }
@@ -139,6 +188,54 @@ pub fn translate_message(message: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_storage_cell_message_is_worded_as_a_state() {
+        assert_eq!(
+            translate_message(
+                "`RefCell<StorageEntry<RefCellStorageEntryData>>` cannot be shared between threads safely"
+            ),
+            "a `State` cannot be sent to or shared with another thread"
+        );
+    }
+
+    /// Review of issue #31: a user's own type named `StorageEntry` (cache
+    /// or key-value code) must not be taken for the backend's storage cell.
+    #[test]
+    fn a_user_type_named_storage_entry_is_left_completely_untouched() {
+        for msg in [
+            "cannot find type `StorageEntry` in this scope",
+            "no method named `lenn` found for reference `&StorageEntry` in the current scope",
+            "`StorageEntry` cannot be sent between threads safely",
+            "the trait `Clone` is not implemented for `StorageEntry`",
+        ] {
+            assert_eq!(translate_message(msg), msg);
+            assert!(!contains_backend_marker(msg), "{msg}");
+        }
+    }
+
+    /// The storage cell's name alone (a mismatched `Signal<_, UnsyncStorage>`)
+    /// is not the thread failure: it is not worded as a `State`.
+    #[test]
+    fn the_storage_name_without_the_thread_failure_is_not_worded_as_a_state() {
+        let msg = "mismatched types: expected `UnsyncStorage`, found `u32`";
+        assert_eq!(translate_message(msg), msg);
+        assert!(contains_backend_marker(msg));
+    }
+
+    #[test]
+    fn the_thread_failure_is_recognised_only_with_the_storage_cell() {
+        assert!(names_state_storage(
+            "within `UnsyncStorage`, the trait `Sync` is not implemented for `RefCell<StorageEntry<RefCellStorageEntryData>>`"
+        ));
+        assert!(!names_state_storage("`StorageEntry` is not `Send`"));
+        assert!(is_state_thread_message(
+            "`RefCell<StorageEntry<RefCellStorageEntryData>>` cannot be shared between threads safely"
+        ));
+        assert!(!is_state_thread_message(
+            "`Rc<u32>` cannot be sent between threads safely"
+        ));
+    }
 
     #[test]
     fn a_plain_rustc_message_is_untouched() {

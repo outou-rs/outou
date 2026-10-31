@@ -128,7 +128,7 @@ pub mod jsx {
         note = "`bool` is not a child; write a conditional child with `if` or `Option`, for example `{{if ready {{ <b>done</b> }} else {{ <i>wait</i> }}}}` or `{{ready.then(|| <b>done</b>)}}`",
         note = "convert any other value to text first, for example with `.to_string()`",
         note = "a collection such as a `Vec` is not an iterator; use `.into_iter()` (or `.iter()`) to render its items",
-        note = "a `State<T>` is a child only when `T` is one; for any other `T`, such as a `State<Vec<_>>`, read the value first with `.with(|value| ..)` or `.get()`"
+        note = "a `State<T>` is a child only when `T` is one and is `Clone`; for any other `T`, such as a `State<Vec<_>>`, read the value first with `.with(|value| ..)` or `.get()`"
     )]
     pub trait IntoChild<M>: sealed::SealedChild<M> {
         /// The child as a backend node. Generated code only; not public API.

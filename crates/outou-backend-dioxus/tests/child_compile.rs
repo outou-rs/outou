@@ -115,6 +115,41 @@ fn main() {
 }
 "#;
 
+const REJECTED_STATE: &str = r#"use outou::prelude::*;
+
+struct Item(u32);
+
+#[component]
+fn App() -> Element {
+    let items = use_state(|| Vec::<Item>::new());
+    let open = use_state(|| true);
+    <ul>
+        <li>{items}</li>
+        <li>{open}</li>
+    </ul>
+}
+
+fn main() {
+    let _ = App;
+}
+"#;
+
+const REJECTED_THREAD: &str = r#"use outou::prelude::*;
+
+#[component]
+fn App() -> Element {
+    let count = use_state(|| 1u32);
+    std::thread::spawn(move || {
+        count.set(2);
+    });
+    <p>{count}</p>
+}
+
+fn main() {
+    let _ = App;
+}
+"#;
+
 fn generate(source: &str) -> String {
     let parsed = outou_syntax::parse(source);
     DioxusBackend
@@ -190,4 +225,45 @@ fn a_child_of_an_unsupported_type_is_reported_in_outou_words() {
         stderr.contains("`Option<bool>` cannot be rendered as a JSX child"),
         "{stderr}"
     );
+}
+
+/// Issue #31 under plain `cargo`: what the facade controls is the message
+/// and the notes of `IntoChild`; rustc still adds its own `help:` about
+/// the conditional `State` impl (it names `IntoChild<outou::jsx::Stateful<M>>`,
+/// the facade's own hidden marker), but no signal, read/write or storage
+/// vocabulary appears in the message and notes.
+#[test]
+#[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
+fn a_state_child_with_an_unrenderable_value_is_reported_in_outou_words() {
+    let output = run("outou-child-rejected-state", REJECTED_STATE, "check");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("`State<Vec<Item>>` cannot be rendered as a JSX child"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("`State<bool>` cannot be rendered as a JSX child"),
+        "{stderr}"
+    );
+    assert!(
+        stderr.contains("a `State<T>` is a child only when `T` is one and is `Clone`"),
+        "{stderr}"
+    );
+    for word in ["Signal", "Readable", "Writable", "IntoDynNode"] {
+        assert!(!stderr.contains(word), "{word}: {stderr}");
+    }
+}
+
+/// Issue #31 under plain `cargo`: a `State` captured by a `Send` closure
+/// is an error, but rustc's own wording names the backend's storage cell
+/// (ledger row 59). Only the fact that it fails is asserted; `outou cargo`
+/// rewrites it (`cargo_cli_real.rs`).
+#[test]
+#[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
+fn a_state_moved_to_a_thread_is_an_error_under_plain_cargo() {
+    let output = run("outou-child-rejected-thread", REJECTED_THREAD, "check");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(stderr.contains("between threads safely"), "{stderr}");
 }

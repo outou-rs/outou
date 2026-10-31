@@ -44,9 +44,12 @@ pub fn normalize_generated_paths(text: &str) -> String {
 }
 
 /// `text` unchanged when it has no backend vocabulary that
-/// [`vocabulary::translate_message`] would rewrite, `None` otherwise.
+/// [`vocabulary::translate_message`] would rewrite or that names the
+/// storage cell of a `State` (issue #31: a note such as "required for
+/// `&'static UnsyncStorage` to implement `Send`"), `None` otherwise.
 pub(super) fn backend_free(text: &str) -> Option<String> {
-    (vocabulary::translate_message(text) == text).then(|| text.to_string())
+    (vocabulary::translate_message(text) == text && !vocabulary::names_state_storage(text))
+        .then(|| text.to_string())
 }
 
 /// What cleaning a text needs: where file names are relative to, and how

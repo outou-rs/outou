@@ -174,6 +174,14 @@ pub fn translate(message: &CompilerMessage, resolver: &mut dyn Resolver) -> Opti
             .filter_map(|child| child_note(&message.message, child, &mut ctx)),
     );
 
+    if is_state_thread_error(message) {
+        notes.retain(|note| !note.text.starts_with(CELL_ADVICE_NOTE));
+        notes.push(Note {
+            level: "note".to_string(),
+            text: STATE_THREAD_NOTE.to_string(),
+        });
+    }
+
     let span = match &location {
         Location::Source { span, .. } => *span,
         _ => Span::new(0, 0),
@@ -361,6 +369,26 @@ const VEC_HELP: &str =
 /// They describe the facade's implementation, never the mistake, and appear
 /// under every message the trait's bound can produce (E0277, E0283).
 const CHILD_TRAIT_MARKER: &str = "IntoChild<";
+
+/// Whether `message` is the `Send` / `Sync` failure of a `State`. The
+/// storage cell is in the message itself for a closure (`thread::spawn`),
+/// but only in a child for a future (`async move { .. }`, whose message is
+/// "future cannot be sent between threads safely"). Ledger row 59.
+fn is_state_thread_error(message: &CompilerMessage) -> bool {
+    vocabulary::is_thread_failure(&message.message)
+        && (vocabulary::names_state_storage(&message.message)
+            || message
+                .children
+                .iter()
+                .any(|child| vocabulary::names_state_storage(&child.message)))
+}
+
+/// rustc's advice for the `RefCell` it blames ("use `std::sync::RwLock`");
+/// it is about the backend's cell, not something a user can act on.
+const CELL_ADVICE_NOTE: &str = "if you want to do aliasing and mutation between multiple threads";
+
+/// Added under a [`is_state_thread_error`] message.
+const STATE_THREAD_NOTE: &str = "a `State` belongs to the component that created it and is not `Send` or `Sync`; read the value with `.get()` while rendering and move that copy (if its type is `Send`) into the closure or thread instead";
 
 /// rustc spells an `Element` as its alias target. Inside a child diagnostic
 /// that is the user's `Element`; left alone, the `VNode` in it would make
@@ -646,6 +674,84 @@ mod tests {
         assert_eq!(out.notes.len(), 1, "{:?}", out.notes);
         assert_eq!(out.notes[0].level, "help");
         assert!(out.notes[0].text.contains(".into_iter()"));
+    }
+
+    #[test]
+    fn a_state_that_must_be_sync_is_named_state_and_the_cell_advice_is_dropped() {
+        let primary = span_json("src/.generated/a.rs", 4, 9, true, "").replace(
+            r#""label":null"#,
+            r#""label":"`RefCell<StorageEntry<RefCellStorageEntryData>>` cannot be shared between threads safely""#,
+        );
+        let children = r#"{"level":"help","message":"within `UnsyncStorage`, the trait `Sync` is not implemented for `RefCell<StorageEntry<RefCellStorageEntryData>>`","spans":[]},
+               {"level":"note","message":"if you want to do aliasing and mutation between multiple threads, use `std::sync::RwLock` instead","spans":[]},
+               {"level":"note","message":"required for `&'static UnsyncStorage` to implement `Send`","spans":[]},
+               {"level":"note","message":"required because it's used within this closure","spans":[]}"#;
+        let msg = with(
+            "error",
+            "`RefCell<StorageEntry<RefCellStorageEntryData>>` cannot be shared between threads safely",
+            &[primary],
+            children,
+        );
+        let out = translate(&msg, &mut Fake(Some(unit()))).unwrap();
+        assert_eq!(
+            out.diagnostic.message,
+            "a `State` cannot be sent to or shared with another thread"
+        );
+        assert_eq!(out.label, None);
+        let texts: Vec<&str> = out.notes.iter().map(|n| n.text.as_str()).collect();
+        assert_eq!(texts.len(), 2, "{texts:?}");
+        assert_eq!(texts[0], "required because it's used within this closure");
+        assert!(texts[1].starts_with("a `State` belongs to the component"));
+    }
+
+    /// Review of issue #31: `tokio::spawn(async move { .. })` blames the
+    /// future; the storage cell appears only in a child help.
+    #[test]
+    fn a_state_captured_by_a_future_that_must_be_send_gets_the_state_note() {
+        let primary = span_json("src/.generated/a.rs", 4, 9, true, "").replace(
+            r#""label":null"#,
+            r#""label":"future created by async block is not `Send`""#,
+        );
+        let children = r#"{"level":"help","message":"within `UnsyncStorage`, the trait `Sync` is not implemented for `RefCell<StorageEntry<RefCellStorageEntryData>>`","spans":[]},
+               {"level":"note","message":"if you want to do aliasing and mutation between multiple threads, use `std::sync::RwLock` instead","spans":[]}"#;
+        let msg = with(
+            "error",
+            "future cannot be sent between threads safely",
+            &[primary],
+            children,
+        );
+        let out = translate(&msg, &mut Fake(Some(unit()))).unwrap();
+        assert_eq!(
+            out.diagnostic.message,
+            "future cannot be sent between threads safely"
+        );
+        let texts: Vec<&str> = out.notes.iter().map(|n| n.text.as_str()).collect();
+        assert_eq!(texts.len(), 1, "{texts:?}");
+        assert!(texts[0].starts_with("a `State` belongs to the component"));
+    }
+
+    /// A user's own `StorageEntry` that is not `Send` is shown as rustc
+    /// says it, with no `State` advice.
+    #[test]
+    fn a_user_type_named_storage_entry_that_is_not_send_is_left_alone() {
+        let primary = span_json("src/.generated/a.rs", 4, 9, true, "");
+        let children = r#"{"level":"help","message":"the trait `Send` is not implemented for `StorageEntry`","spans":[]}"#;
+        let msg = with(
+            "error",
+            "`StorageEntry` cannot be sent between threads safely",
+            &[primary],
+            children,
+        );
+        let out = translate(&msg, &mut Fake(Some(unit()))).unwrap();
+        assert_eq!(
+            out.diagnostic.message,
+            "`StorageEntry` cannot be sent between threads safely"
+        );
+        assert!(
+            out.notes.iter().all(|n| !n.text.contains("`State`")),
+            "{:?}",
+            out.notes
+        );
     }
 
     #[test]

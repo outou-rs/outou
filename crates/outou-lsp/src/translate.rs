@@ -90,6 +90,31 @@ mod tests {
         );
     }
 
+    fn message_of(text: &str) -> String {
+        translate_diagnostic(Diagnostic {
+            range: Range::new(Position::new(0, 0), Position::new(0, 1)),
+            message: text.to_string(),
+            ..Default::default()
+        })
+        .message
+    }
+
+    #[test]
+    fn a_state_that_is_not_thread_safe_is_worded_as_a_state() {
+        assert_eq!(
+            message_of(
+                "`RefCell<StorageEntry<RefCellStorageEntryData>>` cannot be shared between threads safely"
+            ),
+            "a `State` cannot be sent to or shared with another thread"
+        );
+    }
+
+    #[test]
+    fn a_user_type_named_storage_entry_keeps_its_message() {
+        let msg = "no method named `lenn` found for reference `&StorageEntry` in the current scope";
+        assert_eq!(message_of(msg), msg);
+    }
+
     #[test]
     fn translate_diagnostic_leaves_an_untranslated_message_with_no_data() {
         let diagnostic = Diagnostic {
