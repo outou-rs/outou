@@ -551,7 +551,7 @@ The criterion is interpreted on the **write side** (file writes and mtimes), the
   deletes it after the new write resolved to the same file, so `outou build` exits 0 and the
   generated module is gone. HEAD behaves the same. Candidate fixes: skip removal when the
   `(dev, inode)` of the candidate matches a produced file, or have emit remove differently-cased
-  existing entries before writing. No code change made here.
+  existing entries before writing. No code change made here. (Fixed afterwards in #31: case folding and respelling of the kept file; NFC/NFD normalisation remains.)
 
 ### Thresholds
 
@@ -1064,7 +1064,7 @@ Each is recorded where it belongs; none is hidden by a passing test.
 - `&String`, `&&str`, `Arc<str>`, `Rc<str>`, `Cow<str>`, `Box<str>`, `Vec<Element>`, an iterator of text and `Option<number>` are not children; the diagnostics say how to write each (row 42, Gaps (b) and (d)) (fixed afterwards in #31, ledger row 57). The `IntoKey` types are `str` and integer types; `char`, `bool`, floats and a custom `Display` type are no longer keys (row 41).
 - Run-time output is not translated: a panic inside `cargo test` still prints `src/.generated/x.rs:L:C` (row 39), and plain `cargo` prints generated paths. `include_str!`-style relative paths still resolve against the generated directory (row 40). `outou cargo` is Unix-only for the alpha.
 - Editor behavior: hover, references and rename on `key` and other lowered expressions are checked by `outou-lsp`'s mapping-layer unit tests against real generated code, and the 2026-10-25 editor check did not touch them. The editor experience on the dogfood files (F17) was checked by hand in VS Code on 2026-10-25 (below); the related-information fields of the `IntoChild` error were not looked at there (row 42). The keyword-named attribute rename/references gap (row 29, now `TODO(alpha) (#31)`) is unchanged.
-- Existing bug, recorded in A3 and not fixed: on a case-insensitive filesystem, `outou build`'s `clean_stale` deletes a generated file whose only change is its case, and exits 0 (recorded under "(f)" in A1 above, from issue #20).
+- Existing bug, recorded in A3 and not fixed: on a case-insensitive filesystem, `outou build`'s `clean_stale` deletes a generated file whose only change is its case, and exits 0 (recorded under "(f)" in A1 above, from issue #20). Fixed afterwards in #31 (case folding; NFC/NFD remains).
 - Flaky tests, as observed during the A5 work: `outou-cli`'s formatter test that runs a generated shell script as `rustfmt` can fail with `ETXTBSY` (text file busy), and the three `outou-syntax` timing tests (`*_in_linear_time` in `crates/outou-syntax/tests/item_recovery.rs`) can fail under load, since they assert a fixed wall-clock bound. This was reported by the work's reviewers; I did not reproduce either and they are not recorded elsewhere in the repository.
 
 ### Browser check of the migrated application (2026-10-24)

@@ -264,12 +264,10 @@ Semantic tokens/rename/references (issue #14 review):
   length-mismatched (`docs/backend-leakage.md` row 29, ADR 0013). No
   text-only fallback is implemented for this narrower shape.
   `TODO(alpha) (#31)`.
-- **`prepareRename` on a closing tag's own name returns the opening
-  tag's range**, not the closing tag's (`crate::mapping::generated_location_to_source`'s
-  multi-source rule always resolves to the first source, shared with
-  hover/definition) — the request is still answered correctly in
-  substance, just highlighted at the wrong end of the element.
-  `TODO(alpha) (#31)` in `crate::rename::translate_prepare_rename_response`.
+- **`prepareRename` on a closing tag's own name answers with the closing
+  tag's range.** The request's `.rsx` cursor picks, among the sources of the
+  generated name (`crate::rename::translate_prepare_rename_response`), the
+  one that contains it; the rename itself still edits both tags.
 - **`.rsx` URIs are normalized on disk, not per RFC 3986.** Every
   internal key is a lexical string, so the editor's URI is canonicalized at
   the boundary (`crate::uri::normalize_file_uri`: percent-decoding,

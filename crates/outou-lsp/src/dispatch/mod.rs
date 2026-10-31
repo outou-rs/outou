@@ -79,6 +79,10 @@ enum PendingKind {
     /// (`crate::rename::translate_prepare_rename_response`).
     PrepareRename {
         generated_uri: lsp_types::Uri,
+        /// The `.rsx` position the editor asked about, so a name that
+        /// maps to both an opening and a closing tag answers with the
+        /// tag the cursor is on.
+        rsx_cursor: lsp_types::Position,
     },
     /// `textDocument/rename`, forwarded at the mapped generated position;
     /// the resulting `WorkspaceEdit` is translated back

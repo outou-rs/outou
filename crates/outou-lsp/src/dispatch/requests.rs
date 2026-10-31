@@ -404,8 +404,11 @@ fn dispatch_prepare_rename_request(state: &mut State, connection: &Connection, r
             }
         }
     }
-    forward_position_request(state, connection, req, |uri, _, _| {
-        PendingKind::PrepareRename { generated_uri: uri }
+    forward_position_request(state, connection, req, |uri, _, rsx_cursor| {
+        PendingKind::PrepareRename {
+            generated_uri: uri,
+            rsx_cursor,
+        }
     });
 }
 

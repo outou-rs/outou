@@ -61,21 +61,18 @@ pub struct UnmappableRename {
 /// its `range` mapped back to `.rsx` coordinates, or the whole response
 /// replaced with `null` (not renameable here) if that position has no
 /// source at all.
-/// `TODO(alpha) (#31)` (issue #14 review, MEDIUM-8): [`mapping::generated_location_to_source`]
-/// always resolves a multi-source mapping to its *first* source (the
-/// opening tag, ADR 0007's own documented behavior, shared with hover/
-/// definition). A `prepareRename` request made with the cursor on a
-/// *closing* tag name is still forwarded and mapped correctly on the way
-/// out (`rsx_position_to_generated` needs no special case, see this
-/// module's own doc comment), but the range this function then returns
-/// always highlights the *opening* tag, never the closing one the cursor
-/// actually sat on. Not fixed here: doing so would need
-/// `generated_location_to_source` (or a new single-location variant) to
-/// take the originating `.rsx` position as a hint for which source to
-/// prefer, which no other caller of that shared function currently needs.
+///
+/// A name that maps to both an opening and a closing tag resolves, in
+/// [`mapping::generated_location_to_source`], to the first (opening) one.
+/// `cursor`, the `.rsx` position the editor asked about, picks the source
+/// span that contains it instead, so a request made on a closing tag's name
+/// answers with that name's range (the rename itself still edits both
+/// tags, see this module's doc comment). When no source contains the
+/// cursor the first source stays the answer.
 pub fn translate_prepare_rename_response(
     workspace: &Workspace,
     generated_uri: &lsp_types::Uri,
+    cursor: lsp_types::Position,
     value: &mut Value,
 ) {
     if value.is_null() {
@@ -85,9 +82,29 @@ pub fn translate_prepare_rename_response(
         return;
     };
     match mapping::generated_location_to_source(workspace, generated_uri, range) {
-        MappedLocation::Source { range, .. } => set_range(value, range),
+        MappedLocation::Source { range: first, .. } => {
+            let range =
+                source_range_at_cursor(workspace, generated_uri, range, cursor).unwrap_or(first);
+            set_range(value, range);
+        }
         MappedLocation::Unmapped | MappedLocation::Unchanged => *value = Value::Null,
     }
+}
+
+/// The source range, among every source of the generated `range`, that
+/// contains `cursor` (end inclusive, so a caret right after the name
+/// counts). `None` when no source does.
+fn source_range_at_cursor(
+    workspace: &Workspace,
+    generated_uri: &lsp_types::Uri,
+    range: lsp_types::Range,
+    cursor: lsp_types::Position,
+) -> Option<lsp_types::Range> {
+    // The source URI is ignored: every unit registers exactly one source.
+    mapping::generated_range_to_all_sources(workspace, generated_uri, range)?
+        .into_iter()
+        .map(|(_, source_range)| source_range)
+        .find(|source_range| source_range.start <= cursor && cursor <= source_range.end)
 }
 
 fn extract_range(value: &Value) -> Option<lsp_types::Range> {
@@ -465,28 +482,59 @@ mod tests {
         assert_eq!(changes[0]["edits"].as_array().unwrap().len(), 2);
     }
 
-    #[test]
-    fn translate_prepare_rename_response_maps_a_bare_range() {
-        let (workspace, rsx_uri, generated_uri) = sample_workspace();
-        let mut value = json!({
+    /// The text of the first line of `rsx_uri`'s document inside `value`'s
+    /// (bare) range.
+    fn prepared_text(workspace: &Workspace, rsx_uri: &lsp_types::Uri, value: &Value) -> String {
+        let start = value["start"]["character"].as_u64().unwrap() as usize;
+        let end = value["end"]["character"].as_u64().unwrap() as usize;
+        let doc = workspace.rsx.get(rsx_uri.as_str()).unwrap();
+        doc.line_index.text()[start..end].to_string()
+    }
+
+    fn generated_name_range() -> Value {
+        json!({
             "start": {"line": 0, "character": 8},
             "end": {"line": 0, "character": 16}
+        })
+    }
+
+    #[test]
+    fn translate_prepare_rename_response_maps_a_bare_range_from_the_opening_tag() {
+        let (workspace, rsx_uri, generated_uri) = sample_workspace();
+        let mut value = generated_name_range();
+        // Cursor inside the opening tag's name (columns 10..18).
+        let cursor = lsp_types::Position::new(0, 12);
+        translate_prepare_rename_response(&workspace, &generated_uri, cursor, &mut value);
+        assert_eq!(value["start"]["character"], 10);
+        assert_eq!(prepared_text(&workspace, &rsx_uri, &value), "Greeting");
+    }
+
+    /// Issue #31: a cursor on the closing tag's name used to get the
+    /// opening tag's range back.
+    #[test]
+    fn translate_prepare_rename_response_answers_with_the_closing_tag_when_the_cursor_is_on_it() {
+        let (workspace, rsx_uri, generated_uri) = sample_workspace();
+        let mut value = generated_name_range();
+        // Cursor inside the closing tag's name (columns 23..31).
+        let cursor = lsp_types::Position::new(0, 25);
+        translate_prepare_rename_response(&workspace, &generated_uri, cursor, &mut value);
+        assert_eq!(value["start"]["character"], 23, "{value}");
+        assert_eq!(value["end"]["character"], 31, "{value}");
+        assert_eq!(prepared_text(&workspace, &rsx_uri, &value), "Greeting");
+    }
+
+    #[test]
+    fn translate_prepare_rename_response_keeps_the_placeholder_and_moves_only_the_range() {
+        let (workspace, _rsx_uri, generated_uri) = sample_workspace();
+        let mut value = json!({
+            "range": generated_name_range(),
+            "placeholder": "Greeting"
         });
-        translate_prepare_rename_response(&workspace, &generated_uri, &mut value);
-        // Known limitation (issue #14 review, MEDIUM-8, see this
-        // function's own `TODO(alpha) (#31)`): reverse-maps to the first
-        // (opening tag) source per `generated_location_to_source`'s
-        // multi-source rule, *even if* the original request's cursor was
-        // on the closing tag — this test only exercises the generated
-        // position both origins share, not a distinction this function
-        // is able to make.
-        let start = value["start"]["character"].as_u64().unwrap();
-        let end = value["end"]["character"].as_u64().unwrap();
-        let doc = workspace.rsx.get(rsx_uri.as_str()).unwrap();
-        assert_eq!(
-            &doc.line_index.text()[start as usize..end as usize],
-            "Greeting"
-        );
+        // Cursor at the end of the closing tag's name (a caret right after it).
+        let cursor = lsp_types::Position::new(0, 31);
+        translate_prepare_rename_response(&workspace, &generated_uri, cursor, &mut value);
+        assert_eq!(value["range"]["start"]["character"], 23, "{value}");
+        assert_eq!(value["placeholder"], "Greeting");
     }
 
     #[test]
@@ -496,7 +544,8 @@ mod tests {
             "start": {"line": 0, "character": 0},
             "end": {"line": 0, "character": 3}
         });
-        translate_prepare_rename_response(&workspace, &generated_uri, &mut value);
+        let cursor = lsp_types::Position::new(0, 0);
+        translate_prepare_rename_response(&workspace, &generated_uri, cursor, &mut value);
         assert!(value.is_null());
     }
 

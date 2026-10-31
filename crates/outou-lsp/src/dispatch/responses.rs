@@ -213,9 +213,15 @@ fn map_pending_result(
             response::sanitize_hover(workspace, &generated_uri, &mut value)
         }
         PendingKind::Definition => response::map_definition_response(workspace, &mut value),
-        PendingKind::PrepareRename { generated_uri } => {
-            crate::rename::translate_prepare_rename_response(workspace, &generated_uri, &mut value)
-        }
+        PendingKind::PrepareRename {
+            generated_uri,
+            rsx_cursor,
+        } => crate::rename::translate_prepare_rename_response(
+            workspace,
+            &generated_uri,
+            rsx_cursor,
+            &mut value,
+        ),
         PendingKind::Rename => {
             if let Err(refusal) = crate::rename::translate_workspace_edit(workspace, &mut value) {
                 return Err(rename_refusal_error(refusal));
@@ -864,6 +870,7 @@ mod tests {
                 client_id: RequestId::from(1),
                 kind: PendingKind::PrepareRename {
                     generated_uri: generated_uri.clone(),
+                    rsx_cursor: lsp_types::Position::new(0, 0),
                 },
                 epoch: 0,
                 rsx_document: Some((rsx_uri_string, 0)),

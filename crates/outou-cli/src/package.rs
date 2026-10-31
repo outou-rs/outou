@@ -561,6 +561,40 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
+    /// On a case-insensitive filesystem a rebuild keeps the old spelling of
+    /// a generated file whose name changed only in case; the build must
+    /// respell it so the exact-match stale walk finds nothing.
+    #[test]
+    fn a_case_only_respelled_generated_file_is_not_reported_stale_after_a_rebuild() {
+        let dir = copy_fixture("mixed");
+        build::build(&BuildOptions::new(&dir)).expect("mixed builds");
+        let generated = dir.join("src/.generated");
+        if !clean::fs_is_case_insensitive(&generated) {
+            eprintln!("skipped: the temp directory's filesystem is case-sensitive");
+            fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        let target = clean::walk_managed_files(&generated)
+            .unwrap()
+            .into_iter()
+            .find(|path| path.to_string_lossy().ends_with(".rs"))
+            .expect("a generated .rs file");
+        let name = target.file_name().unwrap().to_string_lossy().into_owned();
+        let upper = format!("{}{}", name[..1].to_uppercase(), &name[1..]);
+        let respelled = target.with_file_name(&upper);
+        if respelled.file_name() == target.file_name() {
+            fs::remove_dir_all(&dir).ok();
+            return;
+        }
+        fs::rename(&target, &respelled).unwrap();
+
+        build::build(&BuildOptions::new(&dir)).expect("rebuild succeeds");
+        let report = check_generated(&BuildOptions::new(&dir)).expect("checking succeeds");
+
+        assert!(report.is_clean(), "{report:?}");
+        fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn a_stale_generated_file_left_over_from_a_removed_module_is_reported() {
         let dir = copy_fixture("mixed");
