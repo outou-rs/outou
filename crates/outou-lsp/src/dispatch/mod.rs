@@ -24,10 +24,12 @@ mod notifications;
 mod progress_tests;
 mod requests;
 mod responses;
+mod watched_files;
 
 pub(crate) use notifications::dispatch_client_notification;
 pub(crate) use requests::{dispatch_client_request, fail_all_pending};
 pub(crate) use responses::{dispatch_client_response, dispatch_ra_message};
+pub(crate) use watched_files::register_watchers;
 
 /// One rust-analyzer request this server is waiting on a response for.
 struct Pending {
@@ -146,6 +148,10 @@ pub(crate) struct State {
     /// (LSP has no single top-level flag for this; it is declared
     /// per-capability).
     pub(crate) client_supports_dynamic_registration: bool,
+    /// Whether the editor advertised
+    /// `workspace.didChangeWatchedFiles.dynamicRegistration`: only then can
+    /// the server ask it to watch files (`watched_files::register_watchers`).
+    pub(crate) client_supports_watched_files_registration: bool,
     /// The non-`ok` rust-analyzer health already announced to the editor
     /// (`crate::status`); `None` until one is, and again after `ok`.
     pub(crate) notified_health: Option<crate::status::Health>,
@@ -186,6 +192,7 @@ impl State {
             client_supports_configuration: false,
             client_supports_work_done_progress: false,
             client_supports_dynamic_registration: false,
+            client_supports_watched_files_registration: false,
             notified_health: None,
             progress_tokens: crate::status::ProgressTokens::default(),
             epoch: 0,

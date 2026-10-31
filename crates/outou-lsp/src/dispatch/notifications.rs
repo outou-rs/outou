@@ -87,6 +87,9 @@ pub(crate) fn dispatch_client_notification(
                 }
             }
         }
+        "workspace/didChangeWatchedFiles" => {
+            super::watched_files::handle_did_change_watched_files(state, connection, note.params);
+        }
         "$/cancelRequest" => handle_cancel_request(state, note.params),
         "window/workDoneProgress/cancel" => {
             let mut params = note.params;
@@ -124,8 +127,19 @@ fn handle_rsx_close(state: &mut State, connection: &Connection, uri: &lsp_types:
     let Some(path) = uri::outou_uri_str_to_path(&rsx_uri_string) else {
         return;
     };
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return;
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            forget_closed_deleted(state, connection, &rsx_uri_string);
+            return;
+        }
+        Err(e) => {
+            // Not readable now: at least stop treating the stale buffer as
+            // an open editor document.
+            eprintln!("outou-lsp: reading {}: {e}", path.display());
+            reset_version(state, &rsx_uri_string);
+            return;
+        }
     };
     match state.workspace.as_mut() {
         Some(workspace) => {
@@ -140,6 +154,27 @@ fn handle_rsx_close(state: &mut State, connection: &Connection, uri: &lsp_types:
                 .insert(rsx_uri_string.clone(), documents::RsxDocument::new(text, 0));
             diagnostics::publish_degraded(connection, &state.degraded_docs, &rsx_uri_string);
         }
+    }
+}
+
+/// A document deleted from disk while open, now closed: the same handling
+/// as a watched deletion, or, in degraded mode, just dropping it.
+fn forget_closed_deleted(state: &mut State, connection: &Connection, rsx_uri: &str) {
+    if state.workspace.is_some() {
+        super::watched_files::handle_deleted_after_close(state, connection, rsx_uri);
+    } else {
+        state.degraded_docs.remove(rsx_uri);
+        diagnostics::clear_for_rsx(connection, rsx_uri);
+    }
+}
+
+fn reset_version(state: &mut State, rsx_uri: &str) {
+    let doc = match state.workspace.as_mut() {
+        Some(workspace) => workspace.rsx.get_mut(rsx_uri),
+        None => state.degraded_docs.get_mut(rsx_uri),
+    };
+    if let Some(doc) = doc {
+        doc.version = 0;
     }
 }
 
@@ -278,7 +313,7 @@ fn notify_save_blocked_by_another_file(
 /// reparses it stand-alone) and republishes its diagnostics. Shared by
 /// `didOpen` and `didChange`: both are, from the compiler's point of
 /// view, "here is this file's current text".
-fn handle_rsx_change(
+pub(super) fn handle_rsx_change(
     state: &mut State,
     connection: &Connection,
     rsx_uri_string: String,
@@ -336,7 +371,7 @@ fn handle_rsx_change(
 /// resyncs rust-analyzer's overlays for every unit (new ones get
 /// `didOpen`, previously known ones get a full-text `didChange`), and
 /// republishes diagnostics for every known `.rsx` file.
-fn replan_and_resync(
+pub(super) fn replan_and_resync(
     state: &mut State,
     connection: &Connection,
     rsx_uri_string: String,
@@ -352,11 +387,7 @@ fn replan_and_resync(
     // needs each previously-open unit's *last-sent* version to keep
     // counting up rather than resetting to 1, which rust-analyzer is
     // free to treat as a stale/duplicate update after N edits.
-    let previous_ra_versions: HashMap<String, i32> = workspace
-        .generated
-        .iter()
-        .map(|(uri, unit)| (uri.clone(), unit.ra_version))
-        .collect();
+    let previous_ra_versions = last_sent_ra_versions(workspace);
 
     if let Err(e) = workspace.replan(&rsx_uri_string, &new_text) {
         eprintln!("outou-lsp: re-planning after a module declaration change: {e}");
@@ -400,7 +431,31 @@ fn replan_and_resync(
     if let Some(doc) = workspace.rsx.get_mut(&rsx_uri_string) {
         doc.version = version;
     }
+    resync_after_replan(state, connection, &previous_ra_versions);
+}
 
+/// Each generated unit's last-sent rust-analyzer document version, to be
+/// captured before a re-plan (see [`replan_and_resync`]).
+pub(super) fn last_sent_ra_versions(workspace: &documents::Workspace) -> HashMap<String, i32> {
+    workspace
+        .generated
+        .iter()
+        .map(|(uri, unit)| (uri.clone(), unit.ra_version))
+        .collect()
+}
+
+/// The part of a successful re-plan that follows `Workspace::replan`:
+/// resyncs rust-analyzer's overlays with `previous_ra_versions` (from
+/// [`last_sent_ra_versions`], captured before the re-plan) and
+/// republishes diagnostics for every known `.rsx` file.
+pub(super) fn resync_after_replan(
+    state: &mut State,
+    connection: &Connection,
+    previous_ra_versions: &HashMap<String, i32>,
+) {
+    let Some(workspace) = state.workspace.as_mut() else {
+        return;
+    };
     if let Some(ra) = &state.ra {
         let now_open: HashSet<String> = workspace.generated.keys().cloned().collect();
         for generated_uri in previous_ra_versions.keys() {

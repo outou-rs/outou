@@ -216,6 +216,7 @@ since it is read-only. See
 | `src/dispatch/requests.rs` | Requests the editor sends this server: position mapping, the local completion/hover split, `$/cancelRequest` rewriting. |
 | `src/dispatch/responses.rs` | Everything coming back from rust-analyzer: its responses (mapped back), its own requests to the editor, its notifications. |
 | `src/dispatch/notifications.rs` | `.rsx` `didOpen`/`didChange`/`didSave`/`didClose` handling, single-unit regeneration and crate-wide re-planning. |
+| `src/dispatch/watched_files.rs` | `workspace/didChangeWatchedFiles`: registers `**/*.rsx` and `**/Cargo.toml` watchers when the client supports dynamic registration; closed `.rsx` files changed, created or deleted outside the editor are re-read (open buffers win), a manifest change or a created/deleted file re-plans. |
 | `src/complete.rs` | Outou-native tag-name/attribute-name completion (and the hover-side tag-name classifier), answered without ever asking rust-analyzer. |
 | `src/ra.rs` | Spawns rust-analyzer and speaks JSON-RPC to it (reuses `lsp_server::Message`'s own framing for that side too); bounded waits for its `initialize`/`shutdown` responses. |
 | `src/documents/mod.rs` | Re-exports; module doc for the split below. |
@@ -234,6 +235,7 @@ since it is read-only. See
 | `src/semantic_tokens/outou_tokens.rs` | The pure AST walk producing Outou's own component/element/attribute/event/text tokens. |
 | `src/rename.rs` | `textDocument/rename`/`prepareRename`: `WorkspaceEdit` translation, refusal policy. |
 | `src/references.rs` | `textDocument/references`: `Location[]` translation (drops rather than refuses on an unmappable entry). |
+| `tests/watched_files.rs` | Drives the real binary (no rust-analyzer) through registration and external create/change/delete of closed `.rsx` files. |
 | `tests/gate3.rs` | End-to-end Gate 3 test, driving `spikes/rust-analyzer/client/outou-lsp-client.mjs` against a fresh temporary copy of `examples/phase0-app` per probe (never the repository tree). Ignored by default; run explicitly: `cargo test -p outou-lsp --test gate3 -- --ignored --nocapture`. |
 
 ## Known limitations

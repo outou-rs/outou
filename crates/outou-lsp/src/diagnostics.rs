@@ -139,6 +139,11 @@ fn sanitize_related_information(
         .collect()
 }
 
+/// Clears whatever is displayed for `rsx_uri_string` (its file was deleted).
+pub fn clear_for_rsx(connection: &Connection, rsx_uri_string: &str) {
+    publish(connection, rsx_uri_string, Vec::new(), 0);
+}
+
 /// Publishes Outou syntax diagnostics for a `.rsx` file in degraded mode
 /// (no crate root, so there is no generated unit or registry to merge
 /// against).

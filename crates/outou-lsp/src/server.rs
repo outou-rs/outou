@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 
 use crate::dispatch::{
     dispatch_client_notification, dispatch_client_request, dispatch_client_response,
-    dispatch_ra_message, State,
+    dispatch_ra_message, register_watchers, State,
 };
 use crate::documents::{LoadOutcome, Workspace};
 use crate::editor_uris::{spawn_outbound, EditorUris};
@@ -93,6 +93,7 @@ fn main_loop(
         sender: out,
         receiver: connection.receiver.clone(),
     };
+    register_watchers(&mut state, &proxy);
     let result = serve(connection, &proxy, &uris, &mut state);
     drop(proxy);
     let _ = forwarder.join();
@@ -171,6 +172,10 @@ fn apply_client_capabilities(state: &mut State, params: &InitializeParams) {
         .and_then(Value::as_bool)
         .unwrap_or(false);
     state.client_supports_dynamic_registration = any_dynamic_registration(&capabilities);
+    state.client_supports_watched_files_registration = capabilities
+        .pointer("/workspace/didChangeWatchedFiles/dynamicRegistration")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
 }
 
 /// Whether `value` contains a `"dynamicRegistration": true` anywhere,

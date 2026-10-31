@@ -141,9 +141,21 @@ impl Workspace {
     /// transactional re-plan (compute the new state, then swap it in only
     /// on success) is the eventual fix.
     pub fn replan(&mut self, rsx_uri: &str, override_text: &str) -> Result<(), LoadError> {
-        let overlay = self.build_overlay(rsx_uri, override_text);
+        let overlay = self.build_overlay(Some((rsx_uri, override_text)));
+        self.replan_with_overlay(&overlay)
+    }
 
-        match plan::resolve_with_overlay(&self.manifest_dir, &overlay)? {
+    /// [`Self::replan`] without a triggering edit: re-resolves the crate
+    /// from disk (and every open buffer), for a change the editor did not
+    /// make itself (a created or deleted `.rsx` file, a changed
+    /// `Cargo.toml`; `workspace/didChangeWatchedFiles`).
+    pub fn replan_from_disk(&mut self) -> Result<(), LoadError> {
+        let overlay = self.build_overlay(None);
+        self.replan_with_overlay(&overlay)
+    }
+
+    fn replan_with_overlay(&mut self, overlay: &HashMap<PathBuf, String>) -> Result<(), LoadError> {
+        match plan::resolve_with_overlay(&self.manifest_dir, overlay)? {
             Resolved::Degraded { .. } => {
                 // The edit made the crate root itself disappear (or
                 // ambiguous); there is nothing left to plan. Keep the
@@ -160,7 +172,7 @@ impl Workspace {
                     .map(|(uri, doc)| (uri, doc.version))
                     .collect();
                 for unit in &plan.units {
-                    match overlay_text_for(&overlay, &unit.source_file) {
+                    match overlay_text_for(overlay, &unit.source_file) {
                         Some(text) => self.load_unit_with_text(unit, text)?,
                         None => self.load_unit(unit)?,
                     }
@@ -178,20 +190,16 @@ impl Workspace {
     /// Builds the buffer overlay a re-plan should use: every currently
     /// *open* `.rsx` document's text (`RsxDocument::version != 0` — see
     /// that field's own doc comment: `0` means "read from disk, never
-    /// opened"), plus `rsx_uri`'s own `override_text`, which is not yet
+    /// opened"), plus `edit`'s `(rsx_uri, override_text)`, which is not yet
     /// reflected in `self.rsx` at the point [`Self::replan`] is called
     /// (the caller passes the edit's new text before storing it). Keys
     /// are canonicalized where possible so they line up with
     /// `outou_modules::resolve_with_overlay`'s own lookup identity.
-    /// `TODO(alpha) (#31)` (issue #9 Gate 3 review, HIGH-2's SKIP item): only
-    /// currently *open* documents (`RsxDocument::version != 0`) are
-    /// overlaid; a file edited by some other tool while this server is
-    /// running, without ever being opened in this editor session, is
-    /// still read from disk. A full workspace virtual-filesystem
-    /// abstraction (watching every `.rsx` file for external changes, not
-    /// only editor buffers) needs `workspace/didChangeWatchedFiles`, which is
-    /// not implemented.
-    fn build_overlay(&self, rsx_uri: &str, override_text: &str) -> HashMap<PathBuf, String> {
+    /// Only currently *open* documents (`RsxDocument::version != 0`) are
+    /// overlaid; every other file is read from disk, which is current
+    /// because the editor reports external changes through
+    /// `workspace/didChangeWatchedFiles` (`crate::dispatch::watched_files`).
+    fn build_overlay(&self, edit: Option<(&str, &str)>) -> HashMap<PathBuf, String> {
         let mut overlay = HashMap::new();
         for (doc_uri, doc) in &self.rsx {
             if doc.version != 0 {
@@ -203,8 +211,10 @@ impl Workspace {
                 }
             }
         }
-        if let Some(path) = uri::outou_uri_str_to_path(rsx_uri) {
-            overlay.insert(canonical_or_lexical(&path), override_text.to_string());
+        if let Some((rsx_uri, override_text)) = edit {
+            if let Some(path) = uri::outou_uri_str_to_path(rsx_uri) {
+                overlay.insert(canonical_or_lexical(&path), override_text.to_string());
+            }
         }
         overlay
     }
@@ -238,6 +248,18 @@ impl Workspace {
         );
         self.registry = std::mem::take(&mut self.registry).with_map(generated.source_map);
         Ok(())
+    }
+
+    /// Forgets `rsx_uri` after its file was deleted from disk: removes the
+    /// document and its generated unit. Returns the removed unit's
+    /// generated URI (rust-analyzer still has it open), if there was one.
+    /// Source-map entries for it stay in the registry until the next
+    /// re-plan; nothing maps to them once the unit is gone.
+    pub fn remove_deleted(&mut self, rsx_uri: &str) -> Option<String> {
+        self.rsx.remove(rsx_uri);
+        let generated_uri = self.rsx_to_generated.remove(rsx_uri)?;
+        self.generated.remove(&generated_uri);
+        Some(generated_uri)
     }
 
     /// Regenerates the single unit for `rsx_uri` from `new_text`, updating
