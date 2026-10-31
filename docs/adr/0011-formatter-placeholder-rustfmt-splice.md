@@ -42,6 +42,10 @@ Two invariants keep this safe:
 
 The Consequences bullet on the two callers says `outou-lsp` answers with no edits on every failure. One exception was added with the formatting deadline (issue #31): when `textDocument/formatting` exceeds its 10 second budget, `rustfmt` is killed and the request is answered with an LSP error, `RequestFailed` (-32803) "Outou formatting timed out". Unlike a missing `rustfmt` or a syntax error, the user asked and nothing happened for a reason they can act on (a very large file, a stuck `rustfmt`). The library reports it as `FormatError::TimedOut`; `outou fmt` sets no deadline and never produces it.
 
+## Amendment (2026-10-31, timeout answers null)
+
+The amendment above was reversed the same day. When `textDocument/formatting` exceeds its 10 second budget, `rustfmt` is still killed, but `outou-lsp` now answers `null` (no edits) and logs one line to stderr with the file URI and the budget, instead of a `RequestFailed` (-32803) error response. An error popup on every format-on-save is worse than doing nothing, which matches this ADR's original rule that `outou-lsp` answers with no edits on every failure; there is no exception any more. `FormatError::TimedOut` and the `outou fmt` behaviour are unchanged.
+
 ## Amendment (2026-10-31, project settings)
 
 Issue #31 closed the "formatter ignores the project" gaps without changing the placeholder splice scheme above. `format_source` first resolves one `Ctx` (`crates/outou-fmt/src/ctx.rs`) and passes it down the pipeline:

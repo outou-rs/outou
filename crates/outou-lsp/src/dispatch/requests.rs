@@ -52,8 +52,8 @@ pub(crate) fn dispatch_client_request(state: &mut State, connection: &Connection
 /// other request also goes through, but within a wall-clock budget
 /// ([`FORMATTING_TIMEOUT`]) covering every `rustfmt` process the file
 /// needs (one per file plus one per expression island). Past it the
-/// running `rustfmt` is killed and the request is answered with an error
-/// response ("formatting timed out") instead of blocking the server
+/// running `rustfmt` is killed and the request is answered with `null`
+/// (no edits, and a line on stderr) instead of blocking the server
 /// indefinitely. A worker thread is deliberately not used in the alpha:
 /// formatting is user-initiated, its typical cost is well under a second
 /// (~0.18s for `examples/phase0-app/src/components.rsx`) and the worst case
@@ -70,9 +70,8 @@ pub(crate) fn dispatch_client_request(state: &mut State, connection: &Connection
 /// missing or failing, as opposed to the file's own syntax error) is
 /// still logged to this server's stderr rather than silently dropped, so
 /// a misconfigured environment is diagnosable instead of just quietly
-/// never formatting anything. The one exception is a timeout, which is an
-/// error response: the user asked and nothing happened for a reason they
-/// can act on (a very large file, a stuck `rustfmt`).
+/// never formatting anything. A timeout is treated the same way: `null`
+/// plus a stderr line naming the file and the budget (ADR 0011).
 fn dispatch_formatting_request(state: &State, connection: &Connection, req: Request) {
     answer_formatting_request(
         state,
@@ -122,14 +121,7 @@ fn answer_formatting_request(
         }
         Err(outou_fmt::FormatError::TimedOut) => {
             eprintln!("outou-lsp: formatting {rsx_uri_string} timed out after {timeout:?}");
-            let _ = connection.sender.send(Message::Response(Response {
-                id: client_id,
-                response_result: Err(ResponseError {
-                    code: lsp_server::ErrorCode::RequestFailed as i32,
-                    message: "Outou formatting timed out".to_string(),
-                    data: None,
-                }),
-            }));
+            respond_null(connection, client_id);
             return;
         }
         Err(err) => {
@@ -853,10 +845,11 @@ mod tests {
     }
 
     /// A `rustfmt` that never finishes must not hold the server loop past
-    /// the budget: the request gets an error response instead.
+    /// the budget: the request is answered with `null` (no edits), not an
+    /// error, so a format-on-save never shows an error popup.
     #[cfg(unix)]
     #[test]
-    fn formatting_request_times_out_with_an_error_response_when_rustfmt_hangs() {
+    fn formatting_request_that_times_out_answers_null() {
         use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("outou-lsp-slow-fmt-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -877,9 +870,12 @@ mod tests {
         let (connection, client) = Connection::memory();
         let started = std::time::Instant::now();
         // Retry on ETXTBSY: a concurrent fork can briefly keep the freshly
-        // written script busy; that shows up as a null response, not a timeout.
+        // written script busy; that also answers null, but immediately, so
+        // only an attempt that took at least the budget counts as a timeout.
+        let budget = std::time::Duration::from_millis(300);
         let mut response = None;
         for _ in 0..20 {
+            let attempt_started = std::time::Instant::now();
             answer_formatting_request(
                 &state,
                 &connection,
@@ -889,7 +885,7 @@ mod tests {
                     params: json!({ "textDocument": { "uri": "file:///app.rsx" } }),
                 },
                 &options,
-                std::time::Duration::from_millis(300),
+                budget,
             );
             let Message::Response(r) = client
                 .receiver
@@ -898,7 +894,7 @@ mod tests {
             else {
                 panic!("expected a response");
             };
-            if r.response_result.is_err() {
+            if attempt_started.elapsed() >= budget {
                 response = Some(r);
                 break;
             }
@@ -907,12 +903,11 @@ mod tests {
         let elapsed = started.elapsed();
         std::fs::remove_dir_all(&dir).ok();
 
-        let error = response
-            .expect("an error response")
+        let result = response
+            .expect("a response after the budget elapsed")
             .response_result
-            .unwrap_err();
-        assert_eq!(error.code, lsp_server::ErrorCode::RequestFailed as i32);
-        assert_eq!(error.message, "Outou formatting timed out");
+            .expect("no error response");
+        assert_eq!(result, Value::Null);
         assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
     }
 
