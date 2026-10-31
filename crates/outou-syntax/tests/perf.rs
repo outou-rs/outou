@@ -16,42 +16,87 @@ fn time_parse(source: &str) -> Duration {
     elapsed
 }
 
-/// Asserts that doubling `source`'s size does not roughly quadruple parse
-/// time (HIGH-3, issue #4 fix list item 3): `try_skip_opaque_region` and
-/// `scan_leading_attributes` both call `rust_token::next_significant`,
-/// which walks past an entire run of comments/attributes to find the next
-/// real token. Attempting either at *every* position inside such a run,
-/// rather than once for the whole run, made parsing quadratic in the run's
-/// length. A ratio below 3 (not the ~4x a quadratic algorithm would show)
-/// leaves generous slack for a slow or noisy CI runner while still failing
-/// hard on a return to quadratic behavior.
+/// Growth factor between the small and the large input.
+const SIZE_FACTOR: usize = 4;
+/// Timed runs per side; the minimum is kept, because load can only ever make
+/// a run slower, never faster than the true cost.
+const TIMED_RUNS: usize = 7;
+/// Linear growth shows a ratio near `SIZE_FACTOR` (4); quadratic growth shows
+/// near `SIZE_FACTOR^2` (16). 10 sits well clear of both, so scheduler noise
+/// on the best-of-k does not trip it and a quadratic regression still does.
+const MAX_RATIO: f64 = 10.0;
+
+/// Asserts that making `source` four times larger does not make parse time
+/// grow by anywhere near 16x (HIGH-3, issue #4 fix list item 3):
+/// `try_skip_opaque_region` and `scan_leading_attributes` both call
+/// `rust_token::next_significant`, which walks past an entire run of
+/// comments/attributes to find the next real token. Attempting either at
+/// *every* position inside such a run, rather than once for the whole run,
+/// made parsing quadratic in the run's length. This is a coarse wall-clock
+/// check, not a benchmark.
 fn assert_roughly_linear(label: &str, build: impl Fn(usize) -> String, n: usize) {
     let small = build(n);
-    let large = build(n * 2);
-    // Warm up (page faults, allocator warm-up) before the timed runs, and
-    // take the best of a few timed runs on each side to reduce scheduler
-    // noise — this is a coarse wall-clock check, not a benchmark.
+    let large = build(n * SIZE_FACTOR);
+    // Warm up (page faults, allocator warm-up) before the timed runs.
     let _ = time_parse(&small);
-    let small_elapsed = (0..3).map(|_| time_parse(&small)).min().unwrap();
-    let large_elapsed = (0..3).map(|_| time_parse(&large)).min().unwrap();
-
+    let small_elapsed = best_of(TIMED_RUNS, || time_parse(&small));
+    let large_elapsed = best_of(TIMED_RUNS, || time_parse(&large));
     eprintln!(
         "{label}: {n} lines = {small_elapsed:?}, {} lines = {large_elapsed:?}",
-        n * 2
+        n * SIZE_FACTOR
     );
+    assert_ratio_is_linear(label, n, small_elapsed, large_elapsed);
+}
 
+/// The minimum of `runs` measurements.
+fn best_of(runs: usize, mut measure: impl FnMut() -> Duration) -> Duration {
+    (0..runs).map(|_| measure()).min().unwrap()
+}
+
+fn assert_ratio_is_linear(label: &str, n: usize, small: Duration, large: Duration) {
     // Guard against a small-side measurement so close to zero that the
     // ratio is dominated by timer noise rather than the algorithm.
-    if small_elapsed < Duration::from_micros(200) {
+    if small < Duration::from_micros(200) {
+        eprintln!("{label}: small side {small:?} below the noise floor, ratio not checked");
         return;
     }
-    let ratio = large_elapsed.as_secs_f64() / small_elapsed.as_secs_f64();
+    let ratio = large.as_secs_f64() / small.as_secs_f64();
     assert!(
-        ratio < 3.0,
-        "{label}: doubling from {n} to {} lines took {small_elapsed:?} -> {large_elapsed:?} \
-         (ratio {ratio:.2}); expected roughly linear time",
-        n * 2
+        ratio < MAX_RATIO,
+        "{label}: growing from {n} to {} lines took {small:?} -> {large:?} \
+         (ratio {ratio:.2}); expected roughly linear time (about {SIZE_FACTOR}x)",
+        n * SIZE_FACTOR
     );
+}
+
+/// The rule must accept noisy linear growth and reject quadratic growth.
+#[test]
+fn the_ratio_rule_accepts_noisy_linear_growth() {
+    let small = Duration::from_millis(1);
+    assert_ratio_is_linear("linear", 1, small, small * 4);
+    assert_ratio_is_linear("noisy linear", 1, small, small * 7);
+}
+
+#[test]
+#[should_panic(expected = "expected roughly linear time")]
+fn the_ratio_rule_rejects_quadratic_growth() {
+    // A 4x input costing 16x is what a quadratic regression looks like.
+    let small = Duration::from_millis(1);
+    assert_ratio_is_linear("quadratic", 1, small, small * 16);
+}
+
+/// The limit is a ratio of 10: just under passes, just over fails.
+#[test]
+fn the_ratio_rule_accepts_a_ratio_just_under_the_limit() {
+    let small = Duration::from_millis(1);
+    assert_ratio_is_linear("just under", 1, small, Duration::from_micros(9_900));
+}
+
+#[test]
+#[should_panic(expected = "expected roughly linear time")]
+fn the_ratio_rule_rejects_a_ratio_just_over_the_limit() {
+    let small = Duration::from_millis(1);
+    assert_ratio_is_linear("just over", 1, small, Duration::from_micros(10_100));
 }
 
 /// M12: `try_macro_invocation` used to re-walk the remaining path from
@@ -94,7 +139,7 @@ fn doc_comment_run_not_preceding_fn_or_mod_is_linear() {
         source.push_str("struct S;\n");
         source
     }
-    assert_roughly_linear("doc_comment_run", build, 2000);
+    assert_roughly_linear("doc_comment_run", build, 4000);
 }
 
 /// The same shape, but with an ordinary `#[cfg(test)]`-style attribute
@@ -109,7 +154,7 @@ fn attribute_run_not_preceding_fn_or_mod_is_linear() {
         source.push_str("struct S;\n");
         source
     }
-    assert_roughly_linear("attribute_run", build, 2000);
+    assert_roughly_linear("attribute_run", build, 4000);
 }
 
 /// HIGH-3's other repro: a long run of block comments *inside a function
@@ -142,5 +187,5 @@ fn doc_comment_header_directly_above_fn_is_linear() {
         source.push_str("#[component]\nfn f() -> Element { <a/> }\n");
         source
     }
-    assert_roughly_linear("doc_comment_header", build, 2000);
+    assert_roughly_linear("doc_comment_header", build, 4000);
 }

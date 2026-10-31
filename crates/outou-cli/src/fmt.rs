@@ -200,6 +200,7 @@ mod tests {
 
     #[test]
     fn run_calls_format_source_exactly_once_per_changed_file() {
+        const MAX_EXEC_ATTEMPTS: usize = 50;
         let dir = std::env::temp_dir().join(format!(
             "outou-cli-fmt-test-count-{}-{}",
             std::process::id(),
@@ -230,16 +231,35 @@ mod tests {
             rustfmt_program: script.to_string_lossy().to_string(),
             ..FormatOptions::default()
         };
-        let _ = run_with_options(std::slice::from_ref(&file), false, &options);
-
-        let count = std::fs::read_to_string(&counter)
-            .map(|s| s.lines().count())
-            .unwrap_or(0);
+        // Another test forking while the script was open for writing makes
+        // exec fail with ETXTBSY ("Text file busy"): the forked child holds
+        // the write fd until its own exec. The script then never starts and
+        // writes no counter line, so retry until it has run at least once.
+        // A failed exec never ran the script, so each attempt still counts
+        // exactly the calls that really happened.
+        let mut count = 0;
+        for _ in 0..MAX_EXEC_ATTEMPTS {
+            let _ = std::fs::remove_file(&counter);
+            // Restore the unformatted input: a successful attempt rewrites it.
+            std::fs::write(&file, "fn f() { <div  /> }").unwrap();
+            let _ = run_with_options(std::slice::from_ref(&file), false, &options);
+            count = std::fs::read_to_string(&counter)
+                .map(|s| s.lines().count())
+                .unwrap_or(0);
+            if count > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         std::fs::remove_dir_all(&dir).ok();
 
+        assert_ne!(
+            count, 0,
+            "the fake rustfmt never ran in {MAX_EXEC_ATTEMPTS} attempts"
+        );
         assert_eq!(
             count, 1,
-            "format_source (and so rustfmt) must be invoked exactly once per changed file, not twice"
+            "format_source called more than once: rustfmt must be invoked exactly once per changed file"
         );
     }
 
