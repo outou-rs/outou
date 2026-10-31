@@ -110,6 +110,8 @@ fn answer_formatting_request(
     let source = document.line_index.text();
     let options = outou_fmt::FormatOptions {
         deadline: Some(std::time::Instant::now() + timeout),
+        // The document's own location decides which `rustfmt.toml` and edition apply.
+        source_path: uri::outou_uri_str_to_path(&rsx_uri_string),
         ..base_options.clone()
     };
     let edits = match formatting_edits(source, &options) {

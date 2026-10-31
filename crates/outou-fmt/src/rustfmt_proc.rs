@@ -5,7 +5,9 @@ use std::io::Write;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use crate::ctx::Ctx;
 use crate::error::FormatError;
+#[cfg(test)]
 use crate::FormatOptions;
 
 /// Shortest pause (first poll) and longest pause (back-off ceiling) between
@@ -21,14 +23,38 @@ const POLL_MAX: Duration = Duration::from_millis(16);
 /// and a non-zero exit status are both reported as explicit
 /// [`FormatError`]s — never silently swallowed, and never a fallback to
 /// leaving the text unformatted (`docs/phase0/issues/13-formatter.md`).
-pub(crate) fn run_rustfmt(input: &str, options: &FormatOptions) -> Result<String, FormatError> {
-    if options
-        .deadline
-        .is_some_and(|deadline| Instant::now() >= deadline)
-    {
+pub(crate) fn run_rustfmt(input: &str, options: &Ctx) -> Result<String, FormatError> {
+    let formatted = run_command(build_command(options), input, options.options.deadline)?;
+    if has_tab_indentation(&formatted) {
+        return Err(FormatError::TabIndentedOutput);
+    }
+    Ok(formatted)
+}
+
+/// Asks `rustfmt` for the configuration it would apply to a file in
+/// `options`' working directory (`--print-config current`): the discovered
+/// `rustfmt.toml` merged over the defaults, as `key = value` lines. This is
+/// how `max_width`, `tab_spaces` and `newline_style` are read without this
+/// crate parsing, or re-implementing the discovery of, `rustfmt.toml`.
+pub(crate) fn print_config(options: &Ctx) -> Result<String, FormatError> {
+    run_command(
+        build_print_config_command(options),
+        "",
+        options.options.deadline,
+    )
+}
+
+/// Runs `command` (already configured with its arguments and piped stdio),
+/// feeding it `input` and returning its stdout, bounded by `deadline`.
+fn run_command(
+    mut command: Command,
+    input: &str,
+    deadline: Option<Instant>,
+) -> Result<String, FormatError> {
+    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
         return Err(FormatError::TimedOut);
     }
-    let mut child = build_command(options)
+    let mut child = command
         .spawn()
         .map_err(|source| FormatError::RustfmtUnavailable { source })?;
 
@@ -44,7 +70,7 @@ pub(crate) fn run_rustfmt(input: &str, options: &FormatOptions) -> Result<String
     let stdout = drain(child.stdout.take().expect("stdout was piped"));
     let stderr = drain(child.stderr.take().expect("stderr was piped"));
 
-    let status = match wait_until(&mut child, options.deadline) {
+    let status = match wait_until(&mut child, deadline) {
         Ok(Some(status)) => status,
         // Past the deadline: the child is killed and reaped, and the helper
         // threads are left to finish on their own (a grandchild holding a
@@ -56,7 +82,7 @@ pub(crate) fn run_rustfmt(input: &str, options: &FormatOptions) -> Result<String
     // the helper threads are joined against the same deadline. If they do not
     // finish in time they are left to end on their own, as above.
     let join_output = |handle: std::thread::JoinHandle<std::io::Result<Vec<u8>>>| {
-        join_until(handle, options.deadline)?
+        join_until(handle, deadline)?
             .map_err(|_| {
                 FormatError::Internal("a thread reading rustfmt's output panicked".into())
             })?
@@ -67,7 +93,7 @@ pub(crate) fn run_rustfmt(input: &str, options: &FormatOptions) -> Result<String
         stdout: join_output(stdout)?,
         stderr: join_output(stderr)?,
     };
-    let write_result = match join_until(writer, options.deadline)? {
+    let write_result = match join_until(writer, deadline)? {
         Ok(result) => result,
         Err(_) => {
             return Err(FormatError::Internal(
@@ -105,9 +131,6 @@ pub(crate) fn run_rustfmt(input: &str, options: &FormatOptions) -> Result<String
         FormatError::Internal(format!("rustfmt produced non-UTF-8 output: {err}"))
     })?;
 
-    if has_tab_indentation(&formatted) {
-        return Err(FormatError::TabIndentedOutput);
-    }
     Ok(formatted)
 }
 
@@ -172,8 +195,8 @@ fn wait_until(
 /// kept separate so a test can inspect the exact arguments (in
 /// particular, that `hard_tabs=false` is always present) without
 /// actually running a process.
-fn build_command(options: &FormatOptions) -> Command {
-    let mut command = Command::new(&options.rustfmt_program);
+fn build_command(options: &Ctx) -> Command {
+    let mut command = base_command(options);
     command
         .arg("--edition")
         .arg(&options.edition)
@@ -183,11 +206,49 @@ fn build_command(options: &FormatOptions) -> Command {
         // per level, which is meaningless against a tab-indented line.
         .arg("--config")
         .arg("hard_tabs=false")
+        // This crate works on `\n`-separated text throughout and applies the
+        // configured `newline_style` itself, once, on the finished output
+        // (`crate::newline`).
+        .arg("--config")
+        .arg("newline_style=Unix")
         .arg("--emit")
         .arg("stdout")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    command
+}
+
+/// The `--print-config` invocation: same working directory, edition and
+/// `hard_tabs` override as the formatting run, so what it reports is what
+/// that run will use. The path names a file that need not exist; `rustfmt`
+/// only uses its location to discover the configuration.
+fn build_print_config_command(options: &Ctx) -> Command {
+    let mut command = base_command(options);
+    command
+        .arg("--edition")
+        .arg(&options.edition)
+        .arg("--config")
+        .arg("hard_tabs=false")
+        .arg("--print-config")
+        .arg("current")
+        .arg(PROBE_FILE_NAME)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+/// A file name that is never read: `--print-config` needs a path.
+const PROBE_FILE_NAME: &str = "__outou_fmt_probe.rs";
+
+/// The program, run in the formatted file's own directory so `rustfmt`
+/// discovers that project's `rustfmt.toml`.
+fn base_command(options: &Ctx) -> Command {
+    let mut command = Command::new(&options.options.rustfmt_program);
+    if let Some(work_dir) = &options.work_dir {
+        command.current_dir(work_dir);
+    }
     command
 }
 
@@ -209,14 +270,14 @@ mod tests {
 
     #[test]
     fn formats_a_trivial_rust_file() {
-        let formatted = run_rustfmt("fn main( ) {\nlet x=1;\n}\n", &FormatOptions::default())
-            .expect("rustfmt runs");
+        let formatted =
+            run_rustfmt("fn main( ) {\nlet x=1;\n}\n", &Ctx::default()).expect("rustfmt runs");
         assert_eq!(formatted, "fn main() {\n    let x = 1;\n}\n");
     }
 
     #[test]
     fn a_syntax_error_is_reported_as_a_failure_not_a_panic() {
-        let result = run_rustfmt("fn main( {\n", &FormatOptions::default());
+        let result = run_rustfmt("fn main( {\n", &Ctx::default());
         assert!(matches!(result, Err(FormatError::RustfmtFailed { .. })));
     }
 
@@ -226,10 +287,10 @@ mod tests {
     /// test of the missing-`rustfmt` message.
     #[test]
     fn an_unresolvable_program_name_is_reported_as_unavailable_not_swallowed() {
-        let options = FormatOptions {
+        let options = Ctx::from(FormatOptions {
             rustfmt_program: "outou-fmt-test-nonexistent-program-xyz".to_string(),
             ..FormatOptions::default()
-        };
+        });
         let result = run_rustfmt("fn main() {}\n", &options);
         assert!(matches!(
             result,
@@ -243,7 +304,7 @@ mod tests {
     /// (`crate::snippet`, `crate::jsx_print::island`) meaningless.
     #[test]
     fn the_command_always_overrides_hard_tabs_to_false() {
-        let command = build_command(&FormatOptions::default());
+        let command = build_command(&Ctx::default());
         let args: Vec<String> = command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -274,7 +335,7 @@ mod tests {
         let config_path = dir.join("rustfmt.toml");
         std::fs::write(&config_path, "hard_tabs = true\n").unwrap();
 
-        let mut command = build_command(&FormatOptions::default());
+        let mut command = build_command(&Ctx::default());
         command
             .arg("--config-path")
             .arg(&config_path)
@@ -319,10 +380,10 @@ mod tests {
         let script = dir.join("echo-rustfmt.sh");
         std::fs::write(&script, "#!/bin/sh\nexec cat\n").unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let options = FormatOptions {
+        let options = Ctx::from(FormatOptions {
             rustfmt_program: script.to_string_lossy().into_owned(),
             ..FormatOptions::default()
-        };
+        });
         let input = "fn f() {}\n".repeat(400_000);
 
         let (sender, receiver) = mpsc::channel();
@@ -369,10 +430,10 @@ mod tests {
         let script = dir.join("truncating-rustfmt.sh");
         std::fs::write(&script, "#!/bin/sh\nhead -c 1\nexit 0\n").unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-        let options = FormatOptions {
+        let options = Ctx::from(FormatOptions {
             rustfmt_program: script.to_string_lossy().into_owned(),
             ..FormatOptions::default()
-        };
+        });
         let input = "fn f() {}\n".repeat(400_000);
         let mut result = run_rustfmt(&input, &options);
         for _ in 0..20 {
@@ -414,7 +475,7 @@ mod tests {
     /// Runs `run_rustfmt`, retrying the ETXTBSY a concurrent fork can cause
     /// right after the script was written.
     #[cfg(unix)]
-    fn run_with_etxtbsy_retry(input: &str, options: &FormatOptions) -> Result<String, FormatError> {
+    fn run_with_etxtbsy_retry(input: &str, options: &Ctx) -> Result<String, FormatError> {
         const ETXTBSY: i32 = 26;
         let mut result = run_rustfmt(input, options);
         for _ in 0..20 {
@@ -437,11 +498,11 @@ mod tests {
     #[test]
     fn a_rustfmt_that_outlives_the_deadline_is_killed_and_reported_as_timed_out() {
         let (dir, program) = fake_rustfmt("slow", "#!/bin/sh\nexec sleep 30\n");
-        let options = FormatOptions {
+        let options = Ctx::from(FormatOptions {
             rustfmt_program: program,
             deadline: Some(Instant::now() + Duration::from_millis(300)),
             ..FormatOptions::default()
-        };
+        });
         let started = Instant::now();
         let result = run_with_etxtbsy_retry("fn f() {}\n", &options);
         let elapsed = started.elapsed();
@@ -455,11 +516,11 @@ mod tests {
     #[test]
     fn a_deadline_that_is_not_reached_does_not_affect_the_result() {
         let (dir, program) = fake_rustfmt("fast", "#!/bin/sh\nexec cat\n");
-        let options = FormatOptions {
+        let options = Ctx::from(FormatOptions {
             rustfmt_program: program,
             deadline: Some(Instant::now() + Duration::from_secs(60)),
             ..FormatOptions::default()
-        };
+        });
         let result = run_with_etxtbsy_retry("fn f() {}\n", &options);
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(result.expect("the program succeeds"), "fn f() {}\n");
@@ -472,11 +533,11 @@ mod tests {
     #[test]
     fn a_grandchild_holding_the_output_pipes_cannot_outlive_the_deadline() {
         let (dir, program) = fake_rustfmt("grandchild", "#!/bin/sh\nsleep 5 &\nexec cat\n");
-        let options = FormatOptions {
+        let options = Ctx::from(FormatOptions {
             rustfmt_program: program,
             deadline: Some(Instant::now() + Duration::from_millis(300)),
             ..FormatOptions::default()
-        };
+        });
         let started = Instant::now();
         let result = run_with_etxtbsy_retry("fn f() {}\n", &options);
         let elapsed = started.elapsed();
@@ -491,11 +552,11 @@ mod tests {
     fn a_deadline_already_in_the_past_does_not_spawn_rustfmt() {
         let (dir, program) = fake_rustfmt("past", "#!/bin/sh\ntouch \"$0.ran\"\nexec cat\n");
         let marker = std::path::PathBuf::from(format!("{program}.ran"));
-        let options = FormatOptions {
+        let options = Ctx::from(FormatOptions {
             rustfmt_program: program,
             deadline: Some(Instant::now()),
             ..FormatOptions::default()
-        };
+        });
         let result = run_with_etxtbsy_retry("fn f() {}\n", &options);
         // Give a wrongly spawned script time to leave its marker.
         std::thread::sleep(Duration::from_millis(300));

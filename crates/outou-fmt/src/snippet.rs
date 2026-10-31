@@ -25,12 +25,11 @@ use std::ops::Range;
 
 use outou_syntax::ast;
 
+use crate::ctx::Ctx;
 use crate::error::FormatError;
-use crate::jsx_print;
+use crate::jsx_print::{self, Placement};
 use crate::placeholder::PlaceholderSource;
 use crate::rustfmt_proc::run_rustfmt;
-use crate::width::INDENT_UNIT;
-use crate::FormatOptions;
 
 const WRAPPER_FN_NAME: &str = "__outou_fmt_wrapper";
 
@@ -51,7 +50,7 @@ pub(crate) fn format_rust_snippet(
     range: Range<usize>,
     top_level: &[&ast::JsxElement],
     wrap: bool,
-    options: &FormatOptions,
+    options: &Ctx,
 ) -> Result<String, FormatError> {
     let mut placeholders = PlaceholderSource::new(source);
     let (with_placeholders, sites) =
@@ -65,14 +64,24 @@ pub(crate) fn format_rust_snippet(
 
     let formatted = run_rustfmt(&to_format, options)?;
     let mut body = if wrap {
-        strip_wrapper(&formatted)?
+        strip_wrapper(&formatted, options.indent_unit)?
     } else {
         formatted
     };
 
     for (placeholder, element) in &sites {
-        let line_indent = indent_of_line_containing(&body, placeholder)?;
-        let jsx_text = jsx_print::format_jsx_element(element, line_indent, source, options)?;
+        let position = position_of(&body, placeholder)?;
+        let placement = Placement {
+            lead: position.column - position.line_indent,
+            tail: position.tail,
+        };
+        let jsx_text = jsx_print::format_jsx_element_at(
+            element,
+            position.line_indent,
+            placement,
+            source,
+            options,
+        )?;
         body = replace_once(&body, placeholder, &jsx_text)?;
     }
 
@@ -116,12 +125,12 @@ fn wrap_in_function(content: &str) -> String {
 }
 
 /// Removes the synthetic wrapper function [`wrap_in_function`] added and
-/// dedents every remaining line by exactly [`INDENT_UNIT`] — the one,
+/// dedents every remaining line by exactly `indent_unit` (`tab_spaces`) — the one,
 /// uniform level of indentation `rustfmt` adds for the wrapper's body,
 /// regardless of how deeply nested the content inside it is (indentation
 /// is additive per line, so removing a constant amount from every line
 /// preserves the content's own relative structure exactly).
-fn strip_wrapper(formatted: &str) -> Result<String, FormatError> {
+fn strip_wrapper(formatted: &str, indent_unit: usize) -> Result<String, FormatError> {
     let mut lines: Vec<&str> = formatted.lines().collect();
     if lines.len() < 2 {
         return Err(FormatError::Internal(format!(
@@ -140,12 +149,15 @@ fn strip_wrapper(formatted: &str) -> Result<String, FormatError> {
             "wrapped snippet lost its wrapper footer: {footer:?}"
         )));
     }
-    let dedented: Vec<String> = lines.iter().map(|line| dedent_one_level(line)).collect();
+    let dedented: Vec<String> = lines
+        .iter()
+        .map(|line| dedent_one_level(line, indent_unit))
+        .collect();
     Ok(dedented.join("\n"))
 }
 
-fn dedent_one_level(line: &str) -> String {
-    match line.strip_prefix(&" ".repeat(INDENT_UNIT)) {
+fn dedent_one_level(line: &str, indent_unit: usize) -> String {
+    match line.strip_prefix(&" ".repeat(indent_unit)) {
         Some(rest) => rest.to_string(),
         // A blank line, or (defensively) a line rustfmt did not indent as
         // expected: never panic on a slice out of range.
@@ -153,12 +165,22 @@ fn dedent_one_level(line: &str) -> String {
     }
 }
 
-/// The number of leading spaces on the line of `text` that contains
-/// `needle`. Used to decide how far to indent a placeholder's replacement
-/// (`crate::jsx_print`'s continuation lines line up with the statement's
-/// own indent, not the placeholder's exact column — matching how rustfmt
-/// itself indents a wrapped macro call's arguments).
-fn indent_of_line_containing(text: &str, needle: &str) -> Result<usize, FormatError> {
+/// Where a placeholder sits on its line of the formatted text.
+struct Position {
+    /// Leading spaces of the line. Continuation lines of the replacement line
+    /// up with the statement's own indent, not the placeholder's exact
+    /// column, matching how rustfmt itself indents a wrapped macro call's
+    /// arguments.
+    line_indent: usize,
+    /// Characters before the placeholder on its line.
+    column: usize,
+    /// Characters after the placeholder on its line (another placeholder
+    /// still waiting to be replaced counts as its identifier's length).
+    tail: usize,
+}
+
+/// The [`Position`] of the placeholder `needle` in `text`.
+fn position_of(text: &str, needle: &str) -> Result<Position, FormatError> {
     let at = whole_identifier_matches(text, needle)
         .first()
         .copied()
@@ -166,8 +188,14 @@ fn indent_of_line_containing(text: &str, needle: &str) -> Result<usize, FormatEr
             FormatError::Internal(format!("placeholder `{needle}` did not survive formatting"))
         })?;
     let line_start = text[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let line = &text[line_start..at];
-    Ok(line.chars().take_while(|c| *c == ' ').count())
+    let after = at + needle.len();
+    let line_end = text[after..].find('\n').map_or(text.len(), |i| after + i);
+    let before = &text[line_start..at];
+    Ok(Position {
+        line_indent: before.chars().take_while(|c| *c == ' ').count(),
+        column: before.chars().count(),
+        tail: text[after..line_end].trim_end_matches('\r').chars().count(),
+    })
 }
 
 /// Byte offsets of every occurrence of `needle` in `text` that is a whole
@@ -223,28 +251,15 @@ mod tests {
     #[test]
     fn formats_a_whole_file_with_no_jsx() {
         let source = "fn main( ) {\nlet x=1;\n}\n";
-        let out = format_rust_snippet(
-            source,
-            0..source.len(),
-            &[],
-            false,
-            &FormatOptions::default(),
-        )
-        .unwrap();
+        let out =
+            format_rust_snippet(source, 0..source.len(), &[], false, &Ctx::default()).unwrap();
         assert_eq!(out, "fn main() {\n    let x = 1;\n}\n");
     }
 
     #[test]
     fn wraps_and_dedents_a_snippet() {
         let source = "1 + 1";
-        let out = format_rust_snippet(
-            source,
-            0..source.len(),
-            &[],
-            true,
-            &FormatOptions::default(),
-        )
-        .unwrap();
+        let out = format_rust_snippet(source, 0..source.len(), &[], true, &Ctx::default()).unwrap();
         assert_eq!(out, "1 + 1");
     }
 }

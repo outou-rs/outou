@@ -8,11 +8,10 @@
 use outou_syntax::ast;
 
 use crate::collect;
+use crate::ctx::Ctx;
 use crate::error::FormatError;
 use crate::multiline_guard::island_has_unsafe_multiline_content;
 use crate::snippet::format_rust_snippet;
-use crate::width::{fits, INDENT_UNIT};
-use crate::FormatOptions;
 
 /// Formats `island`, including its surrounding braces, starting at
 /// column `indent`.
@@ -27,7 +26,7 @@ pub(crate) fn format_island(
     island: &ast::Island,
     indent: usize,
     source: &str,
-    options: &FormatOptions,
+    options: &Ctx,
 ) -> Result<String, FormatError> {
     if island_has_unsafe_multiline_content(island, source) {
         return Ok(verbatim(island, source));
@@ -35,13 +34,22 @@ pub(crate) fn format_island(
 
     let range = island.span.start as usize..island.span.end as usize;
     let top_level = collect::top_level_jsx(island.parts.iter());
-    let body = format_rust_snippet(source, range, &top_level, true, options)?;
+    // The snippet is formatted dedented to column 0 and ends up at
+    // `inner_indent` when laid out as a block (the case that matters for a
+    // line that is too long to fit).
+    let inner_indent = indent + options.indent_unit;
+    let body = format_rust_snippet(
+        source,
+        range,
+        &top_level,
+        true,
+        &options.shifted_by(inner_indent),
+    )?;
 
-    if !body.contains('\n') && fits(indent, body.chars().count() + 2) {
+    if !body.contains('\n') && options.fits(indent, body.chars().count() + 2) {
         return Ok(format!("{{{body}}}"));
     }
 
-    let inner_indent = indent + INDENT_UNIT;
     let reindented = indent_every_line(&body, inner_indent);
     Ok(format!(
         "{{\n{reindented}\n{close_pad}}}",
@@ -92,7 +100,7 @@ mod tests {
     fn a_short_expression_stays_on_one_line() {
         let source = "fn f() { <input value={x} /> }";
         let island = only_attribute_island(source);
-        let out = format_island(&island, 0, source, &FormatOptions::default()).unwrap();
+        let out = format_island(&island, 0, source, &Ctx::default()).unwrap();
         assert_eq!(out, "{x}");
     }
 }

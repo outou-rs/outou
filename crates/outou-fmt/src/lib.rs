@@ -43,22 +43,25 @@
 //! doc has the full reasoning and a reproduction).
 
 mod collect;
+mod ctx;
 mod error;
 mod jsx_print;
 mod multiline_guard;
+mod newline;
 mod placeholder;
+mod project;
 mod rustfmt_proc;
 mod snippet;
-mod width;
 
 pub use error::FormatError;
 
 /// Options for [`format_source`].
 #[derive(Debug, Clone)]
 pub struct FormatOptions {
-    /// The Rust edition to pass to `rustfmt` (`--edition`). Should match
-    /// the edition of the crate the `.rsx` file belongs to.
-    pub edition: String,
+    /// The Rust edition to pass to `rustfmt` (`--edition`). `None` (the
+    /// default) detects it from the nearest `Cargo.toml` above
+    /// [`source_path`](Self::source_path) and falls back to 2021.
+    pub edition: Option<String>,
     /// The `rustfmt` binary to run: a bare name resolved against `PATH`
     /// (the default, `"rustfmt"`) or an explicit path. Overridable so a
     /// test can point at a program that does not exist and observe
@@ -73,17 +76,22 @@ pub struct FormatOptions {
     /// as long as it takes, which is right for `outou fmt`; a long-lived
     /// server sets it so one pathological file cannot stall it.
     pub deadline: Option<std::time::Instant>,
+    /// The `.rsx` file being formatted. When set, `rustfmt` runs in the
+    /// file's own directory (so its `rustfmt.toml` / `.rustfmt.toml` is the
+    /// one found) and, unless [`edition`](Self::edition) is given, the edition
+    /// is read from the nearest `Cargo.toml`. `None` (the default) uses the
+    /// process's working directory.
+    pub source_path: Option<std::path::PathBuf>,
 }
 
 impl Default for FormatOptions {
-    /// Matches this workspace's own edition
-    /// (`Cargo.toml`'s `[workspace.package] edition`) and resolves
-    /// `rustfmt` from `PATH`.
+    /// Detects the edition, resolves `rustfmt` from `PATH` and sets no deadline.
     fn default() -> Self {
         Self {
-            edition: "2021".to_string(),
+            edition: None,
             rustfmt_program: "rustfmt".to_string(),
             deadline: None,
+            source_path: None,
         }
     }
 }
@@ -94,6 +102,24 @@ impl Default for FormatOptions {
 /// when `source` has a parse error — a broken file is never partially
 /// rewritten (`docs/phase0/issues/13-formatter.md`).
 pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, FormatError> {
+    // Everything below works on `\n` text; the line-ending style is applied
+    // once more to the result (`newline`).
+    let normalized = newline::normalize(source);
+    // Parse first: a file refused for a syntax error never pays for the
+    // `rustfmt --print-config` run that resolving the settings costs. (A
+    // caller that formats many files of one project could cache the resolved
+    // settings per directory; nothing does yet.)
+    let parsed = parse_for_formatting(&normalized)?;
+    let ctx = ctx::Ctx::resolve(options)?;
+    let style = newline::style_for_output(ctx.newline_style, source);
+    let top_level = collect::file_top_level_jsx(&parsed.file);
+    let formatted =
+        snippet::format_rust_snippet(&normalized, 0..normalized.len(), &top_level, false, &ctx)?;
+    Ok(newline::apply(formatted, style))
+}
+
+/// Parses `\n`-only `source`, refusing it when it has an error.
+fn parse_for_formatting(source: &str) -> Result<outou_syntax::Parsed, FormatError> {
     let parsed = outou_syntax::parse(source);
     // Only errors stop formatting. A warning (for example the one about a
     // `<select value>` whose option has no `value`) does not make the file
@@ -114,9 +140,7 @@ pub fn format_source(source: &str, options: &FormatOptions) -> Result<String, Fo
                 .to_string(),
         });
     }
-
-    let top_level = collect::file_top_level_jsx(&parsed.file);
-    snippet::format_rust_snippet(source, 0..source.len(), &top_level, false, options)
+    Ok(parsed)
 }
 
 /// Whether `source` is already exactly what [`format_source`] would

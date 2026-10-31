@@ -90,7 +90,13 @@ fn format_one_file(path: &Path, options: &FormatOptions, check_only: bool) -> Fi
         }
     };
 
-    match classify(&source, options) {
+    // The file's own location decides which `rustfmt.toml` and which edition
+    // apply, not where `outou fmt` was started.
+    let options = FormatOptions {
+        source_path: Some(path.to_path_buf()),
+        ..options.clone()
+    };
+    match classify(&source, &options) {
         Classified::AlreadyFormatted => FileOutcome::AlreadyFormatted,
         Classified::Changed(formatted) => {
             if check_only {
@@ -214,7 +220,8 @@ mod tests {
         std::fs::write(
             &script,
             format!(
-                "#!/bin/sh\necho x >> \"{}\"\nexec rustfmt \"$@\"\n",
+                // `--print-config` is the configuration probe, not a formatting run.
+                "#!/bin/sh\ncase \"$*\" in *--print-config*) ;; *) echo x >> \"{}\" ;; esac\nexec rustfmt \"$@\"\n",
                 counter.display()
             ),
         )
@@ -288,6 +295,34 @@ mod tests {
         assert_eq!(outcome, FileOutcome::Changed);
         assert!(is_link);
         assert_eq!(content, "fn f() {\n    <div />\n}\n");
+    }
+
+    #[test]
+    fn formatting_uses_the_rustfmt_toml_and_edition_of_the_files_own_project() {
+        let dir = std::env::temp_dir().join(format!(
+            "outou-cli-fmt-test-project-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("rustfmt.toml"), "tab_spaces = 2\n").unwrap();
+        std::fs::write(
+            dir.join("Cargo.toml"),
+            "[package]\nname = \"p\"\nversion = \"0.1.0\"\nedition = \"2015\"\n",
+        )
+        .unwrap();
+        // `async` as a name is only valid in edition 2015 (every rustfmt
+        // rejects it otherwise). The project's own `rustfmt.toml` above means
+        // no user-level rustfmt config is consulted.
+        let file = dir.join("src/a.rsx");
+        std::fs::write(&file, "fn async() {}\nfn f() {\n<div/>\n}\n").unwrap();
+
+        let outcome = format_one_file(&file, &FormatOptions::default(), false);
+
+        let content = std::fs::read_to_string(&file).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(outcome, FileOutcome::Changed);
+        assert_eq!(content, "fn async() {}\nfn f() {\n  <div />\n}\n");
     }
 
     #[test]

@@ -4,10 +4,9 @@
 
 use outou_syntax::ast;
 
-use super::{element_name, island};
+use super::{element_name, island, Placement};
+use crate::ctx::Ctx;
 use crate::error::FormatError;
-use crate::width::{fits, INDENT_UNIT};
-use crate::FormatOptions;
 
 /// Formats `element`'s opening tag, starting at column `indent`. Returns
 /// text with no leading indentation on its first line and each
@@ -16,14 +15,15 @@ use crate::FormatOptions;
 pub(super) fn format_open_tag(
     element: &ast::JsxElement,
     indent: usize,
+    placement: Placement,
     source: &str,
-    options: &FormatOptions,
+    options: &Ctx,
 ) -> Result<String, FormatError> {
     let name = element_name(element)?;
     let self_closing = element.close.is_none();
     let closer = if self_closing { "/>" } else { ">" };
 
-    let attribute_indent = indent + INDENT_UNIT;
+    let attribute_indent = indent + options.indent_unit;
     let mut attributes = Vec::with_capacity(element.attributes.len());
     for attribute in &element.attributes {
         attributes.push(format_attribute(
@@ -34,17 +34,31 @@ pub(super) fn format_open_tag(
         )?);
     }
 
-    if let Some(single_line) = try_single_line(name, &attributes, closer, indent) {
+    // Only a self-closing tag is followed by what comes after the element on
+    // its line; an opening tag with children is followed by the children.
+    let tail = if self_closing { placement.tail } else { 0 };
+    let line = Line {
+        column: indent + placement.lead,
+        tail,
+    };
+    if let Some(single_line) = try_single_line(name, &attributes, closer, line, options) {
         return Ok(single_line);
     }
-    Ok(multi_line(name, &attributes, closer, indent))
+    Ok(multi_line(name, &attributes, closer, indent, options))
+}
+
+/// Where a candidate starts on its line and how much follows it.
+struct Line {
+    column: usize,
+    tail: usize,
 }
 
 fn try_single_line(
     name: &str,
     attributes: &[String],
     closer: &str,
-    indent: usize,
+    line: Line,
+    options: &Ctx,
 ) -> Option<String> {
     if attributes.iter().any(|attr| attr.contains('\n')) {
         return None;
@@ -58,21 +72,29 @@ fn try_single_line(
         candidate.push(' ');
     }
     candidate.push_str(closer);
-    fits(indent, candidate.chars().count()).then_some(candidate)
+    options
+        .fits(line.column, candidate.chars().count() + line.tail)
+        .then_some(candidate)
 }
 
 fn self_closing_needs_space(closer: &str) -> bool {
     closer == "/>"
 }
 
-fn multi_line(name: &str, attributes: &[String], closer: &str, indent: usize) -> String {
+fn multi_line(
+    name: &str,
+    attributes: &[String],
+    closer: &str,
+    indent: usize,
+    options: &Ctx,
+) -> String {
     if attributes.is_empty() {
         // Nothing to wrap onto its own line; the name itself must be the
         // reason this doesn't fit, and there is nothing more to do about
         // that without breaking the identifier apart.
         return format!("<{name}{closer}");
     }
-    let inner_indent = indent + INDENT_UNIT;
+    let inner_indent = indent + options.indent_unit;
     let pad = " ".repeat(inner_indent);
     let mut out = format!("<{name}\n");
     for attribute in attributes {
@@ -93,7 +115,7 @@ fn format_attribute(
     attribute: &ast::JsxAttribute,
     indent: usize,
     source: &str,
-    options: &FormatOptions,
+    options: &Ctx,
 ) -> Result<String, FormatError> {
     let name = &attribute.name.name;
     match &attribute.value {
@@ -130,7 +152,8 @@ mod tests {
     fn single_attribute_stays_on_one_line() {
         let source = r#"fn f() { <input value="x" /> }"#;
         let element = only_element(source);
-        let out = format_open_tag(&element, 0, source, &FormatOptions::default()).unwrap();
+        let out =
+            format_open_tag(&element, 0, Placement::OWN_LINE, source, &Ctx::default()).unwrap();
         assert_eq!(out, r#"<input value="x" />"#);
     }
 
@@ -138,7 +161,8 @@ mod tests {
     fn many_attributes_wrap_one_per_line() {
         let source = "fn f() { <input aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb /> }";
         let element = only_element(source);
-        let out = format_open_tag(&element, 0, source, &FormatOptions::default()).unwrap();
+        let out =
+            format_open_tag(&element, 0, Placement::OWN_LINE, source, &Ctx::default()).unwrap();
         assert!(out.starts_with("<input\n"));
         assert!(out.contains("    aaaa"));
         assert!(out.ends_with("/>"));

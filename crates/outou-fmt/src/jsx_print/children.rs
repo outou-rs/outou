@@ -21,9 +21,8 @@ use outou_sourcemap::Span;
 use outou_syntax::ast;
 
 use super::{format_jsx_element, island};
+use crate::ctx::Ctx;
 use crate::error::FormatError;
-use crate::width::INDENT_UNIT;
-use crate::FormatOptions;
 
 /// If the raw source between `element`'s opening `>` and closing `<`
 /// contains anything the child list does not account for (only ever an
@@ -100,7 +99,7 @@ pub(super) fn try_single_line(
     element: &ast::JsxElement,
     indent: usize,
     source: &str,
-    options: &FormatOptions,
+    options: &Ctx,
 ) -> Result<Option<String>, FormatError> {
     let mut out = String::new();
     for child in &element.children {
@@ -119,7 +118,7 @@ fn render_inline(
     child: &ast::JsxChild,
     indent: usize,
     source: &str,
-    options: &FormatOptions,
+    options: &Ctx,
 ) -> Result<Option<String>, FormatError> {
     let rendered = match child {
         ast::JsxChild::Text(text) => verbatim_text(text, source),
@@ -135,7 +134,7 @@ fn render_inline(
 }
 
 /// Renders every child of `element`, each non-text child on its own
-/// line at `indent + INDENT_UNIT`, gluing directly around any `Text`
+/// line at `indent + options.indent_unit`, gluing directly around any `Text`
 /// child (see the module doc for why). Includes the necessary leading
 /// newline before the first non-text child and trailing newline before
 /// the closing tag; a caller sandwiches the result directly between the
@@ -144,9 +143,9 @@ pub(super) fn format_multiline(
     element: &ast::JsxElement,
     indent: usize,
     source: &str,
-    options: &FormatOptions,
+    options: &Ctx,
 ) -> Result<String, FormatError> {
-    let child_indent = indent + INDENT_UNIT;
+    let child_indent = indent + options.indent_unit;
     let pad = " ".repeat(child_indent);
 
     let mut out = String::new();
@@ -179,7 +178,7 @@ fn render_owned_line(
     child: &ast::JsxChild,
     indent: usize,
     source: &str,
-    options: &FormatOptions,
+    options: &Ctx,
 ) -> Result<String, FormatError> {
     match child {
         ast::JsxChild::Text(_) => unreachable!("text children are handled by the caller"),
@@ -216,7 +215,7 @@ mod tests {
         // (now two-line) run trim away to nothing on reparse.
         let source = "fn f() { <div><a/> <b/></div> }";
         let element = only_element(source);
-        let out = format_multiline(&element, 0, source, &FormatOptions::default()).unwrap();
+        let out = format_multiline(&element, 0, source, &Ctx::default()).unwrap();
         assert!(out.contains("<a /> <b />"), "{out:?}");
     }
 
@@ -224,7 +223,7 @@ mod tests {
     fn two_element_children_with_no_text_get_their_own_lines() {
         let source = "fn f() { <div><a/><b/></div> }";
         let element = only_element(source);
-        let out = format_multiline(&element, 0, source, &FormatOptions::default()).unwrap();
+        let out = format_multiline(&element, 0, source, &Ctx::default()).unwrap();
         assert_eq!(out, "\n    <a />\n    <b />\n");
     }
 

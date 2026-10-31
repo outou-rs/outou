@@ -1976,6 +1976,7 @@ dependencies = [
  "outou-sourcemap",
  "outou-syntax",
  "thiserror 2.0.20",
+ "toml",
 ]
 
 [[package]]

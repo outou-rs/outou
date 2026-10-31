@@ -22,23 +22,53 @@ mod tag;
 
 use outou_syntax::ast;
 
+use crate::ctx::Ctx;
 use crate::error::FormatError;
-use crate::width::fits;
-use crate::FormatOptions;
 
-/// Formats one JSX element, starting at column `indent`. The returned
-/// text's first line has no leading indentation (the caller is always
-/// splicing this in right where something else left off — after a
-/// placeholder, after a sibling); every other line is indented to at
-/// least `indent`.
+/// Where an element sits on the line it starts on, for the question "does
+/// it fit": how many columns of other text come before it on that line
+/// beyond the `indent` it is formatted at (`lead`, for example the width of
+/// `let x = `) and how many follow it (`tail`, for example the `;` of
+/// `let x = <div />;`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Placement {
+    pub(crate) lead: usize,
+    pub(crate) tail: usize,
+}
+
+impl Placement {
+    /// An element that starts its own line at the indent it is formatted
+    /// at, with nothing after it (a child element, an element on its own
+    /// line).
+    pub(crate) const OWN_LINE: Placement = Placement { lead: 0, tail: 0 };
+}
+
+/// Formats one JSX element on a line of its own, starting at column
+/// `indent`. See [`format_jsx_element_at`].
 pub(crate) fn format_jsx_element(
     element: &ast::JsxElement,
     indent: usize,
     source: &str,
-    options: &FormatOptions,
+    options: &Ctx,
+) -> Result<String, FormatError> {
+    format_jsx_element_at(element, indent, Placement::OWN_LINE, source, options)
+}
+
+/// Formats one JSX element, continuation lines indented from `indent`. The
+/// returned text's first line has no leading indentation (the caller is
+/// always splicing this in right where something else left off — after a
+/// placeholder, after a sibling); every other line is indented to at least
+/// `indent`. `placement` says where on its line the first line will start,
+/// so that a one-line form is only chosen if the whole line fits.
+pub(crate) fn format_jsx_element_at(
+    element: &ast::JsxElement,
+    indent: usize,
+    placement: Placement,
+    source: &str,
+    options: &Ctx,
 ) -> Result<String, FormatError> {
     let name = element_name(element)?;
-    let open = tag::format_open_tag(element, indent, source, options)?;
+    let open = tag::format_open_tag(element, indent, placement, source, options)?;
     if element.close.is_none() {
         // Self-closing: no children, no closing tag.
         return Ok(open);
@@ -61,7 +91,12 @@ pub(crate) fn format_jsx_element(
     if !open.contains('\n') {
         if let Some(inline) = children::try_single_line(element, indent, source, options)? {
             let candidate = format!("{open}{inline}</{name}>");
-            if !candidate.contains('\n') && fits(indent, candidate.chars().count()) {
+            if !candidate.contains('\n')
+                && options.fits(
+                    indent + placement.lead,
+                    candidate.chars().count() + placement.tail,
+                )
+            {
                 return Ok(candidate);
             }
         }
@@ -102,7 +137,7 @@ mod tests {
     fn formats_a_self_closing_element_with_no_attributes() {
         let source = "fn f() { <div/> }";
         let element = only_element(source);
-        let out = format_jsx_element(&element, 0, source, &FormatOptions::default()).unwrap();
+        let out = format_jsx_element(&element, 0, source, &Ctx::default()).unwrap();
         assert_eq!(out, "<div />");
     }
 
@@ -110,7 +145,7 @@ mod tests {
     fn formats_an_empty_element_with_a_closing_tag() {
         let source = "fn f() { <div></div> }";
         let element = only_element(source);
-        let out = format_jsx_element(&element, 0, source, &FormatOptions::default()).unwrap();
+        let out = format_jsx_element(&element, 0, source, &Ctx::default()).unwrap();
         assert_eq!(out, "<div></div>");
     }
 }
