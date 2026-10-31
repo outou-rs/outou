@@ -254,3 +254,48 @@ fn malformed_server_status_does_not_rearm_the_notice() {
         assert_eq!(shown(&client), 1, "re-notified after {bad}");
     }
 }
+
+/// An unchanged-text `didOpen` sends nothing to rust-analyzer; a real edit
+/// sends exactly one `didChange`.
+#[test]
+fn unchanged_open_sends_no_did_change_and_an_edit_sends_one() {
+    use super::notifications::handle_rsx_change;
+    use crate::documents::{LoadOutcome, Workspace};
+
+    let tmp = std::env::temp_dir().join(format!("outou-mock-open-{}", std::process::id()));
+    let src = tmp.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(src.join("main.rsx"), "fn main() {}\n").unwrap();
+    let LoadOutcome::Planned(workspace) = Workspace::load(&tmp).unwrap() else {
+        panic!("the temp crate has a `.rsx` crate root");
+    };
+    let rsx_uri = workspace.rsx.keys().next().unwrap().clone();
+    let (ra, log) = mock_ra("open");
+    let mut state = State::new();
+    state.workspace = Some(*workspace);
+    state.ra = Some(ra);
+    let (connection, _client) = Connection::memory();
+
+    handle_rsx_change(
+        &mut state,
+        &connection,
+        rsx_uri.clone(),
+        "fn main() {}\n".to_string(),
+        1,
+    );
+    handle_rsx_change(
+        &mut state,
+        &connection,
+        rsx_uri,
+        "fn main() { let _x = 1; }\n".to_string(),
+        2,
+    );
+
+    let changes: Vec<Value> = ra_received(&log, "didChange")
+        .into_iter()
+        .filter(|m| m["method"] == "textDocument/didChange")
+        .collect();
+    assert_eq!(changes.len(), 1, "only the real edit reaches rust-analyzer");
+    assert_eq!(changes[0]["params"]["textDocument"]["version"], 1);
+    std::fs::remove_dir_all(&tmp).ok();
+}

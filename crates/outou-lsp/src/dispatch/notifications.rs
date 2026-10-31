@@ -335,8 +335,13 @@ pub(super) fn handle_rsx_change(
     }
 
     match workspace.regenerate(&rsx_uri_string, &new_text, version) {
-        Ok(Some(generated_uri_string)) => {
-            if let Some(ra) = &state.ra {
+        Ok(Some(regenerated)) => {
+            // Unchanged generated text (a `didOpen` of a file as it is on
+            // disk): rust-analyzer already has it, and a redundant
+            // `didChange` would only make it recompute.
+            let generated_uri_string = regenerated.generated_uri;
+            let ra = state.ra.as_ref().filter(|_| regenerated.generated_changed);
+            if let Some(ra) = ra {
                 if let Some(unit) = workspace.generated.get_mut(&generated_uri_string) {
                     unit.ra_version += 1;
                     ra.notify(
@@ -395,16 +400,10 @@ pub(super) fn replan_and_resync(
         // the editor's own buffer still changed: keep serving *this*
         // document from the new text rather than leaving stale syntax
         // diagnostics up for content the user no longer has on screen.
-        // `Workspace::replan`'s own doc comment records that a failure
-        // here can leave the registry and generated units partially
-        // emptied rather than restored (issue #9 Gate 3 review, L11):
-        // bump the epoch, exactly as the success path below does, so any
-        // rust-analyzer request still in flight against the pre-failure
-        // state is answered `RequestCancelled` instead of being mapped
-        // against (or falling through past) that possibly-emptied state,
-        // which could otherwise leak a raw `file://…/src/.generated/…`
-        // location to the editor.
-        state.epoch += 1;
+        // `Workspace::replan` is transactional: the previous plan, units
+        // and registry are intact (only this document's text moves ahead
+        // of its map), so in-flight requests are no worse than after an
+        // ordinary `didChange`.
         workspace.rsx.insert(
             rsx_uri_string.clone(),
             documents::RsxDocument::new(new_text, version),
@@ -609,6 +608,100 @@ mod tests {
         );
 
         fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// F17 (c), #31: rust-analyzer's check-on-save diagnostics arrive only
+    /// on save. Opening the `.rsx` file afterwards (the editor sends the
+    /// same text it already has on disk) used to regenerate the unit,
+    /// clear the stored rust-analyzer diagnostics and publish only
+    /// Outou's own set, which was empty until the next save.
+    #[test]
+    fn opening_a_file_with_unchanged_text_keeps_the_stored_rust_analyzer_diagnostics() {
+        let tmp = temp_crate_dir("f17c");
+        let src = tmp.join("src");
+        fs::create_dir_all(&src).expect("creating src dir");
+        fs::write(src.join("main.rsx"), "fn main() {}\n").expect("writing crate root");
+
+        let mut state = load_state(&tmp);
+        let (main_rsx_uri, generated_uri) = {
+            let workspace = state.workspace.as_ref().unwrap();
+            let rsx = workspace.rsx.keys().next().unwrap().clone();
+            let generated = workspace.rsx_to_generated[&rsx].clone();
+            (rsx, generated)
+        };
+        let (connection, client) = Connection::memory();
+        let ra_version_before =
+            state.workspace.as_ref().unwrap().generated[&generated_uri].ra_version;
+
+        // rust-analyzer publishes for the generated file while the editor
+        // has not opened the `.rsx` file at all.
+        diagnostics::handle_ra_publish(
+            &connection,
+            state.workspace.as_mut().unwrap(),
+            lsp_types::PublishDiagnosticsParams {
+                uri: uri::to_lsp(&outou_sourcemap::Uri::new(&generated_uri)),
+                diagnostics: vec![lsp_types::Diagnostic {
+                    severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+                    message: "a flycheck error".to_string(),
+                    ..Default::default()
+                }],
+                version: None,
+            },
+        );
+        let _ = client.receiver.try_iter().count();
+
+        handle_rsx_change(
+            &mut state,
+            &connection,
+            main_rsx_uri.clone(),
+            "fn main() {}\n".to_string(),
+            1,
+        );
+
+        let published = last_published_messages(&client, "main.rsx");
+        assert_eq!(
+            published,
+            vec!["a flycheck error".to_string()],
+            "the first publish on open must carry the stored rust-analyzer diagnostics"
+        );
+        assert_eq!(
+            state.workspace.as_ref().unwrap().generated[&generated_uri].ra_version,
+            ra_version_before,
+            "an unchanged-text open must not advance the version sent to rust-analyzer"
+        );
+
+        // A real edit still drops them: they describe the old generated text.
+        handle_rsx_change(
+            &mut state,
+            &connection,
+            main_rsx_uri,
+            "fn main() { let _x = 1; }\n".to_string(),
+            2,
+        );
+        assert!(last_published_messages(&client, "main.rsx").is_empty());
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// Messages of the last `publishDiagnostics` for a URI ending `suffix`.
+    fn last_published_messages(client: &Connection, suffix: &str) -> Vec<String> {
+        let mut last = None;
+        while let Ok(msg) = client.receiver.try_recv() {
+            if let Message::Notification(note) = msg {
+                if note.method != "textDocument/publishDiagnostics" {
+                    continue;
+                }
+                let params: lsp_types::PublishDiagnosticsParams =
+                    serde_json::from_value(note.params).unwrap();
+                if params.uri.as_str().ends_with(suffix) {
+                    last = Some(params.diagnostics);
+                }
+            }
+        }
+        last.expect("a publishDiagnostics was sent")
+            .into_iter()
+            .map(|d| d.message)
+            .collect()
     }
 
     /// L10: closing a `.rsx` document must reload it from disk and reset

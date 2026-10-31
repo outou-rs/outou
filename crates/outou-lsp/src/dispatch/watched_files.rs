@@ -170,11 +170,14 @@ fn replan_from_disk(state: &mut State, connection: &Connection) {
     };
     let previous_ra_versions = last_sent_ra_versions(workspace);
     let result = workspace.replan_from_disk();
-    // A failed re-plan can leave the workspace partly emptied (see
-    // `Workspace::replan`), so requests in flight are cancelled either way.
-    state.epoch += 1;
+    // A failed re-plan leaves the previous state intact (see
+    // `Workspace::replan`), so requests in flight stay valid; only a
+    // successful one invalidates their positions.
     match result {
-        Ok(()) => resync_after_replan(state, connection, &previous_ra_versions),
+        Ok(()) => {
+            state.epoch += 1;
+            resync_after_replan(state, connection, &previous_ra_versions)
+        }
         Err(e) => eprintln!("outou-lsp: re-planning after a change on disk: {e}"),
     }
 }

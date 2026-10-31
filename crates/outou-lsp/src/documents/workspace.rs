@@ -34,6 +34,9 @@ pub struct Workspace {
     pub rsx_to_generated: HashMap<String, String>,
 }
 
+/// How a unit's `.rsx` source is read from disk (injectable for tests).
+type ReadSource<'a> = &'a dyn Fn(&std::path::Path) -> std::io::Result<String>;
+
 /// Errors from [`Workspace::load`].
 #[derive(Debug, thiserror::Error)]
 pub enum LoadError {
@@ -86,7 +89,7 @@ impl Workspace {
                     rsx_to_generated: HashMap::new(),
                 };
                 for unit in &plan.units {
-                    workspace.load_unit(unit)?;
+                    workspace.load_unit(unit, &|path| fs::read_to_string(path))?;
                 }
                 Ok(LoadOutcome::Planned(Box::new(workspace)))
             }
@@ -96,12 +99,11 @@ impl Workspace {
     /// Generates one unit fresh from disk and installs it (used at load
     /// time and whenever a full re-plan is required).
     ///
-    fn load_unit(&mut self, unit: &PlannedUnit) -> Result<(), LoadError> {
-        let source =
-            fs::read_to_string(&unit.source_file).map_err(|source| LoadError::ReadSource {
-                path: unit.source_file.clone(),
-                source,
-            })?;
+    fn load_unit(&mut self, unit: &PlannedUnit, read: ReadSource<'_>) -> Result<(), LoadError> {
+        let source = read(&unit.source_file).map_err(|source| LoadError::ReadSource {
+            path: unit.source_file.clone(),
+            source,
+        })?;
         self.load_unit_with_text(unit, &source)
     }
 
@@ -130,16 +132,9 @@ impl Workspace {
     /// `mod` line but no matching `#[path]` — non-compiling Rust. See
     /// [`Self::build_overlay`] for exactly which buffers are used.
     ///
-    /// `TODO(alpha) (#31)`: if [`Self::load_unit`]/[`Self::load_unit_with_text`]
-    /// fails for one unit *after* `self.generated`/`self.rsx` have
-    /// already been cleared below, this returns `Err` with the workspace
-    /// left emptied rather than restored to its pre-`replan` state. Not
-    /// reachable by any known input in Phase 0 ([`Mode::Recovery`] does
-    /// not reject syntax errors, so this can only fire for
-    /// [`LoadError::ReadSource`]/[`LoadError::Emit`] on a still-unsupported
-    /// construct) and out of scope for issue #9's M2 fix; a fully
-    /// transactional re-plan (compute the new state, then swap it in only
-    /// on success) is the eventual fix.
+    /// Transactional: the new state is built aside and swapped in only
+    /// when every unit generated, so an `Err` leaves the previous plan,
+    /// documents, generated units and registry exactly as they were.
     pub fn replan(&mut self, rsx_uri: &str, override_text: &str) -> Result<(), LoadError> {
         let overlay = self.build_overlay(Some((rsx_uri, override_text)));
         self.replan_with_overlay(&overlay)
@@ -155,6 +150,16 @@ impl Workspace {
     }
 
     fn replan_with_overlay(&mut self, overlay: &HashMap<PathBuf, String>) -> Result<(), LoadError> {
+        self.replan_with_reader(overlay, &|path| fs::read_to_string(path))
+    }
+
+    /// [`Self::replan_with_overlay`] with the file reader made explicit, so
+    /// a test can make one unit fail to load part-way through.
+    fn replan_with_reader(
+        &mut self,
+        overlay: &HashMap<PathBuf, String>,
+        read: ReadSource<'_>,
+    ) -> Result<(), LoadError> {
         match plan::resolve_with_overlay(&self.manifest_dir, overlay)? {
             Resolved::Degraded { .. } => {
                 // The edit made the crate root itself disappear (or
@@ -163,25 +168,26 @@ impl Workspace {
                 Ok(())
             }
             Resolved::Planned { plan, .. } => {
-                self.plan = Some(plan.clone());
-                self.registry = Registry::new();
-                self.generated.clear();
-                self.rsx_to_generated.clear();
-                let previous_versions: HashMap<String, i32> = std::mem::take(&mut self.rsx)
-                    .into_iter()
-                    .map(|(uri, doc)| (uri, doc.version))
-                    .collect();
+                let mut next = Self {
+                    manifest_dir: self.manifest_dir.clone(),
+                    plan: Some(plan.clone()),
+                    registry: Registry::new(),
+                    rsx: HashMap::new(),
+                    generated: HashMap::new(),
+                    rsx_to_generated: HashMap::new(),
+                };
                 for unit in &plan.units {
                     match overlay_text_for(overlay, &unit.source_file) {
-                        Some(text) => self.load_unit_with_text(unit, text)?,
-                        None => self.load_unit(unit)?,
+                        Some(text) => next.load_unit_with_text(unit, text)?,
+                        None => next.load_unit(unit, read)?,
                     }
                 }
-                for (uri, doc) in self.rsx.iter_mut() {
-                    if let Some(v) = previous_versions.get(uri) {
-                        doc.version = *v;
+                for (uri, doc) in next.rsx.iter_mut() {
+                    if let Some(previous) = self.rsx.get(uri) {
+                        doc.version = previous.version;
                     }
                 }
+                *self = next;
                 Ok(())
             }
         }
@@ -264,14 +270,19 @@ impl Workspace {
 
     /// Regenerates the single unit for `rsx_uri` from `new_text`, updating
     /// the document, the generated text/line index and the registry.
-    /// Returns the regenerated unit's generated URI, or `None` if
-    /// `rsx_uri` is not a known unit.
+    /// Returns `None` if `rsx_uri` is not a known unit.
+    ///
+    /// The diagnostics rust-analyzer last published are kept only when the
+    /// generated text did not change (an editor opening a file with the
+    /// text already on disk, F17 (c)): they still describe exactly that
+    /// text, and rust-analyzer's check-on-save ones arrive only on save, so
+    /// clearing them showed an empty set until the next save.
     pub fn regenerate(
         &mut self,
         rsx_uri: &str,
         new_text: &str,
         version: i32,
-    ) -> Result<Option<String>, LoadError> {
+    ) -> Result<Option<Regenerated>, LoadError> {
         let Some(generated_uri) = self.rsx_to_generated.get(rsx_uri).cloned() else {
             return Ok(None);
         };
@@ -290,25 +301,41 @@ impl Workspace {
             rsx_uri.to_string(),
             RsxDocument::new(new_text.to_string(), version),
         );
+        let mut generated_changed = true;
         if let Some(unit) = self.generated.get_mut(&generated_uri) {
-            unit.text = generated.rust.clone();
-            unit.line_index = LineIndex::new(&generated.rust);
+            generated_changed = unit.text != generated.rust;
             unit.declared_modules = declared_modules;
-            // The diagnostics rust-analyzer last published were for the
-            // *previous* generated text; keeping them around republished
-            // stale rustc errors for lines the current buffer no longer
-            // has (issue #9 Gate 3 review, M6/HIGH-4, confirmed live: a
-            // fixed type error kept re-publishing the same five stale
-            // diagnostics for 3+ seconds after the buffer was corrected,
-            // clearing only on an unrelated `mod` edit). A fresh
-            // `publishDiagnostics` from rust-analyzer for the new text
-            // will repopulate this; until then, none is more honest than
-            // stale.
-            unit.last_ra_diagnostics = Vec::new();
+            if generated_changed {
+                unit.text = generated.rust.clone();
+                unit.line_index = LineIndex::new(&generated.rust);
+                // The diagnostics rust-analyzer last published were for
+                // the *previous* generated text; keeping them around
+                // republished stale rustc errors for lines the current
+                // buffer no longer has (issue #9 Gate 3 review,
+                // M6/HIGH-4, confirmed live: a fixed type error kept
+                // re-publishing the same five stale diagnostics for 3+
+                // seconds after the buffer was corrected, clearing only
+                // on an unrelated `mod` edit). A fresh `publishDiagnostics`
+                // from rust-analyzer for the new text will repopulate
+                // this; until then, none is more honest than stale.
+                unit.last_ra_diagnostics = Vec::new();
+            }
         }
         self.registry = std::mem::take(&mut self.registry).with_map(generated.source_map);
-        Ok(Some(generated_uri))
+        Ok(Some(Regenerated {
+            generated_uri,
+            generated_changed,
+        }))
     }
+}
+
+/// What [`Workspace::regenerate`] did.
+pub struct Regenerated {
+    /// The regenerated unit's generated URI.
+    pub generated_uri: String,
+    /// Whether the generated text differs from what it was before. When it
+    /// does not, rust-analyzer already holds this text and needs no update.
+    pub generated_changed: bool,
 }
 
 /// Canonicalizes `path` for overlay-key identity, falling back to the

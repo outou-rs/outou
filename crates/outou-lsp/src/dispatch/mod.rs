@@ -158,8 +158,9 @@ pub(crate) struct State {
     /// rust-analyzer's work-done progress tokens, renamed for the editor
     /// and mapped back for `window/workDoneProgress/cancel`.
     pub(crate) progress_tokens: crate::status::ProgressTokens,
-    /// Bumped by [`notifications::replan_and_resync`] every time a
-    /// crate-wide re-plan succeeds. See [`Pending::epoch`].
+    /// Bumped by [`notifications::replan_and_resync`] and by
+    /// `watched_files::replan_from_disk` every time a crate-wide re-plan
+    /// succeeds. See [`Pending::epoch`].
     epoch: u64,
     /// The semantic tokens legend this server advertises and translates
     /// against (`crate::semantic_tokens::legend`): rust-analyzer's own

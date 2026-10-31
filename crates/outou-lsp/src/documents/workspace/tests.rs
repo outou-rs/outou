@@ -93,16 +93,59 @@ fn regenerate_clears_previously_cached_rust_analyzer_diagnostics() {
         ..Default::default()
     }];
 
-    let text = workspace.rsx[&main_rsx_uri].line_index.text().to_string();
-    workspace
+    let text =
+        workspace.rsx[&main_rsx_uri].line_index.text().to_string() + "\nfn extra_item() {}\n";
+    let regenerated = workspace
         .regenerate(&main_rsx_uri, &text, 2)
-        .expect("regenerating succeeds");
+        .expect("regenerating succeeds")
+        .expect("main.rsx is a known unit");
 
+    assert!(regenerated.generated_changed);
     assert!(
         workspace.generated[&generated_uri]
             .last_ra_diagnostics
             .is_empty(),
         "regenerate must clear the previous rust-analyzer diagnostics"
+    );
+}
+
+/// F17 (c), #31: regenerating from the text the unit already has (a
+/// `didOpen` of the file as it is on disk) leaves the generated text, and
+/// so the rust-analyzer diagnostics that describe it, as they were.
+#[test]
+fn regenerate_with_unchanged_text_keeps_rust_analyzer_diagnostics() {
+    let outcome = Workspace::load(&phase0_app_dir()).expect("plans and generates");
+    let LoadOutcome::Planned(mut workspace) = outcome else {
+        panic!("examples/phase0-app has a `.rsx` crate root");
+    };
+    let main_rsx_uri = workspace
+        .rsx
+        .keys()
+        .find(|uri| uri.ends_with("main.rsx"))
+        .expect("main.rsx is a known unit")
+        .clone();
+    let generated_uri = workspace.rsx_to_generated[&main_rsx_uri].clone();
+    workspace
+        .generated
+        .get_mut(&generated_uri)
+        .unwrap()
+        .last_ra_diagnostics = vec![lsp_types::Diagnostic {
+        message: "mismatched types".to_string(),
+        ..Default::default()
+    }];
+
+    let text = workspace.rsx[&main_rsx_uri].line_index.text().to_string();
+    let regenerated = workspace
+        .regenerate(&main_rsx_uri, &text, 2)
+        .expect("regenerating succeeds")
+        .expect("main.rsx is a known unit");
+
+    assert!(!regenerated.generated_changed);
+    assert_eq!(
+        workspace.generated[&generated_uri]
+            .last_ra_diagnostics
+            .len(),
+        1
     );
 }
 
@@ -247,4 +290,88 @@ fn a_symlinked_editor_uri_maps_once_normalized() {
         .unwrap();
     assert!(crate::mapping::rsx_position_to_generated(&workspace, &normalized, position).is_some());
     let _ = fs::remove_dir_all(&root);
+}
+
+/// #31: a re-plan that fails part-way (here: the second unit's source
+/// cannot be read after the first one was already generated) leaves the
+/// previous plan, documents, generated units and mappings queryable.
+#[test]
+fn a_replan_that_fails_part_way_keeps_the_previous_state() {
+    let tmp = std::env::temp_dir().join(format!(
+        "outou-lsp-test-replan-atomic-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let src = tmp.join("src");
+    fs::create_dir_all(&src).expect("creating src dir");
+    fs::write(src.join("main.rsx"), "mod a;\nmod b;\nfn main() {}\n").expect("writing root");
+    fs::write(src.join("a.rsx"), "pub fn a() {}\n").expect("writing a");
+    fs::write(src.join("b.rsx"), "pub fn b() {}\n").expect("writing b");
+
+    let LoadOutcome::Planned(mut workspace) = Workspace::load(&tmp).expect("plans and generates")
+    else {
+        panic!("the temp crate has a `.rsx` crate root");
+    };
+    let mut rsx_before: Vec<(String, String, i32)> = workspace
+        .rsx
+        .iter()
+        .map(|(uri, doc)| (uri.clone(), doc.line_index.text().to_string(), doc.version))
+        .collect();
+    rsx_before.sort();
+    let mut generated_before: Vec<(String, String)> = workspace
+        .generated
+        .iter()
+        .map(|(uri, unit)| (uri.clone(), unit.text.clone()))
+        .collect();
+    generated_before.sort();
+    let map_before = workspace.rsx_to_generated.clone();
+    let units_before = workspace.plan.as_ref().unwrap().units.len();
+    assert_eq!(units_before, 3);
+
+    let failing = |path: &Path| -> std::io::Result<String> {
+        if path.ends_with("b.rsx") {
+            Err(std::io::Error::other("injected read failure"))
+        } else {
+            fs::read_to_string(path)
+        }
+    };
+    let result = workspace.replan_with_reader(&HashMap::new(), &failing);
+    assert!(matches!(result, Err(LoadError::ReadSource { .. })));
+
+    let mut rsx_after: Vec<(String, String, i32)> = workspace
+        .rsx
+        .iter()
+        .map(|(uri, doc)| (uri.clone(), doc.line_index.text().to_string(), doc.version))
+        .collect();
+    rsx_after.sort();
+    let mut generated_after: Vec<(String, String)> = workspace
+        .generated
+        .iter()
+        .map(|(uri, unit)| (uri.clone(), unit.text.clone()))
+        .collect();
+    generated_after.sort();
+    assert_eq!(rsx_after, rsx_before, "documents must be unchanged");
+    assert_eq!(generated_after, generated_before, "units must be unchanged");
+    assert_eq!(workspace.rsx_to_generated, map_before);
+    assert_eq!(workspace.plan.as_ref().unwrap().units.len(), units_before);
+    let a_generated = workspace
+        .generated
+        .keys()
+        .find(|uri| uri.ends_with("a.rs"))
+        .expect("a.rs is still a known unit")
+        .clone();
+    let a_uri = crate::uri::to_lsp(&outou_sourcemap::Uri::new(&a_generated));
+    assert!(
+        !matches!(
+            crate::mapping::generated_location_to_source(
+                &workspace,
+                &a_uri,
+                lsp_types::Range::default()
+            ),
+            crate::mapping::MappedLocation::Unchanged
+        ),
+        "the registry must still know the previous generated files"
+    );
+
+    fs::remove_dir_all(&tmp).ok();
 }

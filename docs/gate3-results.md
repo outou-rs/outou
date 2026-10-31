@@ -438,6 +438,9 @@ Honest caveats, not smoothed over:
   editor. Fixed: the epoch is now bumped on the failure path too, exactly
   as the success path already does, and the contradicting comment is
   removed.
+  *Later note (#31): superseded by the transactional `Workspace::replan`;
+  a failed re-plan now keeps the previous plan, units and registry intact,
+  so the failure path no longer needs the epoch bump.*
 - **A bare `<` (an advertised trigger character) answered nothing (M6,
   second review, fixed).** `JsxTag::Incomplete { name: None }` (typing `<`
   with no name yet, inside an existing element's children) fell through
