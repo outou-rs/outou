@@ -32,6 +32,10 @@ pub enum FormatError {
         /// `rustfmt`'s stderr output.
         stderr: String,
     },
+    /// [`crate::FormatOptions::deadline`] passed before formatting finished;
+    /// the running `rustfmt` was killed.
+    #[error("formatting timed out")]
+    TimedOut,
     /// `rustfmt` produced output indented with tabs. This crate's own
     /// line-based indentation math (adding or removing a fixed number of
     /// *spaces* per level) is not meaningful against a tab-indented line,

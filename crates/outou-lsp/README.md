@@ -175,6 +175,10 @@ failure):
   fence, a bare heading) surviving, is suppressed entirely rather than
   shown starting mid-sentence or empty-looking.
 
+### Formatting
+
+`textDocument/formatting` is answered locally by `outou-fmt`, the same pipeline as `outou fmt`. The request's `options` (`tabSize`, `insertSpaces`, ...) are deliberately ignored: `rustfmt.toml` is the single source of truth for layout, so an editor setting can never silently override the project's configuration, and the result is identical to what `outou fmt` produces (a test pins that the output does not depend on `options`). The request runs on the server loop but within a 10 second budget covering every `rustfmt` process the file needs; past it the running `rustfmt` is killed and the request fails with a `RequestFailed` error, "Outou formatting timed out". Other failures (a syntax error, a missing `rustfmt`) still answer `null` and log to stderr.
+
 ### Semantic tokens, rename, references
 
 `textDocument/semanticTokens/full` merges two sources: rust-analyzer's

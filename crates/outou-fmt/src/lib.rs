@@ -66,6 +66,13 @@ pub struct FormatOptions {
     /// uninstall `rustfmt` — see `rustfmt_proc`'s tests and
     /// `crates/outou-cli`'s own CLI test for the same message.
     pub rustfmt_program: String,
+    /// An absolute point in time by which the whole [`format_source`] call
+    /// (every `rustfmt` process it starts, not each one separately) must
+    /// be finished. When it passes, the running `rustfmt` is killed and
+    /// [`FormatError::TimedOut`] is returned. `None` (the default) waits
+    /// as long as it takes, which is right for `outou fmt`; a long-lived
+    /// server sets it so one pathological file cannot stall it.
+    pub deadline: Option<std::time::Instant>,
 }
 
 impl Default for FormatOptions {
@@ -76,6 +83,7 @@ impl Default for FormatOptions {
         Self {
             edition: "2021".to_string(),
             rustfmt_program: "rustfmt".to_string(),
+            deadline: None,
         }
     }
 }

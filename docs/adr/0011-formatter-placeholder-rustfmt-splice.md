@@ -37,3 +37,7 @@ Two invariants keep this safe:
 - **A custom Rust formatter for the whole file.** Ruled out by `AGENTS.md` and the issue itself: reimplementing `rustfmt`'s output exactly is a maintenance burden with no upside, and any divergence from real `rustfmt` output would make `cargo fmt --check` and `outou fmt --check` disagree.
 - **Feed `rustfmt` the file with JSX left in place, ignoring its errors.** `rustfmt` cannot parse JSX at all; this only works if it tolerates and passes through unrecognized syntax region-by-region, which it does not.
 - **One `rustfmt` invocation per JSX region instead of one per file plus one per nested island.** Slower (many more process spawns) for no accuracy benefit, since the placeholder scheme already lets a single pass see the real surrounding Rust context (its actual indentation) for the common case of top-level JSX.
+
+## Amendment (2026-10-31)
+
+The Consequences bullet on the two callers says `outou-lsp` answers with no edits on every failure. One exception was added with the formatting deadline (issue #31): when `textDocument/formatting` exceeds its 10 second budget, `rustfmt` is killed and the request is answered with an LSP error, `RequestFailed` (-32803) "Outou formatting timed out". Unlike a missing `rustfmt` or a syntax error, the user asked and nothing happened for a reason they can act on (a very large file, a stuck `rustfmt`). The library reports it as `FormatError::TimedOut`; `outou fmt` sets no deadline and never produces it.

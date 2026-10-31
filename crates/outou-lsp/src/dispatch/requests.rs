@@ -41,21 +41,25 @@ pub(crate) fn dispatch_client_request(state: &mut State, connection: &Connection
 /// Rust rust-analyzer sees, and it is the exact same pipeline `outou fmt`
 /// uses (`docs/phase0/issues/13-formatter.md`: "one pipeline, not two").
 ///
-/// `TODO(alpha) (#31)`: this runs synchronously, inline in the single
-/// dispatch loop every other request also goes through, with no
-/// wall-clock budget — one `rustfmt` process per file plus one more per
-/// expression island (`crate::snippet`'s recursive placeholder passes),
-/// so cost scales with island count, not file size. Measured directly
-/// (this machine, release build): ~0.18s for the whole of
-/// `examples/phase0-app/src/components.rsx` (a handful of islands); an
-/// independent review reproduction reported low-single-digit seconds for
-/// a small file engineered to contain dozens of islands. A future fix
-/// should move this to a worker thread and answer `null` past some
-/// deadline rather than block the whole server on a pathological file.
-/// This also ignores the request's `options` (`tabSize`, `insertSpaces`)
-/// entirely: `outou_fmt::FormatOptions` has no equivalent knobs yet, and
-/// `rustfmt`'s own indent width is a fixed constant
-/// (`outou_fmt::width::INDENT_UNIT`), not sourced from the editor.
+/// The request's `options` (`tabSize`, `insertSpaces`, ...) are ignored on
+/// purpose: `rustfmt.toml` is the one source of truth for layout, exactly
+/// as for `outou fmt`, so the editor cannot silently override the
+/// project's configuration (and `outou-fmt` itself forces space
+/// indentation, see `FormatOptions`). A test pins that the output does
+/// not depend on them.
+///
+/// This runs synchronously, inline in the single dispatch loop every
+/// other request also goes through, but within a wall-clock budget
+/// ([`FORMATTING_TIMEOUT`]) covering every `rustfmt` process the file
+/// needs (one per file plus one per expression island). Past it the
+/// running `rustfmt` is killed and the request is answered with an error
+/// response ("formatting timed out") instead of blocking the server
+/// indefinitely. A worker thread is deliberately not used in the alpha:
+/// formatting is user-initiated, its typical cost is well under a second
+/// (~0.18s for `examples/phase0-app/src/components.rsx`) and the worst case
+/// is bounded by the 10 second budget. The price is that other requests
+/// queue behind it meanwhile and `$/cancelRequest` cannot be honoured
+/// until it finishes.
 ///
 /// Responds with `null` (no edits) rather than an LSP error response for
 /// every case the issue's spec calls out as "never edit": an unknown
@@ -66,8 +70,32 @@ pub(crate) fn dispatch_client_request(state: &mut State, connection: &Connection
 /// missing or failing, as opposed to the file's own syntax error) is
 /// still logged to this server's stderr rather than silently dropped, so
 /// a misconfigured environment is diagnosable instead of just quietly
-/// never formatting anything.
+/// never formatting anything. The one exception is a timeout, which is an
+/// error response: the user asked and nothing happened for a reason they
+/// can act on (a very large file, a stuck `rustfmt`).
 fn dispatch_formatting_request(state: &State, connection: &Connection, req: Request) {
+    answer_formatting_request(
+        state,
+        connection,
+        req,
+        &outou_fmt::FormatOptions::default(),
+        FORMATTING_TIMEOUT,
+    );
+}
+
+/// Longest the server loop may be held up by one `textDocument/formatting`
+/// request.
+const FORMATTING_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// [`dispatch_formatting_request`] with the formatter settings and budget
+/// injectable, so a test can use a fake `rustfmt` and a short deadline.
+fn answer_formatting_request(
+    state: &State,
+    connection: &Connection,
+    req: Request,
+    base_options: &outou_fmt::FormatOptions,
+    timeout: std::time::Duration,
+) {
     let client_id = req.id.clone();
     let Some(rsx_uri) = extract_document_uri(&req.params) else {
         respond_null(connection, client_id);
@@ -80,10 +108,26 @@ fn dispatch_formatting_request(state: &State, connection: &Connection, req: Requ
     };
 
     let source = document.line_index.text();
-    let edits = match formatting_edits(source, &outou_fmt::FormatOptions::default()) {
+    let options = outou_fmt::FormatOptions {
+        deadline: Some(std::time::Instant::now() + timeout),
+        ..base_options.clone()
+    };
+    let edits = match formatting_edits(source, &options) {
         Ok(edits) => edits,
         Err(outou_fmt::FormatError::SyntaxErrors { .. }) => {
             respond_null(connection, client_id);
+            return;
+        }
+        Err(outou_fmt::FormatError::TimedOut) => {
+            eprintln!("outou-lsp: formatting {rsx_uri_string} timed out after {timeout:?}");
+            let _ = connection.sender.send(Message::Response(Response {
+                id: client_id,
+                response_result: Err(ResponseError {
+                    code: lsp_server::ErrorCode::RequestFailed as i32,
+                    message: "Outou formatting timed out".to_string(),
+                    data: None,
+                }),
+            }));
             return;
         }
         Err(err) => {
@@ -801,6 +845,111 @@ mod tests {
         let edits = edits.as_array().expect("an array of edits");
         assert_eq!(edits.len(), 1);
         assert_eq!(edits[0]["newText"], json!("fn f() {\n    <div />\n}\n"));
+    }
+
+    /// A `rustfmt` that never finishes must not hold the server loop past
+    /// the budget: the request gets an error response instead.
+    #[cfg(unix)]
+    #[test]
+    fn formatting_request_times_out_with_an_error_response_when_rustfmt_hangs() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("outou-lsp-slow-fmt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("slow-rustfmt.sh");
+        std::fs::write(&script, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let options = outou_fmt::FormatOptions {
+            rustfmt_program: script.to_string_lossy().into_owned(),
+            ..outou_fmt::FormatOptions::default()
+        };
+
+        let mut state = State::new();
+        let uri: lsp_types::Uri = "file:///app.rsx".parse().unwrap();
+        state.degraded_docs.insert(
+            uri::to_outou(&uri).as_str().to_string(),
+            RsxDocument::new("fn f() { <div  /> }".to_string(), 1),
+        );
+        let (connection, client) = Connection::memory();
+        let started = std::time::Instant::now();
+        // Retry on ETXTBSY: a concurrent fork can briefly keep the freshly
+        // written script busy; that shows up as a null response, not a timeout.
+        let mut response = None;
+        for _ in 0..20 {
+            answer_formatting_request(
+                &state,
+                &connection,
+                Request {
+                    id: RequestId::from(1),
+                    method: "textDocument/formatting".to_string(),
+                    params: json!({ "textDocument": { "uri": "file:///app.rsx" } }),
+                },
+                &options,
+                std::time::Duration::from_millis(300),
+            );
+            let Message::Response(r) = client
+                .receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("a response")
+            else {
+                panic!("expected a response");
+            };
+            if r.response_result.is_err() {
+                response = Some(r);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let elapsed = started.elapsed();
+        std::fs::remove_dir_all(&dir).ok();
+
+        let error = response
+            .expect("an error response")
+            .response_result
+            .unwrap_err();
+        assert_eq!(error.code, lsp_server::ErrorCode::RequestFailed as i32);
+        assert_eq!(error.message, "Outou formatting timed out");
+        assert!(elapsed < std::time::Duration::from_secs(10), "{elapsed:?}");
+    }
+
+    /// `rustfmt.toml` wins: the editor's `tabSize` / `insertSpaces` never
+    /// change what comes back.
+    #[test]
+    fn formatting_request_output_does_not_depend_on_the_editor_options() {
+        let run = |options: Value| {
+            let mut state = State::new();
+            let uri: lsp_types::Uri = "file:///app.rsx".parse().unwrap();
+            state.degraded_docs.insert(
+                uri::to_outou(&uri).as_str().to_string(),
+                RsxDocument::new("fn f() { <div  /> }".to_string(), 1),
+            );
+            let (connection, client) = Connection::memory();
+            dispatch_formatting_request(
+                &state,
+                &connection,
+                Request {
+                    id: RequestId::from(1),
+                    method: "textDocument/formatting".to_string(),
+                    params: json!({
+                        "textDocument": { "uri": "file:///app.rsx" },
+                        "options": options,
+                    }),
+                },
+            );
+            let Message::Response(response) = client
+                .receiver
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+            else {
+                panic!("expected a response");
+            };
+            response.response_result.expect("no error")
+        };
+        let spaces = run(json!({ "tabSize": 4, "insertSpaces": true }));
+        let tabs = run(json!({ "tabSize": 8, "insertSpaces": false }));
+        let none = run(json!({}));
+        assert_eq!(spaces, tabs);
+        assert_eq!(spaces, none);
+        assert_eq!(spaces[0]["newText"], json!("fn f() {\n    <div />\n}\n"));
     }
 
     /// Already-formatted input returns an empty edit list, not `null` —

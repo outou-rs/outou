@@ -3,9 +3,15 @@
 
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use crate::error::FormatError;
 use crate::FormatOptions;
+
+/// Shortest pause (first poll) and longest pause (back-off ceiling) between
+/// polls in [`wait_until`] and [`join_until`].
+const POLL_START: Duration = Duration::from_millis(1);
+const POLL_MAX: Duration = Duration::from_millis(16);
 
 /// Formats `input` (a complete, syntactically valid Rust source text) by
 /// piping it through `<options.rustfmt_program> --edition <options.edition>`
@@ -16,24 +22,52 @@ use crate::FormatOptions;
 /// [`FormatError`]s — never silently swallowed, and never a fallback to
 /// leaving the text unformatted (`docs/phase0/issues/13-formatter.md`).
 pub(crate) fn run_rustfmt(input: &str, options: &FormatOptions) -> Result<String, FormatError> {
+    if options
+        .deadline
+        .is_some_and(|deadline| Instant::now() >= deadline)
+    {
+        return Err(FormatError::TimedOut);
+    }
     let mut child = build_command(options)
         .spawn()
         .map_err(|source| FormatError::RustfmtUnavailable { source })?;
 
-    // `stdin` is written on its own thread while this thread drains
-    // `rustfmt`'s stdout and stderr in `wait_with_output`. Writing it
-    // inline would deadlock as soon as `rustfmt` filled its output pipe
-    // while this process was still blocked writing input: neither side
-    // could make progress. Dropping the handle at the end of the thread
-    // closes the pipe so `rustfmt` sees end of input.
+    // `stdin` is written on its own thread while the output pipes are
+    // drained on two more, so this thread is free to watch the clock.
+    // Writing it inline would deadlock as soon as `rustfmt` filled its
+    // output pipe while this process was still blocked writing input.
+    // Dropping the handle at the end of the thread closes the pipe so
+    // `rustfmt` sees end of input.
     let mut stdin = child.stdin.take().expect("stdin was piped");
     let bytes = input.as_bytes().to_vec();
     let writer = std::thread::spawn(move || stdin.write_all(&bytes));
+    let stdout = drain(child.stdout.take().expect("stdout was piped"));
+    let stderr = drain(child.stderr.take().expect("stderr was piped"));
 
-    let output = child
-        .wait_with_output()
-        .map_err(|source| FormatError::RustfmtUnavailable { source })?;
-    let write_result = match writer.join() {
+    let status = match wait_until(&mut child, options.deadline) {
+        Ok(Some(status)) => status,
+        // Past the deadline: the child is killed and reaped, and the helper
+        // threads are left to finish on their own (a grandchild holding a
+        // pipe open must not be able to stall the caller past its deadline).
+        Ok(None) => return Err(FormatError::TimedOut),
+        Err(source) => return Err(FormatError::RustfmtUnavailable { source }),
+    };
+    // The child has exited, but a grandchild may still hold a pipe open, so
+    // the helper threads are joined against the same deadline. If they do not
+    // finish in time they are left to end on their own, as above.
+    let join_output = |handle: std::thread::JoinHandle<std::io::Result<Vec<u8>>>| {
+        join_until(handle, options.deadline)?
+            .map_err(|_| {
+                FormatError::Internal("a thread reading rustfmt's output panicked".into())
+            })?
+            .map_err(|source| FormatError::RustfmtUnavailable { source })
+    };
+    let output = std::process::Output {
+        status,
+        stdout: join_output(stdout)?,
+        stderr: join_output(stderr)?,
+    };
+    let write_result = match join_until(writer, options.deadline)? {
         Ok(result) => result,
         Err(_) => {
             return Err(FormatError::Internal(
@@ -75,6 +109,63 @@ pub(crate) fn run_rustfmt(input: &str, options: &FormatOptions) -> Result<String
         return Err(FormatError::TabIndentedOutput);
     }
     Ok(formatted)
+}
+
+/// Reads `pipe` to the end on its own thread.
+fn drain<R: std::io::Read + Send + 'static>(
+    mut pipe: R,
+) -> std::thread::JoinHandle<std::io::Result<Vec<u8>>> {
+    std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        pipe.read_to_end(&mut buffer).map(|_| buffer)
+    })
+}
+
+/// Joins `handle`, giving up with [`FormatError::TimedOut`] once `deadline`
+/// passes. The inner `Result` is `join`'s own (`Err` means the thread
+/// panicked). Without a deadline this is a plain blocking `join`.
+fn join_until<T>(
+    handle: std::thread::JoinHandle<T>,
+    deadline: Option<Instant>,
+) -> Result<std::thread::Result<T>, FormatError> {
+    let Some(deadline) = deadline else {
+        return Ok(handle.join());
+    };
+    let mut pause = POLL_START;
+    while !handle.is_finished() {
+        if Instant::now() >= deadline {
+            return Err(FormatError::TimedOut);
+        }
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(POLL_MAX);
+    }
+    Ok(handle.join())
+}
+
+/// Waits for `child` to exit. `Ok(None)` means `deadline` passed first, in
+/// which case the child has been killed and reaped. With a deadline it polls
+/// with a short back-off so the clock can be checked; without one it blocks.
+fn wait_until(
+    child: &mut std::process::Child,
+    deadline: Option<Instant>,
+) -> std::io::Result<Option<std::process::ExitStatus>> {
+    if deadline.is_none() {
+        return child.wait().map(Some);
+    }
+    let mut pause = POLL_START;
+    loop {
+        if let Some(status) = child.try_wait()? {
+            return Ok(Some(status));
+        }
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            // The child may have exited between the poll and the kill.
+            let _ = child.kill();
+            child.wait()?;
+            return Ok(None);
+        }
+        std::thread::sleep(pause);
+        pause = (pause * 2).min(POLL_MAX);
+    }
 }
 
 /// Builds the `rustfmt` invocation for `options`, without spawning it —
@@ -301,6 +392,117 @@ mod tests {
             "a truncated output was accepted: {:?}",
             result.map(|text| text.len())
         );
+    }
+
+    /// Writes an executable script for a fake `rustfmt` and returns its path.
+    #[cfg(unix)]
+    fn fake_rustfmt(name: &str, body: &str) -> (std::path::PathBuf, String) {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "outou-fmt-{name}-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let script = dir.join("fake-rustfmt.sh");
+        std::fs::write(&script, body).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let program = script.to_string_lossy().into_owned();
+        (dir, program)
+    }
+
+    /// Runs `run_rustfmt`, retrying the ETXTBSY a concurrent fork can cause
+    /// right after the script was written.
+    #[cfg(unix)]
+    fn run_with_etxtbsy_retry(input: &str, options: &FormatOptions) -> Result<String, FormatError> {
+        const ETXTBSY: i32 = 26;
+        let mut result = run_rustfmt(input, options);
+        for _ in 0..20 {
+            match &result {
+                Err(FormatError::RustfmtUnavailable { source })
+                    if source.raw_os_error() == Some(ETXTBSY) =>
+                {
+                    std::thread::sleep(Duration::from_millis(50));
+                    result = run_rustfmt(input, options);
+                }
+                _ => break,
+            }
+        }
+        result
+    }
+
+    /// A `rustfmt` that never finishes must be killed at the deadline and
+    /// reported as `TimedOut`, well before it would have exited by itself.
+    #[cfg(unix)]
+    #[test]
+    fn a_rustfmt_that_outlives_the_deadline_is_killed_and_reported_as_timed_out() {
+        let (dir, program) = fake_rustfmt("slow", "#!/bin/sh\nexec sleep 30\n");
+        let options = FormatOptions {
+            rustfmt_program: program,
+            deadline: Some(Instant::now() + Duration::from_millis(300)),
+            ..FormatOptions::default()
+        };
+        let started = Instant::now();
+        let result = run_with_etxtbsy_retry("fn f() {}\n", &options);
+        let elapsed = started.elapsed();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(matches!(result, Err(FormatError::TimedOut)), "{result:?}");
+        assert!(elapsed < Duration::from_secs(10), "took {elapsed:?}");
+    }
+
+    /// A deadline that is not reached changes nothing.
+    #[cfg(unix)]
+    #[test]
+    fn a_deadline_that_is_not_reached_does_not_affect_the_result() {
+        let (dir, program) = fake_rustfmt("fast", "#!/bin/sh\nexec cat\n");
+        let options = FormatOptions {
+            rustfmt_program: program,
+            deadline: Some(Instant::now() + Duration::from_secs(60)),
+            ..FormatOptions::default()
+        };
+        let result = run_with_etxtbsy_retry("fn f() {}\n", &options);
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(result.expect("the program succeeds"), "fn f() {}\n");
+    }
+
+    /// The deadline must also bound the wait for the output pipes: a
+    /// grandchild that inherits them keeps them open after `rustfmt` itself
+    /// has exited normally.
+    #[cfg(unix)]
+    #[test]
+    fn a_grandchild_holding_the_output_pipes_cannot_outlive_the_deadline() {
+        let (dir, program) = fake_rustfmt("grandchild", "#!/bin/sh\nsleep 5 &\nexec cat\n");
+        let options = FormatOptions {
+            rustfmt_program: program,
+            deadline: Some(Instant::now() + Duration::from_millis(300)),
+            ..FormatOptions::default()
+        };
+        let started = Instant::now();
+        let result = run_with_etxtbsy_retry("fn f() {}\n", &options);
+        let elapsed = started.elapsed();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(matches!(result, Err(FormatError::TimedOut)), "{result:?}");
+        assert!(elapsed < Duration::from_secs(3), "took {elapsed:?}");
+    }
+
+    /// A deadline that has already passed means `rustfmt` is not started.
+    #[cfg(unix)]
+    #[test]
+    fn a_deadline_already_in_the_past_does_not_spawn_rustfmt() {
+        let (dir, program) = fake_rustfmt("past", "#!/bin/sh\ntouch \"$0.ran\"\nexec cat\n");
+        let marker = std::path::PathBuf::from(format!("{program}.ran"));
+        let options = FormatOptions {
+            rustfmt_program: program,
+            deadline: Some(Instant::now()),
+            ..FormatOptions::default()
+        };
+        let result = run_with_etxtbsy_retry("fn f() {}\n", &options);
+        // Give a wrongly spawned script time to leave its marker.
+        std::thread::sleep(Duration::from_millis(300));
+        let ran = marker.exists();
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(matches!(result, Err(FormatError::TimedOut)), "{result:?}");
+        assert!(!ran, "rustfmt was spawned past the deadline");
     }
 
     #[test]
