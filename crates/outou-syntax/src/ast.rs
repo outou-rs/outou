@@ -222,6 +222,22 @@ pub struct Ident {
     pub name: String,
 }
 
+/// The name a `JsxName` stands for once raw-identifier prefixes are dropped:
+/// `r#type` is `type`, `r#key` is `key`, `data-r#id` is `data-id`. An
+/// attribute written as a raw identifier is the same attribute as the plain
+/// spelling (grammar §5.1, issue #31), so every comparison of attribute
+/// names (duplicates, `key`, `value`, `selected`, ...) goes through this.
+pub fn unraw_name(name: &str) -> std::borrow::Cow<'_, str> {
+    if !name.contains("r#") {
+        return std::borrow::Cow::Borrowed(name);
+    }
+    let segments: Vec<&str> = name
+        .split('-')
+        .map(|segment| segment.strip_prefix("r#").unwrap_or(segment))
+        .collect();
+    std::borrow::Cow::Owned(segments.join("-"))
+}
+
 /// A slice of Rust source, copied verbatim into the generated file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RustSource {

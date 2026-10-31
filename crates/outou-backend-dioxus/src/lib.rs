@@ -57,10 +57,12 @@ pub const PRIVATE_PATH: &str = "::outou::__private";
 /// fix list step 7) — i.e. only when some attribute island in this
 /// specific file actually kept its synthesized braces
 /// (`crate::attribute::bare_rust_expr`'s only-when-needed rule strips them
-/// everywhere else). A nested-`rsx!` island prop (`icon={<span/>}`) is the
-/// one shape that still needs them (stripping breaks `rsx!`'s own
-/// parsing — `error: expected identifier` — and no universal brace-free
-/// rewrite exists, `docs/backend-leakage.md` row 21).
+/// everywhere else). Braces are kept for a nested-`rsx!` island prop
+/// (`icon={<span/>}`; stripping breaks `rsx!`'s own parsing — `error:
+/// expected identifier` — and no universal brace-free rewrite exists,
+/// `docs/backend-leakage.md` row 21) and for every statement-shaped island
+/// (a top-level `;`, an item, or a block-like expression followed by more
+/// code, `docs/backend-leakage.md` row 58).
 ///
 /// This allow *is* file-scoped, and it *does* suppress `unused_braces` on
 /// a user's own expression sitting anywhere else in the same file (a

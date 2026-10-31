@@ -424,7 +424,7 @@ fn other_attribute_names(
         .attributes
         .iter()
         .filter(|attribute| Some(attribute.span) != except)
-        .map(|attribute| attribute.name.name.clone())
+        .map(|attribute| ast::unraw_name(&attribute.name.name).into_owned())
         .collect()
 }
 

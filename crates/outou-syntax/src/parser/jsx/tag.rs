@@ -165,13 +165,15 @@ impl<'s> Parser<'s> {
                     let name_start = pos;
                     let name_end = scan_jsx_name(self.bytes, pos);
                     let attr_name = self.source[name_start..name_end].to_string();
-                    if seen.contains(&attr_name) {
+                    // `r#type` and `type` are one attribute (grammar §5.1).
+                    let canonical = ast::unraw_name(&attr_name).into_owned();
+                    if seen.contains(&canonical) {
                         self.push_diag_at(
                             pos_span(name_start),
-                            diag::duplicate_attribute(&attr_name),
+                            diag::duplicate_attribute(&canonical),
                         );
                     } else {
-                        seen.push(attr_name.clone());
+                        seen.push(canonical);
                     }
                     pos = name_end;
                     let ws_pos = skip_ws(self.bytes, pos);

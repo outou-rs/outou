@@ -21,7 +21,7 @@ use std::collections::HashMap;
 use outou_sourcemap::Span;
 
 use crate::ast::{
-    Expr, File, Island, JsxAttribute, JsxAttributeValue, JsxChild, JsxElement, JsxTag,
+    unraw_name, Expr, File, Island, JsxAttribute, JsxAttributeValue, JsxChild, JsxElement, JsxTag,
 };
 use crate::lexer::rust_token::{next_token, RtKind};
 use crate::{Diagnostic, Severity};
@@ -61,7 +61,7 @@ fn attribute<'a>(element: &'a JsxElement, name: &str) -> Option<&'a JsxAttribute
     element
         .attributes
         .iter()
-        .find(|attribute| attribute.name.name == name)
+        .find(|attribute| unraw_name(&attribute.name.name) == name)
 }
 
 fn is_usable(attribute: &JsxAttribute) -> bool {

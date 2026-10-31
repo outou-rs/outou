@@ -238,3 +238,36 @@ fn tag_ended_by_a_following_tag_leaves_no_jsx_in_rust_text() {
         }
     }
 }
+
+// Issue #31: a raw identifier names the same attribute as the plain one
+// (`r#type` is how `type` is written where Rust needs a raw identifier).
+
+#[test]
+fn a_raw_identifier_attribute_name_is_the_same_name_as_the_plain_one() {
+    assert_eq!(ast::unraw_name("r#key"), "key");
+    assert_eq!(ast::unraw_name("r#type"), "type");
+    assert_eq!(ast::unraw_name("key"), "key");
+    assert_eq!(ast::unraw_name("data-r#id"), "data-id");
+    assert_eq!(ast::unraw_name("r#data-r#id"), "data-id");
+    assert_eq!(ast::unraw_name("rust"), "rust");
+}
+
+#[test]
+fn a_raw_spelling_of_an_attribute_is_a_duplicate_of_the_plain_one() {
+    let source = "fn f() { <div key=\"a\" r#key=\"b\" r#type=\"x\" type=\"y\" />; }";
+    let parsed = outou_syntax::parse(source);
+    let messages: Vec<&str> = parsed
+        .diagnostics
+        .iter()
+        .map(|d| d.message.as_str())
+        .collect();
+    assert_eq!(
+        messages,
+        [
+            "duplicate attribute `key` on this tag",
+            "duplicate attribute `type` on this tag"
+        ],
+        "{:?}",
+        parsed.diagnostics
+    );
+}

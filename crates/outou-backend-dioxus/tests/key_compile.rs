@@ -160,3 +160,89 @@ fn a_key_of_an_unsupported_type_is_reported_in_outou_words() {
         "{stderr}"
     );
 }
+
+/// Issue #31: a raw identifier names the same attribute, so `r#key` is the
+/// key and `r#type` / `r#class` are `type` / `class`.
+const RAW_ACCEPTED: &str = r#"use outou::prelude::*;
+
+#[component]
+fn App() -> Element {
+    let id = 7u32;
+    <ul r#key="root">
+        <li r#key={id} r#class="item">one</li>
+        <input r#type="text" r#class="field" />
+    </ul>
+}
+
+fn main() {
+    let mut dom = outou::prelude::dioxus_core::VirtualDom::new(App);
+    dom.rebuild_in_place();
+}
+"#;
+
+const RAW_REJECTED: &str = r#"use outou::prelude::*;
+
+struct Money(u32);
+
+#[component]
+fn App() -> Element {
+    let price = Money(3);
+    <ul>
+        <li r#key={price}>price</li>
+    </ul>
+}
+
+fn main() {
+    let _ = App;
+}
+"#;
+
+#[test]
+#[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
+fn raw_identifier_attribute_names_compile_and_render_as_the_plain_names() {
+    let output = run("outou-key-raw-accepted", RAW_ACCEPTED, "run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+#[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
+fn a_raw_key_is_still_checked_as_a_key() {
+    let output = run("outou-key-raw-rejected", RAW_REJECTED, "check");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!output.status.success(), "{stderr}");
+    assert!(
+        stderr.contains("`Money` cannot be used as a JSX `key`"),
+        "{stderr}"
+    );
+}
+
+/// Issue #31: an attribute island of statements with no `;` keeps its braces
+/// and so is the block it reads as, whose value is its last expression.
+const ATTR_BLOCK: &str = r#"use outou::prelude::*;
+
+#[component]
+fn App() -> Element {
+    let c = true;
+    <div title={ if c {} "x" } />
+}
+
+fn main() {
+    let mut dom = outou::prelude::dioxus_core::VirtualDom::new(App);
+    dom.rebuild_in_place();
+}
+"#;
+
+#[test]
+#[ignore = "builds the full dioxus dependency tree; run explicitly, see module docs"]
+fn an_attribute_island_of_statements_without_a_semicolon_compiles_as_a_block() {
+    let output = run("outou-attr-block", ATTR_BLOCK, "run");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}

@@ -31,7 +31,9 @@
 
 use outou_codegen::Writer;
 use outou_sourcemap::MappingKind;
-use outou_syntax::ast::{JsxAttribute, JsxAttributeValue, JsxChild, JsxElement, JsxTag};
+use outou_syntax::ast::{
+    unraw_name, JsxAttribute, JsxAttributeValue, JsxChild, JsxElement, JsxTag,
+};
 
 use crate::escape::plain_rust_string_literal;
 use crate::expr::lower_parts;
@@ -125,7 +127,7 @@ fn collect_into<'a>(element: &'a JsxElement, out: &mut Vec<&'a JsxAttribute>) {
         return;
     }
     for attribute in &element.attributes {
-        let is_key = attribute.name.name == KEY_ATTRIBUTE
+        let is_key = unraw_name(&attribute.name.name) == KEY_ATTRIBUTE
             && !matches!(attribute.value, Some(JsxAttributeValue::Error(_)));
         if is_key {
             out.push(attribute);

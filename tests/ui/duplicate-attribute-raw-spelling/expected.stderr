@@ -1,0 +1,6 @@
+error: duplicate attribute `key` on this tag
+ --> $DIR/input.rsx:3:24
+error: duplicate attribute `type` on this tag
+ --> $DIR/input.rsx:4:30
+error: duplicate attribute `data-id` on this tag
+ --> $DIR/input.rsx:5:30

@@ -79,7 +79,7 @@ fn tag_name_token(tag: &JsxTag) -> Option<NamedToken> {
 fn attribute_name_token(name: &ast::Ident) -> NamedToken {
     NamedToken {
         span: name.span,
-        type_name: if is_event_attribute(&name.name) {
+        type_name: if is_event_attribute(&ast::unraw_name(&name.name)) {
             EVENT_TYPE
         } else {
             ATTRIBUTE_TYPE
@@ -148,6 +148,25 @@ mod tests {
                 .filter(|t| t.type_name == ATTRIBUTE_TYPE)
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn tokens_a_raw_on_attribute_as_event() {
+        let file = parse(r#"fn f() { <button r#onclick={handler} r#class="x"></button> }"#);
+        let tokens = collect(&file);
+        assert_eq!(
+            tokens.iter().filter(|t| t.type_name == EVENT_TYPE).count(),
+            1,
+            "{tokens:#?}"
+        );
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.type_name == ATTRIBUTE_TYPE)
+                .count(),
+            1,
+            "{tokens:#?}"
         );
     }
 

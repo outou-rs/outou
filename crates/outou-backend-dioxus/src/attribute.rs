@@ -8,7 +8,7 @@
 
 use outou_codegen::Writer;
 use outou_sourcemap::MappingKind;
-use outou_syntax::ast::{Expr, Island, JsxAttribute, JsxAttributeValue, RustSource};
+use outou_syntax::ast::{unraw_name, Expr, Island, JsxAttribute, JsxAttributeValue, RustSource};
 use outou_syntax::lexer::rust_token::{next_token, RtKind};
 
 use crate::bindings::CallBindings;
@@ -85,7 +85,9 @@ pub fn lower_attribute(
 ///   uses the same string-key syntax, with the same element-only caveat;
 ///   on a component it is unrepresentable (`docs/backend-leakage.md`).
 fn lower_key(writer: &mut Writer, attribute: &JsxAttribute) {
-    let name = &attribute.name.name;
+    // `r#type` and `type` are one attribute, `r#key` is `key` (issue #31):
+    // the raw prefix is dropped here, and added back only where Rust needs it.
+    let name = &*unraw_name(&attribute.name.name);
     if is_plain_ident(name) {
         writer.mapped(name, &[attribute.name.span], MappingKind::Attribute, None);
     } else if is_raw_identifiable_keyword(name) {
@@ -110,13 +112,16 @@ fn lower_key(writer: &mut Writer, attribute: &JsxAttribute) {
 /// `docs/backend-leakage.md` row 21 stays accurate for exactly this
 /// shape), whose own source has no top-level `;` — i.e. it really is one
 /// Rust *expression*, not a sequence of statements, which is the only
-/// shape braces are provably redundant around. Verified brace-less and
+/// shape braces are provably redundant around. Statements that need no `;`
+/// (`if c {} "x"`, `fn f() {} f()`) are not an expression either, so they
+/// keep their braces and are the block they are everywhere else in an island
+/// (issue #31; the same rule as a child, [`crate::expr_shape`]). Verified brace-less and
 /// lint-clean for an identifier, a closure, a struct literal and an
 /// `if`-expression (`tabindex={x}`, `onclick={move |_| {…}}`,
 /// `s={S { a: 1 }}`, `tabindex={if c { 1i64 } else { 2 }}`).
 fn bare_rust_expr(island: &Island) -> Option<&RustSource> {
     match island.parts.as_slice() {
-        [Expr::Rust(rust)] if !has_top_level_semicolon(&rust.text) => Some(rust),
+        [Expr::Rust(rust)] if parts_are_one_expression(&island.parts) => Some(rust),
         _ => None,
     }
 }
@@ -138,16 +143,6 @@ fn has_code(text: &str) -> bool {
     }
 }
 
-/// Whether `text` (a Rust expression's own source) contains a `;` not
-/// nested inside `(`, `[` or `{` — the shape of a Rust *statement*
-/// sequence, which cannot be spliced into an expression position without
-/// braces. Tokenizes with [`outou_syntax::lexer::rust_token`] (rather than
-/// a naive byte scan) so a `;` inside a string, char or comment is never
-/// mistaken for a statement separator.
-fn has_top_level_semicolon(text: &str) -> bool {
-    scan_semicolon(text, &mut 0)
-}
-
 /// Whether `island` is one Rust *expression* (never a statement sequence,
 /// never empty or comment-only, never containing a broken part), however
 /// many nested JSX elements it holds: the shape that can be passed as a
@@ -165,23 +160,4 @@ pub(crate) fn is_single_expression(island: &Island) -> bool {
         .iter()
         .any(|part| matches!(part, Expr::Error(_)));
     has_code && !has_error && parts_are_one_expression(&island.parts)
-}
-
-fn scan_semicolon(text: &str, depth: &mut i32) -> bool {
-    let bytes = text.as_bytes();
-    let mut pos = 0usize;
-    loop {
-        let tok = next_token(bytes, pos);
-        if tok.start == tok.end {
-            break;
-        }
-        match tok.kind {
-            RtKind::OpenDelim => *depth += 1,
-            RtKind::CloseDelim => *depth -= 1,
-            RtKind::Punct if *depth == 0 && tok.text(text) == ";" => return true,
-            _ => {}
-        }
-        pos = tok.end;
-    }
-    false
 }
