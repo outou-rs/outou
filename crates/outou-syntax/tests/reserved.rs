@@ -32,27 +32,27 @@ fn cases() -> Vec<Case> {
         Case {
             label: "fragment",
             snippet: "<></>",
-            message: "fragments are not supported in Phase 0".to_string(),
+            message: "fragments are not supported".to_string(),
         },
         Case {
             label: "generic-arguments",
             snippet: "<List<T> />",
-            message: "generic arguments on a tag are not supported in Phase 0".to_string(),
+            message: "generic arguments on a tag are not supported".to_string(),
         },
         Case {
             label: "dotted-tag-name",
             snippet: "<Foo.Bar />",
-            message: "dotted tag names are not supported in Phase 0".to_string(),
+            message: "dotted tag names are not supported".to_string(),
         },
         Case {
             label: "namespaced-name",
             snippet: "<svg:rect />",
-            message: "namespaced names are not supported in Phase 0".to_string(),
+            message: "namespaced names are not supported".to_string(),
         },
         Case {
             label: "spread-attribute",
             snippet: "<A {...p} />",
-            message: "spread attributes are not supported in Phase 0".to_string(),
+            message: "spread attributes are not supported".to_string(),
         },
         Case {
             label: "self-component-name",

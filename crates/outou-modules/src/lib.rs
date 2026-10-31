@@ -15,7 +15,7 @@
 //! - `#[cfg(…)]` is not evaluated. Every module is generated and the
 //!   attribute is preserved on the generated declaration; rustc decides.
 //!   `#[cfg_attr(condition, path = "…")]` is the one unsupported
-//!   exception ([`ModuleError::ConditionalPath`]): Phase 0 cannot decide
+//!   exception ([`ModuleError::ConditionalPath`]): Outou cannot decide
 //!   which of a conditional path's targets to resolve without evaluating
 //!   `cfg`.
 //!

@@ -101,7 +101,7 @@ pub enum ModuleError {
         limit: usize,
     },
     /// A `#[cfg_attr(condition, path = "…")]` on a `mod` declaration:
-    /// Phase 0 does not evaluate `cfg`, so it cannot decide which of the
+    /// Outou does not evaluate `cfg`, so it cannot decide which of the
     /// attribute's possible targets to resolve (ADR 0006's "`#[cfg(…)]` is
     /// not evaluated" extended to `cfg_attr`'s conditional `path`).
     #[error(
@@ -121,10 +121,9 @@ pub enum ModuleError {
     },
     /// An explicit `#[path = "…"]` resolves to a file outside the crate
     /// root (an absolute path, or enough `..` segments to escape it).
-    /// Every module file must live under the crate root. `TODO(alpha) (#31)`:
-    /// the message still says "Phase 0".
+    /// Every module file must live under the crate root.
     #[error(
-        "Outou module `{name}` declared in `{}` resolves to `{}`, outside the crate; Phase 0 requires module files under the crate root",
+        "Outou module `{name}` declared in `{}` resolves to `{}`, outside the crate; Outou requires module files under the crate root",
         declared_in.display(),
         path.display()
     )]
@@ -149,4 +148,38 @@ fn render_chain(chain: &[PathBuf]) -> String {
         .map(|p| p.display().to_string())
         .collect::<Vec<_>>()
         .join(" -> ")
+}
+
+#[cfg(test)]
+mod wording_tests {
+    use super::*;
+
+    #[test]
+    fn outside_crate_message_names_no_phase() {
+        let error = ModuleError::OutsideCrate {
+            name: "m".to_string(),
+            declared_in: PathBuf::from("lib.rsx"),
+            span: Span::new(0, 1),
+            path: PathBuf::from("../m.rsx"),
+        };
+        let message = error.to_string();
+        assert!(!message.contains("Phase 0"), "{message}");
+        assert!(
+            message
+                .ends_with("outside the crate; Outou requires module files under the crate root"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn conditional_path_message_names_no_phase() {
+        let error = ModuleError::ConditionalPath {
+            name: "m".to_string(),
+            declared_in: PathBuf::from("lib.rsx"),
+            span: Span::new(0, 1),
+            attribute: "#[cfg_attr(unix, path = \"a.rsx\")]".to_string(),
+        };
+        let message = error.to_string();
+        assert!(!message.contains("Phase 0"), "{message}");
+    }
 }

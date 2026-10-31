@@ -58,7 +58,7 @@ fn self_closing_tag_with_generics_resumes_attribute_parsing_after_the_generic_li
     );
     assert_eq!(
         parsed.diagnostics[0].message,
-        "generic arguments on a tag are not supported in Phase 0"
+        "generic arguments on a tag are not supported"
     );
 }
 

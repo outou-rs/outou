@@ -96,7 +96,7 @@ pub(crate) fn is_cfg_attribute(text: &str) -> bool {
 
 /// If any of `attributes` is a `#[cfg_attr(condition, path = "…")]` naming
 /// `path` as a top-level argument, returns its verbatim text (issue #7
-/// finding 6 / decision 6). Phase 0 does not evaluate `cfg`, so it cannot
+/// finding 6 / decision 6). Outou does not evaluate `cfg`, so it cannot
 /// decide which of a conditional path's possible targets to resolve;
 /// resolving the un-conditioned file instead would silently compile a
 /// different file than the one the real build uses.

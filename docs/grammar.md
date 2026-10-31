@@ -116,7 +116,7 @@ A rule of the form "`<` in expression position starts JSX" remains **forbidden**
 |---|---|
 | `(`, `[`, `&`, `&&`, `*`, `!`, `_`, `::`, `<` (including the first `<` of `<<`), a lifetime, or a literal | **Rust.** These either begin a Rust `Type` (`(`, `[`, `&`, `&&`, `*`, `!`, `_`, `::`, `<`) or cannot begin a `JsxName` (a lifetime, a literal). Either way the `<` is not JSX. |
 | one of `dyn` `impl` `fn` `unsafe` `extern` `for` | **Rust**, unconditionally. Each begins a Rust `Type` in a qualified path: `<dyn Trait>::f()`, `<impl Fn()>::x`, `<fn() -> T>::f`, `<unsafe fn()>::x`, `<extern "C" fn()>::x`, `<for<'a> fn(&'a T)>::x`. `<dyn Trait>::f()` and `<dyn class="x" />` are identical through `t2` and diverge only at a fourth token, so these six are **reserved tag names** in Phase 0 rather than special-cased (§5, §10). |
-| `>` | **JSX, committed** — a fragment. Diagnostic: ``fragments are not supported in Phase 0`` (§5, §10). `<>` is not a Rust type. |
+| `>` | **JSX, committed** — a fragment. Diagnostic: ``fragments are not supported`` (§5, §10). `<>` is not a Rust type. |
 | `/` | **JSX, committed** — a closing tag with no element open. Diagnostic: ``closing tag `</X>` has no matching opening tag`` (§9). No `Type` starts with `/`. |
 | any other IDENTIFIER_OR_KEYWORD, including a RAW_IDENTIFIER | consult `t2` below |
 | anything else | **Rust.** Not JSX; let rustc report it. |
@@ -136,7 +136,7 @@ Compound tokens are split into their `<`/`>` parts for this count, exactly as ru
 
 The scan stops at the first of:
 
-- **the depth returning to 0.** If the token immediately after that `>` is `::` → **Rust** (`<Vec<i32>>::new()`, `<A<B> as T>::f()`). Otherwise → **JSX, committed**, with ``generic arguments on a tag are not supported in Phase 0`` at the inner `<`; the balanced `<…>` after the tag name is skipped and attribute parsing continues at the token after it (§7.2, §10).
+- **the depth returning to 0.** If the token immediately after that `>` is `::` → **Rust** (`<Vec<i32>>::new()`, `<A<B> as T>::f()`). Otherwise → **JSX, committed**, with ``generic arguments on a tag are not supported`` at the inner `<`; the balanced `<…>` after the tag name is skipped and attribute parsing continues at the token after it (§7.2, §10).
 - `;`, a closing delimiter of a group opened *before* the candidate `<`, or end of input → **JSX, committed**, with the same diagnostic. No `::` can follow, so the construct cannot be a qualified path.
 
 | Input | Scan | Outcome |
@@ -217,9 +217,9 @@ A tag name beginning with an uppercase letter is a **component** reference and i
 
 For example, `<div type="x" />` lexes as: `<` (§4 rule 2: `t1`=`div`, `t2`=`type`, an identifier-or-keyword → JSX, committed), `JsxName(div)`, `JsxName(type)`, `=`, `StringLiteral("x")`, `/>` (pop).
 
-**Dotted tag names** (`<Foo.Bar />`) and **namespaced names** (`a:b`, e.g. `xlink:href`) are reserved in Phase 0: `JsxName` does not admit `.` or `:`, so `<Foo` and `<svg` commit as JSX (§4 rule 2) and the lexer, expecting a `JsxName` continuation, reports an Outou diagnostic on the `.` or `:` rather than silently truncating or falling through to rustc. See §10.
+**Dotted tag names** (`<Foo.Bar />`) and **namespaced names** (`a:b`, e.g. `xlink:href`) are reserved: `JsxName` does not admit `.` or `:`, so `<Foo` and `<svg` commit as JSX (§4 rule 2) and the lexer, expecting a `JsxName` continuation, reports an Outou diagnostic on the `.` or `:` rather than silently truncating or falling through to rustc. See §10.
 
-**Fragments** (`<>` … `</>`) are reserved in Phase 0. §4 rule 2 (`t1`=`>`) still commits `<>` as JSX — a bare `<` followed by `>` — specifically so that the resulting diagnostic, ``fragments are not supported in Phase 0``, is Outou's, at the `.rsx` position, and not a confusing rustc parse error on `<>`.
+**Fragments** (`<>` … `</>`) are reserved. §4 rule 2 (`t1`=`>`) still commits `<>` as JSX — a bare `<` followed by `>` — specifically so that the resulting diagnostic, ``fragments are not supported``, is Outou's, at the `.rsx` position, and not a confusing rustc parse error on `<>`.
 
 ### 5.1 Attributes
 
@@ -325,7 +325,7 @@ At minimum the following MUST recover with the rest of the file intact, each wit
 | Stray closing tag | `diagnostics/stray-closing-tag.rsx` | ``closing tag `</div>` has no matching opening tag`` |
 | Truncated closing tag at end of input | `incomplete/truncated-closing-tag-eof.rsx` | ``unexpected end of file inside closing tag, expected `>` `` |
 | Truncated closing tag, top level | `incomplete/stray-truncated-closing-tag-eof.rsx` | the truncated-closing-tag message at the `<`, then ``closing tag `</div>` has no matching opening tag`` naming the partially-scanned tag |
-| Truncated `</` right after a reserved fragment | `incomplete/fragment-truncated-closing-tag-eof.rsx` | ``fragments are not supported in Phase 0`` at `<>`, then the truncated-closing-tag message at the `</` |
+| Truncated `</` right after a reserved fragment | `incomplete/fragment-truncated-closing-tag-eof.rsx` | ``fragments are not supported`` at `<>`, then the truncated-closing-tag message at the `</` |
 | Incomplete function signature | `incomplete/bodyless-fn-mid-file.rsx` | ``incomplete signature for function `App`, expected `)` to close this `(` `` (or ``expected a body or `;` `` when no delimiter is open) |
 | Unclosed function body, next item follows | `incomplete/class-attribute-value-mid-file.rsx`, `incomplete/unclosed-island-mid-file.rsx` | ``unclosed body of function `App`, expected `}` to close this `{` `` at the body's `{`; the diagnostics of a construct cut off there say ``unexpected start of the next item …`` where they would say ``unexpected end of file …`` at a real end of input |
 | Closing tag interrupted by `<` | `diagnostics/closing-tag-interrupted-by-lt.rsx` | ``unexpected `<` inside closing tag, expected `>` `` |
@@ -336,7 +336,7 @@ At minimum the following MUST recover with the rest of the file intact, each wit
 | Empty attribute-value island | `incomplete/class-attribute-value-mid-file.rsx` | ``expected an expression for the value of attribute `name` `` |
 | Unclosed island at end of file | `incomplete/unclosed-island-eof.rsx` | ``unexpected end of file, expected `}` to close this expression`` |
 | Stray `}` in element content | `diagnostics/stray-rbrace-in-text.rsx` | ``unexpected `}` here; write `{"}"}` to include a literal `}` in text`` |
-| Reserved syntax (§10) | `ui/reserved-fragment` (fragment only) | ``fragments are not supported in Phase 0`` · ``dotted tag names are not supported in Phase 0`` · ``namespaced names are not supported in Phase 0`` · ``spread attributes are not supported in Phase 0`` · ``generic arguments on a tag are not supported in Phase 0`` · ``a JSX expression cannot be followed by `.`, `?`, `(` or `[`; parenthesize it`` · ``duplicate attribute `value` on this tag`` · ``` `Self` is not a valid component name ``` · ``attribute values must be double-quoted strings or `{…}` expressions`` |
+| Reserved syntax (§10) | `ui/reserved-fragment` (fragment only) | ``fragments are not supported`` · ``dotted tag names are not supported`` · ``namespaced names are not supported`` · ``spread attributes are not supported`` · ``generic arguments on a tag are not supported`` · ``a JSX expression cannot be followed by `.`, `?`, `(` or `[`; parenthesize it`` · ``duplicate attribute `value` on this tag`` · ``` `Self` is not a valid component name ``` · ``attribute values must be double-quoted strings or `{…}` expressions`` |
 | JSX element nested more than 128 levels deep | — | ``this element is nested too deeply (Outou supports at most 128 levels)`` |
 | Inline `mod` nested more than 128 levels deep | — | ``modules are nested too deeply (Outou supports at most 128 levels)`` |
 

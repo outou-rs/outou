@@ -123,33 +123,32 @@ pub fn reword_end_of_file_as_next_item(message: &str) -> String {
     }
 }
 
-// `TODO(alpha) (#31)`: the five "not supported in Phase 0" messages below
-// still carry the phase name in user-facing text; the fixtures pin the
-// wording, so changing it is a coordinated edit.
+// The five "not supported" messages below are pinned by the fixtures and
+// `docs/grammar.md`; changing the wording is a coordinated edit.
 
-/// `fragments are not supported in Phase 0`
+/// `fragments are not supported`
 pub fn fragments_not_supported() -> String {
-    "fragments are not supported in Phase 0".to_string()
+    "fragments are not supported".to_string()
 }
 
-/// `dotted tag names are not supported in Phase 0`
+/// `dotted tag names are not supported`
 pub fn dotted_tag_name_not_supported() -> String {
-    "dotted tag names are not supported in Phase 0".to_string()
+    "dotted tag names are not supported".to_string()
 }
 
-/// `namespaced names are not supported in Phase 0`
+/// `namespaced names are not supported`
 pub fn namespaced_name_not_supported() -> String {
-    "namespaced names are not supported in Phase 0".to_string()
+    "namespaced names are not supported".to_string()
 }
 
-/// `spread attributes are not supported in Phase 0`
+/// `spread attributes are not supported`
 pub fn spread_attribute_not_supported() -> String {
-    "spread attributes are not supported in Phase 0".to_string()
+    "spread attributes are not supported".to_string()
 }
 
-/// `generic arguments on a tag are not supported in Phase 0`
+/// `generic arguments on a tag are not supported`
 pub fn generic_arguments_not_supported() -> String {
-    "generic arguments on a tag are not supported in Phase 0".to_string()
+    "generic arguments on a tag are not supported".to_string()
 }
 
 /// `a JSX expression cannot be followed by `.`, `?`, `(` or `[`; parenthesize it`
@@ -207,4 +206,36 @@ pub fn jsx_nested_too_deeply() -> String {
 /// `modules are nested too deeply (Outou supports at most 128 levels)`
 pub fn modules_nested_too_deeply() -> String {
     format!("modules are nested too deeply (Outou supports at most {MAX_NESTING} levels)")
+}
+
+#[cfg(test)]
+mod wording_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_syntax_messages_are_neutral_and_name_no_phase() {
+        let messages = [
+            (fragments_not_supported(), "fragments are not supported"),
+            (
+                dotted_tag_name_not_supported(),
+                "dotted tag names are not supported",
+            ),
+            (
+                namespaced_name_not_supported(),
+                "namespaced names are not supported",
+            ),
+            (
+                spread_attribute_not_supported(),
+                "spread attributes are not supported",
+            ),
+            (
+                generic_arguments_not_supported(),
+                "generic arguments on a tag are not supported",
+            ),
+        ];
+        for (actual, expected) in messages {
+            assert_eq!(actual, expected);
+            assert!(!actual.contains("Phase 0"), "{actual}");
+        }
+    }
 }
