@@ -850,6 +850,7 @@ mod tests {
             rsx: std::collections::HashMap::new(),
             generated: std::collections::HashMap::new(),
             rsx_to_generated: std::collections::HashMap::new(),
+            plan_error: None,
         };
         let mut workspace = workspace;
         workspace.rsx.insert(
@@ -985,6 +986,7 @@ mod tests {
             rsx: std::collections::HashMap::new(),
             generated: std::collections::HashMap::new(),
             rsx_to_generated: std::collections::HashMap::new(),
+            plan_error: None,
         };
         workspace.rsx.insert(
             "file:///app/src/main.rsx".to_string(),

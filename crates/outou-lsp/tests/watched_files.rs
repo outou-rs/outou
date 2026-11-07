@@ -356,6 +356,32 @@ fn a_change_event_for_a_file_open_in_the_editor_is_ignored() {
     client.shutdown();
 }
 
+#[test]
+fn a_deleted_module_file_is_shown_on_its_mod_declaration_and_recreating_it_clears_it() {
+    let mut client = Client::start(true);
+    accept_registration(&mut client);
+    let main_uri = client.file_uri("src/main.rsx");
+
+    fs::remove_file(client.path("src/widget.rsx")).unwrap();
+    client.watched(&[("src/widget.rsx", WATCH_DELETED)]);
+    let shown = client.wait_for(|m| is_publish_for(m, &main_uri));
+    let diagnostics = shown["params"]["diagnostics"].as_array().unwrap();
+    assert_eq!(diagnostics.len(), 1, "{shown}");
+    assert_eq!(diagnostics[0]["severity"], 1);
+    assert_eq!(
+        diagnostics[0]["range"]["start"],
+        json!({"line": 0, "character": 0})
+    );
+    let message = diagnostics[0]["message"].as_str().unwrap();
+    assert!(message.contains("`widget`"), "{shown}");
+
+    write(&client.path("src/widget.rsx"), VALID_WIDGET);
+    client.watched(&[("src/widget.rsx", WATCH_CREATED)]);
+    let cleared = client.wait_for(|m| is_publish_for(m, &main_uri));
+    assert!(is_empty_publish(&cleared), "{cleared}");
+    client.shutdown();
+}
+
 fn publishes_for<'a>(seen: &'a [Value], uri: &str) -> Vec<&'a Value> {
     seen.iter().filter(|m| is_publish_for(m, uri)).collect()
 }

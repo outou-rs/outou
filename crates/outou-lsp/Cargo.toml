@@ -20,6 +20,9 @@ outou-backend-dioxus = { workspace = true }
 # generator (`outou_cli::build::emit::generate_unit`) are reused rather
 # than duplicated: "there is one compiler" (`AGENTS.md`).
 outou-cli = { workspace = true }
+# Only to name `ModuleError`'s variants when locating a plan error on its
+# `mod` item (`documents::plan_error`).
+outou-modules = { workspace = true }
 outou-fmt = { workspace = true }
 lsp-server = { workspace = true }
 lsp-types = { workspace = true }

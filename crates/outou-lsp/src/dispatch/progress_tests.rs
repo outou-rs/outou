@@ -18,7 +18,7 @@ use crate::ra::RaClient;
 const MOCK_WAIT: Duration = Duration::from_secs(3);
 
 /// A stand-in rust-analyzer that appends everything it is sent to a log.
-fn mock_ra(name: &str) -> (RaClient, PathBuf) {
+pub(super) fn mock_ra(name: &str) -> (RaClient, PathBuf) {
     let dir = std::env::temp_dir().join(format!("outou-mock-ra-{name}-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let log = dir.join("stdin.log");
@@ -41,7 +41,7 @@ fn mock_ra(name: &str) -> (RaClient, PathBuf) {
 }
 
 /// Every message the mock received, once `needle` shows up in its log.
-fn ra_received(log: &PathBuf, needle: &str) -> Vec<Value> {
+pub(super) fn ra_received(log: &PathBuf, needle: &str) -> Vec<Value> {
     let deadline = Instant::now() + MOCK_WAIT;
     loop {
         let text = std::fs::read_to_string(log).unwrap_or_default();

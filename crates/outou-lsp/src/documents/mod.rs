@@ -10,10 +10,11 @@
 //! Split into [`units`] (the per-document/per-generated-unit types) and
 //! [`workspace`] (the [`Workspace`] that owns and plans them).
 
+mod plan_error;
 mod units;
 mod workspace;
 
 #[cfg(test)]
 pub(crate) use units::test_generated_unit;
-pub use units::RsxDocument;
+pub use units::{RsxDocument, INITIAL_RA_VERSION};
 pub use workspace::{LoadOutcome, Workspace};

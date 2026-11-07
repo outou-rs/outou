@@ -13,6 +13,7 @@ use outou_cli::build::emit::generate_unit;
 use outou_codegen::Mode;
 use outou_sourcemap::{LineIndex, Registry};
 
+use super::plan_error::PlanErrorReport;
 use super::units::{GeneratedUnit, RsxDocument};
 use crate::plan::{self, Plan, PlannedUnit, Resolved};
 use crate::uri;
@@ -32,6 +33,10 @@ pub struct Workspace {
     /// `.rsx` URI string -> generated URI string, for the common case of
     /// mapping a document the editor just edited to its overlay.
     pub rsx_to_generated: HashMap<String, String>,
+    /// Why the last re-plan failed, while it has not succeeded since
+    /// (#31). The previous plan stays in force (see [`Self::replan`]); this
+    /// is only what the editor is told about the newer, broken state.
+    pub plan_error: Option<PlanErrorReport>,
 }
 
 /// How a unit's `.rsx` source is read from disk (injectable for tests).
@@ -87,6 +92,7 @@ impl Workspace {
                     rsx: HashMap::new(),
                     generated: HashMap::new(),
                     rsx_to_generated: HashMap::new(),
+                    plan_error: None,
                 };
                 for unit in &plan.units {
                     workspace.load_unit(unit, &|path| fs::read_to_string(path))?;
@@ -149,8 +155,37 @@ impl Workspace {
         self.replan_with_overlay(&overlay)
     }
 
+    /// Re-plans, then records the outcome in [`Self::plan_error`]: the new
+    /// failure, or nothing once a re-plan succeeds (a removed or fixed
+    /// `mod` declaration included).
     fn replan_with_overlay(&mut self, overlay: &HashMap<PathBuf, String>) -> Result<(), LoadError> {
-        self.replan_with_reader(overlay, &|path| fs::read_to_string(path))
+        let result = self.replan_with_reader(overlay, &|path| fs::read_to_string(path));
+        self.plan_error = result
+            .as_ref()
+            .err()
+            .and_then(|error| self.report_plan_error(error, overlay));
+        result
+    }
+
+    fn report_plan_error(
+        &self,
+        error: &LoadError,
+        overlay: &HashMap<PathBuf, String>,
+    ) -> Option<PlanErrorReport> {
+        let crate_root = self
+            .plan
+            .as_ref()
+            .and_then(|plan| plan.units.iter().find(|unit| unit.module_path.is_empty()))
+            .map(|unit| unit.source_file.as_path());
+        PlanErrorReport::new(error, &self.manifest_dir, crate_root, overlay)
+    }
+
+    /// The file the last failed re-plan is shown on (the declaring file, `.rsx`
+    /// or plain `.rs`), if any.
+    pub fn plan_error_uri(&self) -> Option<&str> {
+        self.plan_error
+            .as_ref()
+            .map(|report| report.file_uri.as_str())
     }
 
     /// [`Self::replan_with_overlay`] with the file reader made explicit, so
@@ -175,6 +210,7 @@ impl Workspace {
                     rsx: HashMap::new(),
                     generated: HashMap::new(),
                     rsx_to_generated: HashMap::new(),
+                    plan_error: None,
                 };
                 for unit in &plan.units {
                     match overlay_text_for(overlay, &unit.source_file) {
@@ -268,6 +304,30 @@ impl Workspace {
         Some(generated_uri)
     }
 
+    /// [`Self::regenerate`] for an edit that could not be re-planned
+    /// ([`Self::plan_error`]): the unit's declared module set stays the one
+    /// the plan in force has, so the next edit is still compared with that
+    /// plan rather than with a text the plan never accepted.
+    pub fn regenerate_against_plan(
+        &mut self,
+        rsx_uri: &str,
+        new_text: &str,
+        version: i32,
+    ) -> Result<Option<Regenerated>, LoadError> {
+        let in_force = self
+            .rsx_to_generated
+            .get(rsx_uri)
+            .and_then(|generated_uri| self.generated.get(generated_uri))
+            .map(|unit| unit.declared_modules.clone());
+        let regenerated = self.regenerate(rsx_uri, new_text, version)?;
+        if let (Some(modules), Some(regenerated)) = (in_force, regenerated.as_ref()) {
+            if let Some(unit) = self.generated.get_mut(&regenerated.generated_uri) {
+                unit.declared_modules = modules;
+            }
+        }
+        Ok(regenerated)
+    }
+
     /// Regenerates the single unit for `rsx_uri` from `new_text`, updating
     /// the document, the generated text/line index and the registry.
     /// Returns `None` if `rsx_uri` is not a known unit.
@@ -348,7 +408,7 @@ fn canonical_or_lexical(path: &std::path::Path) -> PathBuf {
 
 /// Looks up `source_file` in `overlay`, trying its canonical identity
 /// first and falling back to a raw lexical match.
-fn overlay_text_for<'a>(
+pub(super) fn overlay_text_for<'a>(
     overlay: &'a HashMap<PathBuf, String>,
     source_file: &std::path::Path,
 ) -> Option<&'a str> {

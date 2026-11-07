@@ -375,3 +375,127 @@ fn a_replan_that_fails_part_way_keeps_the_previous_state() {
 
     fs::remove_dir_all(&tmp).ok();
 }
+
+/// #31: a failed re-plan keeps the previous state but records why it
+/// failed, located on the declaring `mod` item; the next successful
+/// re-plan clears it.
+#[test]
+fn a_failed_replan_records_the_unresolved_module_until_a_replan_succeeds() {
+    let tmp = std::env::temp_dir().join(format!(
+        "outou-lsp-test-replan-error-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let src = tmp.join("src");
+    fs::create_dir_all(&src).expect("creating src dir");
+    fs::write(src.join("main.rsx"), "fn main() {}\n").expect("writing root");
+
+    let LoadOutcome::Planned(mut workspace) = Workspace::load(&tmp).expect("plans and generates")
+    else {
+        panic!("the temp crate has a `.rsx` crate root");
+    };
+    let main_uri = workspace
+        .rsx
+        .keys()
+        .find(|uri| uri.ends_with("main.rsx"))
+        .expect("main.rsx is a known unit")
+        .clone();
+    assert!(workspace.plan_error.is_none());
+
+    let result = workspace.replan(&main_uri, "fn main() {}\n\nmod missing;\n");
+    assert!(matches!(result, Err(LoadError::Plan(_))));
+    let report = workspace
+        .plan_error
+        .clone()
+        .expect("the failure is recorded");
+    assert_eq!(report.file_uri, main_uri);
+    assert_eq!(report.range.start, lsp_types::Position::new(2, 0));
+    assert_eq!(report.range.end.line, 2);
+    assert!(report.message.contains("`missing`"), "{}", report.message);
+    assert_eq!(
+        workspace.plan.as_ref().unwrap().units.len(),
+        1,
+        "the previous plan stays in force"
+    );
+
+    workspace
+        .replan(&main_uri, "fn main() {}\n")
+        .expect("the declaration is gone");
+    assert!(workspace.plan_error.is_none());
+
+    fs::remove_dir_all(&tmp).ok();
+}
+
+/// A change on disk (a deleted module file) reports the declaring file,
+/// which is a different file from any that changed.
+#[test]
+fn a_replan_from_disk_reports_the_declaring_file_of_a_deleted_module() {
+    let tmp = std::env::temp_dir().join(format!(
+        "outou-lsp-test-replan-error-disk-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let src = tmp.join("src");
+    fs::create_dir_all(&src).expect("creating src dir");
+    fs::write(src.join("main.rsx"), "mod a;\nfn main() {}\n").expect("writing root");
+    fs::write(src.join("a.rsx"), "pub fn a() {}\n").expect("writing a");
+
+    let LoadOutcome::Planned(mut workspace) = Workspace::load(&tmp).expect("plans and generates")
+    else {
+        panic!("the temp crate has a `.rsx` crate root");
+    };
+    fs::remove_file(src.join("a.rsx")).expect("deleting a");
+
+    assert!(workspace.replan_from_disk().is_err());
+    let report = workspace
+        .plan_error
+        .clone()
+        .expect("the failure is recorded");
+    assert!(
+        report.file_uri.ends_with("/src/main.rsx"),
+        "{}",
+        report.file_uri
+    );
+    assert_eq!(report.range.start, lsp_types::Position::new(0, 0));
+
+    fs::write(src.join("a.rsx"), "pub fn a() {}\n").expect("recreating a");
+    workspace.replan_from_disk().expect("a.rsx exists again");
+    assert!(workspace.plan_error.is_none());
+
+    fs::remove_dir_all(&tmp).ok();
+}
+
+/// An error that names no `mod` item (two crate roots) is shown at the top
+/// of the crate root instead of being dropped.
+#[test]
+fn a_crate_wide_plan_error_is_shown_at_the_top_of_the_crate_root() {
+    let tmp = std::env::temp_dir().join(format!(
+        "outou-lsp-test-replan-error-roots-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    let src = tmp.join("src");
+    fs::create_dir_all(&src).expect("creating src dir");
+    fs::write(src.join("main.rsx"), "fn main() {}\n").expect("writing root");
+
+    let LoadOutcome::Planned(mut workspace) = Workspace::load(&tmp).expect("plans and generates")
+    else {
+        panic!("the temp crate has a `.rsx` crate root");
+    };
+    fs::write(src.join("lib.rsx"), "pub fn f() {}\n").expect("adding a second root");
+
+    assert!(workspace.replan_from_disk().is_err());
+    let report = workspace
+        .plan_error
+        .clone()
+        .expect("the failure is recorded");
+    assert!(
+        report.file_uri.ends_with("/src/main.rsx"),
+        "{}",
+        report.file_uri
+    );
+    assert_eq!(report.range, lsp_types::Range::default());
+    assert!(report.message.contains("lib.rsx"), "{}", report.message);
+
+    fs::remove_dir_all(&tmp).ok();
+}

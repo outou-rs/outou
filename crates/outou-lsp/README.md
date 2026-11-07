@@ -73,6 +73,24 @@ After that:
   one, `didChange` — with a version that keeps counting up, never resets
   — for one that already existed, `didClose` for one that no longer
   exists).
+  A re-plan that fails (a `mod x;` with no `x.rsx`, an ambiguous or
+  circular module, ...) keeps the previous plan and shows the error as an
+  Error diagnostic (source `outou`, the wording `outou build` uses) on the
+  declaring `mod` item, in the same publish as that file's other
+  diagnostics. The declaring file is usually a `.rsx` file but may be a
+  plain `.rs` file; the error is then published on that `.rs` file. The
+  edited unit is still regenerated against the plan in force and sent to
+  rust-analyzer, so edits are not frozen while the error stands. The error
+  clears when a later re-plan succeeds. While one stands, every `.rsx` edit
+  re-plans (one crate-wide plan per edit), closing a `.rsx` buffer re-plans
+  from disk, saving a `.rs` file re-plans from disk (`**/*.rs` is not
+  watched, since the server's own `.generated/*.rs` writes would trigger
+  it), and watched-file events re-plan as before. Errors that name no `mod`
+  item (two crate roots, a `.rs` file declaring a `.rsx` module) are shown
+  at the top of the crate root file. Not covered: a plan error at startup
+  (the server then runs in degraded mode for the session) and on save of a
+  `.rsx` file (a save re-plans from disk; the error of the same sources is
+  already shown from the edit).
 - `textDocument/completion` first classifies the `.rsx` cursor against
   Outou's own parse tree (`src/complete.rs`): a JSX tag name (element or
   component, opening **or closing**) or attribute name is answered
@@ -96,6 +114,7 @@ After that:
   backend vocabulary; an unmapped diagnostic (synthesized code, no direct
   `.rsx` span) is still published, at the nearest mapped position, if its
   severity is `ERROR` — never silently dropped or downgraded.
+  The failed re-plan's error (above) is merged into the same publish.
 - `textDocument/didSave` re-plans the crate from the now-on-disk sources
   and writes every unit through the same transactional Strict path as
   startup, then forwards the save to rust-analyzer for the saved file's
@@ -229,7 +248,7 @@ since it is read-only. See
 | `src/plan.rs` | Thin wrapper over `outou_cli::build::plan` (degraded-mode detection, module-declaration-change detection, the planning overlay). |
 | `src/mapping.rs` | Position/range translation between `.rsx` and generated Rust; refuses to translate a transformed (non-exact-length) mapping rather than guess. |
 | `src/response.rs` | Rewrites and sanitizes hover/definition/completion response payloads through `mapping.rs`. |
-| `src/diagnostics.rs` | Merges Outou syntax diagnostics with mapped rust-analyzer/flycheck diagnostics; never drops or downgrades an unmapped `ERROR`. |
+| `src/diagnostics.rs` | Merges Outou syntax diagnostics with mapped rust-analyzer/flycheck diagnostics and the failed re-plan's error (`documents/plan_error.rs`); never drops or downgrades an unmapped `ERROR`. |
 | `src/translate.rs` | Backend-vocabulary translation table and marker list, shared by diagnostics, completion and hover (`docs/backend-leakage.md` rows 24-26). |
 | `src/uri.rs` | Conversions between `outou_sourcemap::Uri` and `lsp_types::Uri`, and `normalize_file_uri` (the one spelling every internal key uses). |
 | `src/editor_uris.rs` | Normalizes `.rsx` URIs from the editor on the way in (tracking the set of spellings a document is open under) and restores the editor's spelling on the way out (diagnostics, definition, references, rename); the identity when the editor already uses real paths. |

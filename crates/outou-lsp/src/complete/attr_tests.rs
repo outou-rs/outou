@@ -14,6 +14,7 @@ fn workspace_with(source: &str) -> Workspace {
         rsx: std::collections::HashMap::new(),
         generated: std::collections::HashMap::new(),
         rsx_to_generated: std::collections::HashMap::new(),
+        plan_error: None,
     };
     workspace.rsx.insert(
         URI.to_string(),

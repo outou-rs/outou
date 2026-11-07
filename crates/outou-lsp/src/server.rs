@@ -221,12 +221,12 @@ fn load_workspace<F: Fn() -> Result<String, String>>(
     };
     match Workspace::load(root) {
         Ok(LoadOutcome::Planned(boxed_workspace)) => {
-            let workspace = *boxed_workspace;
+            let mut workspace = *boxed_workspace;
             write_missing_generated_files(&workspace);
             match resolve_ra_binary() {
                 Ok(ra_binary) => match RaClient::spawn(&ra_binary, &workspace.manifest_dir) {
                     Ok(mut ra) => {
-                        if setup_rust_analyzer(state, &mut ra, &workspace, params) {
+                        if setup_rust_analyzer(state, &mut ra, &mut workspace, params) {
                             state.ra = Some(ra);
                         } else {
                             eprintln!(
@@ -393,7 +393,7 @@ fn build_server_capabilities(state: &State) -> ServerCapabilities {
 fn setup_rust_analyzer(
     state: &mut State,
     ra: &mut RaClient,
-    workspace: &Workspace,
+    workspace: &mut Workspace,
     params: &InitializeParams,
 ) -> bool {
     let mut capabilities = serde_json::to_value(&params.capabilities).unwrap_or(json!({}));
@@ -457,20 +457,31 @@ fn setup_rust_analyzer(
     state.ra_supports_semantic_tokens = supports_semantic_tokens;
     ra.notify("initialized", json!({}));
 
-    for unit in workspace.generated.values() {
-        ra.notify(
-            "textDocument/didOpen",
+    for params in startup_did_open_params(workspace) {
+        ra.notify("textDocument/didOpen", params);
+    }
+    true
+}
+
+/// The `textDocument/didOpen` parameters for every generated unit, and
+/// records the version they carry as the unit's `ra_version`, so the first
+/// later `didChange` sends a higher one rather than repeating it.
+fn startup_did_open_params(workspace: &mut Workspace) -> Vec<Value> {
+    workspace
+        .generated
+        .values_mut()
+        .map(|unit| {
+            unit.ra_version = crate::documents::INITIAL_RA_VERSION;
             json!({
                 "textDocument": {
                     "uri": unit.generated_uri.as_str(),
                     "languageId": "rust",
-                    "version": 1,
+                    "version": unit.ra_version,
                     "text": unit.text,
                 }
-            }),
-        );
-    }
-    true
+            })
+        })
+        .collect()
 }
 
 /// Forces `general.positionEncodings` to `["utf-16"]` in the capabilities
@@ -765,6 +776,40 @@ mod tests {
             ),
         }
 
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// #31: the startup `didOpen` said version 1 but the unit still held 0,
+    /// so the first `didChange` carried 1 again.
+    #[test]
+    fn startup_did_open_records_the_version_it_sends() {
+        let tmp = std::env::temp_dir().join(format!(
+            "outou-lsp-test-server-startup-version-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        let src = tmp.join("src");
+        std::fs::create_dir_all(&src).expect("creating src dir");
+        std::fs::write(src.join("main.rsx"), "mod a;\nfn main() {}\n").expect("writing root");
+        std::fs::write(src.join("a.rsx"), "pub fn a() {}\n").expect("writing a");
+        let LoadOutcome::Planned(mut workspace) =
+            Workspace::load(&tmp).expect("plans and generates")
+        else {
+            panic!("the temp crate has a `.rsx` crate root");
+        };
+
+        let opens = startup_did_open_params(&mut workspace);
+
+        assert_eq!(opens.len(), 2, "one didOpen per generated unit");
+        for open in &opens {
+            let uri = open.pointer("/textDocument/uri").and_then(Value::as_str);
+            let sent = open
+                .pointer("/textDocument/version")
+                .and_then(Value::as_i64);
+            let unit = &workspace.generated[uri.expect("a uri")];
+            assert_eq!(sent, Some(i64::from(unit.ra_version)));
+            assert_eq!(unit.ra_version, crate::documents::INITIAL_RA_VERSION);
+        }
         std::fs::remove_dir_all(&tmp).ok();
     }
 

@@ -10,6 +10,11 @@ use outou_syntax::Diagnostic as SyntaxDiagnostic;
 
 use crate::plan::{ModuleDescriptor, PlannedUnit};
 
+/// The version of the `textDocument/didOpen` a generated unit is opened
+/// with on rust-analyzer (at startup, or when a re-plan adds the unit).
+/// Every later `didChange` for that unit sends a higher one.
+pub const INITIAL_RA_VERSION: i32 = 1;
+
 /// One `.rsx` source file, whether or not the editor currently has it
 /// open. Every planned unit's source is loaded from disk at startup so
 /// cross-file definition into a file the editor has not opened yet still

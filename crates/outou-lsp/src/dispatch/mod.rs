@@ -21,6 +21,8 @@ use crate::ra::RaClient;
 
 mod notifications;
 #[cfg(test)]
+mod plan_error_tests;
+#[cfg(test)]
 mod progress_tests;
 mod requests;
 mod responses;

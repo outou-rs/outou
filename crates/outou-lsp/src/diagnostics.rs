@@ -33,7 +33,8 @@ fn syntax_to_lsp(diagnostic: &SyntaxDiagnostic, line_index: &LineIndex) -> Diagn
 
 /// Publishes the merged diagnostic set for one `.rsx` file: its own
 /// syntax diagnostics, plus the last rust-analyzer diagnostics for its
-/// generated unit that map back to it.
+/// generated unit that map back to it, plus the failed re-plan's error
+/// when this file carries it ([`plan_error_diagnostic`]).
 pub fn publish_for_rsx(connection: &Connection, workspace: &Workspace, rsx_uri_string: &str) {
     let Some(doc) = workspace.rsx.get(rsx_uri_string) else {
         return;
@@ -57,7 +58,63 @@ pub fn publish_for_rsx(connection: &Connection, workspace: &Workspace, rsx_uri_s
         }
     }
 
+    diagnostics.extend(plan_error_diagnostic(workspace, rsx_uri_string));
+
     publish(connection, rsx_uri_string, diagnostics, doc.version);
+}
+
+/// The last failed re-plan (`Workspace::plan_error`) as an Error
+/// diagnostic, when it is shown on `rsx_uri_string`. Every publish for a
+/// file goes through [`publish_for_rsx`], which adds this to the file's
+/// other diagnostics, so neither source can overwrite the other.
+fn plan_error_diagnostic(workspace: &Workspace, rsx_uri_string: &str) -> Option<Diagnostic> {
+    let report = workspace
+        .plan_error
+        .as_ref()
+        .filter(|report| report.file_uri == rsx_uri_string)?;
+    Some(Diagnostic {
+        range: report.range,
+        severity: Some(DiagnosticSeverity::ERROR),
+        source: Some("outou".to_string()),
+        message: report.message.clone(),
+        ..Default::default()
+    })
+}
+
+/// Republishes `rsx_uri_string` after the failed re-plan's error moved
+/// onto or off it. A file the workspace holds no document for (a `.rsx`
+/// file no plan reached yet, declaring a `mod` that does not resolve)
+/// carries only the plan error, or nothing once that is gone.
+pub fn refresh_for_rsx(connection: &Connection, workspace: &Workspace, rsx_uri_string: &str) {
+    if workspace.rsx.contains_key(rsx_uri_string) {
+        publish_for_rsx(connection, workspace, rsx_uri_string);
+        return;
+    }
+    match plan_error_diagnostic(workspace, rsx_uri_string) {
+        Some(diagnostic) => publish(connection, rsx_uri_string, vec![diagnostic], 0),
+        None => clear_for_rsx(connection, rsx_uri_string),
+    }
+}
+
+/// After a re-plan that failed: republishes the file now carrying the
+/// plan error and the one that carried the previous one (`previous`), so
+/// an error that moved or changed is neither duplicated nor left behind.
+/// `edited` was already republished by the caller.
+pub fn publish_plan_error_change(
+    connection: &Connection,
+    workspace: &Workspace,
+    previous: Option<&str>,
+    edited: &str,
+) {
+    let mut targets: Vec<&str> = previous
+        .into_iter()
+        .chain(workspace.plan_error_uri())
+        .filter(|uri| *uri != edited)
+        .collect();
+    targets.dedup();
+    for uri in targets {
+        refresh_for_rsx(connection, workspace, uri);
+    }
 }
 
 /// Maps one rust-analyzer/flycheck diagnostic (in generated coordinates)
@@ -235,6 +292,7 @@ mod tests {
             rsx: HashMap::new(),
             generated: HashMap::new(),
             rsx_to_generated: HashMap::new(),
+            plan_error: None,
         };
         workspace.rsx.insert(
             rsx_uri.as_str().to_string(),

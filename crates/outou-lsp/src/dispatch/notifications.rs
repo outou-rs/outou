@@ -79,11 +79,14 @@ pub(crate) fn dispatch_client_notification(
             if let Ok(params) = serde_json::from_value::<DidSaveTextDocumentParams>(note.params) {
                 if params.text_document.uri.as_str().ends_with(".rsx") {
                     handle_rsx_save(state, connection, &params.text_document.uri);
-                } else if let Some(ra) = &state.ra {
-                    ra.notify(
-                        "textDocument/didSave",
-                        serde_json::to_value(params).unwrap(),
-                    );
+                } else {
+                    replan_after_rust_save(state, connection);
+                    if let Some(ra) = &state.ra {
+                        ra.notify(
+                            "textDocument/didSave",
+                            serde_json::to_value(params).unwrap(),
+                        );
+                    }
                 }
             }
         }
@@ -105,6 +108,21 @@ pub(crate) fn dispatch_client_notification(
                 ra.notify(note.method, note.params);
             }
         }
+    }
+}
+
+/// A plain `.rs` file declared the module a plan error is about (or any
+/// other `.rs` file was saved while one stands): re-plan from disk, so
+/// saving the fix clears the error. `**/*.rs` is not a watcher glob (the
+/// server's own `.generated/*.rs` writes would trigger it), and an editor's
+/// save is the signal available for these files.
+fn replan_after_rust_save(state: &mut State, connection: &Connection) {
+    if state
+        .workspace
+        .as_ref()
+        .is_some_and(|workspace| workspace.plan_error.is_some())
+    {
+        super::watched_files::replan_from_disk(state, connection);
     }
 }
 
@@ -141,6 +159,14 @@ fn handle_rsx_close(state: &mut State, connection: &Connection, uri: &lsp_types:
             return;
         }
     };
+    // Closing discards the buffer: when the disk text differs (an unsaved
+    // edit), or a plan error stands that the buffer may have caused, the
+    // file is re-planned and regenerated from disk like any edit, so
+    // rust-analyzer and the plan error stop describing the discarded text.
+    if close_needs_update(state, &rsx_uri_string, &text) {
+        handle_rsx_change(state, connection, rsx_uri_string, text, 0);
+        return;
+    }
     match state.workspace.as_mut() {
         Some(workspace) => {
             workspace
@@ -155,6 +181,16 @@ fn handle_rsx_close(state: &mut State, connection: &Connection, uri: &lsp_types:
             diagnostics::publish_degraded(connection, &state.degraded_docs, &rsx_uri_string);
         }
     }
+}
+
+fn close_needs_update(state: &State, rsx_uri: &str, disk_text: &str) -> bool {
+    state.workspace.as_ref().is_some_and(|workspace| {
+        workspace.plan_error.is_some()
+            || workspace
+                .rsx
+                .get(rsx_uri)
+                .is_some_and(|doc| doc.line_index.text() != disk_text)
+    })
 }
 
 /// A document deleted from disk while open, now closed: the same handling
@@ -329,46 +365,82 @@ pub(super) fn handle_rsx_change(
         return;
     };
 
-    if workspace.module_shape_changed(&rsx_uri_string, &new_text) {
+    // While a plan error stands, every edit re-plans, wherever the error is
+    // shown: the edit may be exactly what fixes it (including undoing the
+    // edit that caused an error in *another* file), and the range of an
+    // error on this file is only valid for the text it was computed from.
+    // The cost is one crate-wide plan per edit for as long as the error
+    // stands (L1); the plan is cheap next to rust-analyzer's own work.
+    if workspace.module_shape_changed(&rsx_uri_string, &new_text) || workspace.plan_error.is_some()
+    {
         replan_and_resync(state, connection, rsx_uri_string, new_text, version);
         return;
     }
 
-    match workspace.regenerate(&rsx_uri_string, &new_text, version) {
+    regenerate_and_forward(state, &rsx_uri_string, new_text, version, false);
+    if let Some(workspace) = state.workspace.as_ref() {
+        diagnostics::publish_for_rsx(connection, workspace, &rsx_uri_string);
+    }
+}
+
+/// Regenerates one unit from `new_text` and tells rust-analyzer, when the
+/// generated text changed. `keep_plan_shape` is for an edit that could not
+/// be re-planned (`Workspace::plan_error`): the unit is regenerated against
+/// the plan still in force and keeps that plan's declared modules, so a
+/// later edit is still compared with the plan in force.
+fn regenerate_and_forward(
+    state: &mut State,
+    rsx_uri_string: &str,
+    new_text: String,
+    version: i32,
+    keep_plan_shape: bool,
+) {
+    let Some(workspace) = state.workspace.as_mut() else {
+        return;
+    };
+    let result = if keep_plan_shape {
+        workspace.regenerate_against_plan(rsx_uri_string, &new_text, version)
+    } else {
+        workspace.regenerate(rsx_uri_string, &new_text, version)
+    };
+    match result {
         Ok(Some(regenerated)) => {
             // Unchanged generated text (a `didOpen` of a file as it is on
             // disk): rust-analyzer already has it, and a redundant
             // `didChange` would only make it recompute.
-            let generated_uri_string = regenerated.generated_uri;
             let ra = state.ra.as_ref().filter(|_| regenerated.generated_changed);
-            if let Some(ra) = ra {
-                if let Some(unit) = workspace.generated.get_mut(&generated_uri_string) {
-                    unit.ra_version += 1;
-                    ra.notify(
-                        "textDocument/didChange",
-                        json!({
-                            "textDocument": { "uri": generated_uri_string, "version": unit.ra_version },
-                            "contentChanges": [{ "text": unit.text }],
-                        }),
-                    );
-                }
+            let unit = workspace.generated.get_mut(&regenerated.generated_uri);
+            if let (Some(ra), Some(unit)) = (ra, unit) {
+                unit.ra_version += 1;
+                ra.notify(
+                    "textDocument/didChange",
+                    json!({
+                        "textDocument": { "uri": regenerated.generated_uri, "version": unit.ra_version },
+                        "contentChanges": [{ "text": unit.text }],
+                    }),
+                );
             }
         }
         Ok(None) => {
             super::warn_unplanned_once(
                 &mut state.unplanned_reported,
-                &rsx_uri_string,
+                rsx_uri_string,
                 "is not part of the planned crate (no `mod` declaration reaches it); it is \
                  checked for syntax errors only and is not sent to rust-analyzer",
             );
             workspace.rsx.insert(
-                rsx_uri_string.clone(),
+                rsx_uri_string.to_string(),
                 documents::RsxDocument::new(new_text, version),
             );
         }
-        Err(e) => eprintln!("outou-lsp: regenerating {rsx_uri_string}: {e}"),
+        Err(e) => {
+            eprintln!("outou-lsp: regenerating {rsx_uri_string}: {e}");
+            workspace.rsx.insert(
+                rsx_uri_string.to_string(),
+                documents::RsxDocument::new(new_text, version),
+            );
+        }
     }
-    diagnostics::publish_for_rsx(connection, workspace, &rsx_uri_string);
 }
 
 /// Handles a module-declaration change (issue #9 architecture note: "if
@@ -393,22 +465,32 @@ pub(super) fn replan_and_resync(
     // counting up rather than resetting to 1, which rust-analyzer is
     // free to treat as a stale/duplicate update after N edits.
     let previous_ra_versions = last_sent_ra_versions(workspace);
+    let previous_plan_error_uri = workspace.plan_error_uri().map(str::to_string);
 
     if let Err(e) = workspace.replan(&rsx_uri_string, &new_text) {
         eprintln!("outou-lsp: re-planning after a module declaration change: {e}");
         // The crate-wide re-plan failed (issue #9 Gate 3 review, M2), but
         // the editor's own buffer still changed: keep serving *this*
         // document from the new text rather than leaving stale syntax
-        // diagnostics up for content the user no longer has on screen.
-        // `Workspace::replan` is transactional: the previous plan, units
-        // and registry are intact (only this document's text moves ahead
-        // of its map), so in-flight requests are no worse than after an
-        // ordinary `didChange`.
-        workspace.rsx.insert(
-            rsx_uri_string.clone(),
-            documents::RsxDocument::new(new_text, version),
-        );
+        // diagnostics up for content the user no longer has on screen, and
+        // keep rust-analyzer's copy of it current. `Workspace::replan` is
+        // transactional: the previous plan, units and registry are intact,
+        // so the unit is regenerated against the plan in force
+        // ([`regenerate_and_forward`]).
+        regenerate_and_forward(state, &rsx_uri_string, new_text, version, true);
+        let Some(workspace) = state.workspace.as_ref() else {
+            return;
+        };
+        // The editor is told why the re-plan failed (`Workspace::plan_error`),
+        // on the file that declares the module, alongside its other
+        // diagnostics.
         diagnostics::publish_for_rsx(connection, workspace, &rsx_uri_string);
+        diagnostics::publish_plan_error_change(
+            connection,
+            workspace,
+            previous_plan_error_uri.as_deref(),
+            &rsx_uri_string,
+        );
         return;
     }
     // A successful re-plan invalidates every generated-file position any
@@ -430,7 +512,12 @@ pub(super) fn replan_and_resync(
     if let Some(doc) = workspace.rsx.get_mut(&rsx_uri_string) {
         doc.version = version;
     }
-    resync_after_replan(state, connection, &previous_ra_versions);
+    resync_after_replan(
+        state,
+        connection,
+        &previous_ra_versions,
+        previous_plan_error_uri.as_deref(),
+    );
 }
 
 /// Each generated unit's last-sent rust-analyzer document version, to be
@@ -446,11 +533,14 @@ pub(super) fn last_sent_ra_versions(workspace: &documents::Workspace) -> HashMap
 /// The part of a successful re-plan that follows `Workspace::replan`:
 /// resyncs rust-analyzer's overlays with `previous_ra_versions` (from
 /// [`last_sent_ra_versions`], captured before the re-plan) and
-/// republishes diagnostics for every known `.rsx` file.
+/// republishes diagnostics for every known `.rsx` file. The re-plan
+/// succeeded, so `previous_plan_error_uri` (the file that showed the last
+/// failure, captured before it) no longer shows one.
 pub(super) fn resync_after_replan(
     state: &mut State,
     connection: &Connection,
     previous_ra_versions: &HashMap<String, i32>,
+    previous_plan_error_uri: Option<&str>,
 ) {
     let Some(workspace) = state.workspace.as_mut() else {
         return;
@@ -485,14 +575,14 @@ pub(super) fn resync_after_replan(
                     );
                 }
                 None => {
-                    unit.ra_version = 1;
+                    unit.ra_version = documents::INITIAL_RA_VERSION;
                     ra.notify(
                         "textDocument/didOpen",
                         json!({
                             "textDocument": {
                                 "uri": generated_uri,
                                 "languageId": "rust",
-                                "version": 1,
+                                "version": unit.ra_version,
                                 "text": unit.text,
                             }
                         }),
@@ -505,6 +595,11 @@ pub(super) fn resync_after_replan(
     let rsx_uris: Vec<String> = workspace.rsx.keys().cloned().collect();
     for uri in rsx_uris {
         diagnostics::publish_for_rsx(connection, workspace, &uri);
+    }
+    // A file the plan error was shown on that is still not a known
+    // document (the declaration was removed) was not republished above.
+    if let Some(uri) = previous_plan_error_uri.filter(|uri| !workspace.rsx.contains_key(*uri)) {
+        diagnostics::refresh_for_rsx(connection, workspace, uri);
     }
 }
 
@@ -679,6 +774,166 @@ mod tests {
             2,
         );
         assert!(last_published_messages(&client, "main.rsx").is_empty());
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    fn main_rsx_key(state: &State) -> String {
+        state
+            .workspace
+            .as_ref()
+            .unwrap()
+            .rsx
+            .keys()
+            .find(|uri| uri.ends_with("main.rsx"))
+            .expect("main.rsx is a known unit")
+            .clone()
+    }
+
+    /// The last `publishDiagnostics` for a URI ending `suffix`, whole.
+    fn last_published(client: &Connection, suffix: &str) -> Option<Vec<lsp_types::Diagnostic>> {
+        let mut last = None;
+        while let Ok(msg) = client.receiver.try_recv() {
+            if let Message::Notification(note) = msg {
+                if note.method != "textDocument/publishDiagnostics" {
+                    continue;
+                }
+                let params: lsp_types::PublishDiagnosticsParams =
+                    serde_json::from_value(note.params).unwrap();
+                if params.uri.as_str().ends_with(suffix) {
+                    last = Some(params.diagnostics);
+                }
+            }
+        }
+        last
+    }
+
+    /// #31: `mod x;` with no `x.rsx` used to reach only stderr. The edit
+    /// that adds it must publish an Error on the `mod` item, next to the
+    /// file's other diagnostics (here rust-analyzer's), and editing the
+    /// declaration away must clear it.
+    #[test]
+    fn a_mod_without_a_file_is_published_on_its_declaration_and_clears_when_removed() {
+        let tmp = temp_crate_dir("plan-error-edit");
+        let src = tmp.join("src");
+        fs::create_dir_all(&src).expect("creating src dir");
+        fs::write(src.join("main.rsx"), "fn main() {}\n").expect("writing crate root");
+
+        let mut state = load_state(&tmp);
+        let main_rsx_uri = main_rsx_key(&state);
+        let generated_uri =
+            state.workspace.as_ref().unwrap().rsx_to_generated[&main_rsx_uri].clone();
+        let (connection, client) = Connection::memory();
+
+        handle_rsx_change(
+            &mut state,
+            &connection,
+            main_rsx_uri.clone(),
+            "fn main() {}\nmod missing;\n".to_string(),
+            2,
+        );
+        // The failing edit regenerates the unit, which drops rust-analyzer's
+        // diagnostics for the old text; this one is for the new text.
+        diagnostics::handle_ra_publish(
+            &connection,
+            state.workspace.as_mut().unwrap(),
+            lsp_types::PublishDiagnosticsParams {
+                uri: uri::to_lsp(&outou_sourcemap::Uri::new(&generated_uri)),
+                diagnostics: vec![lsp_types::Diagnostic {
+                    severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+                    message: "a flycheck error".to_string(),
+                    ..Default::default()
+                }],
+                version: None,
+            },
+        );
+        let shown = last_published(&client, "main.rsx").expect("main.rsx is republished");
+        let plan_error = shown
+            .iter()
+            .find(|d| d.message.contains("missing"))
+            .expect("the unresolved module is published");
+        assert_eq!(
+            plan_error.severity,
+            Some(lsp_types::DiagnosticSeverity::ERROR)
+        );
+        assert_eq!(plan_error.source.as_deref(), Some("outou"));
+        assert_eq!(plan_error.range.start, lsp_types::Position::new(1, 0));
+        assert!(
+            !plan_error.message.contains("generated"),
+            "{}",
+            plan_error.message
+        );
+        assert!(
+            shown.iter().any(|d| d.message == "a flycheck error"),
+            "the plan error must not replace the other sources: {shown:?}"
+        );
+
+        handle_rsx_change(
+            &mut state,
+            &connection,
+            main_rsx_uri,
+            "fn main() {}\n".to_string(),
+            3,
+        );
+        let shown = last_published(&client, "main.rsx").expect("main.rsx is republished");
+        assert!(
+            !shown.iter().any(|d| d.message.contains("missing")),
+            "removing the declaration clears the plan error: {shown:?}"
+        );
+        assert!(state.workspace.as_ref().unwrap().plan_error.is_none());
+
+        fs::remove_dir_all(&tmp).ok();
+    }
+
+    /// The error follows the file that declares the module, not the one
+    /// being edited, and is cleared there once the module file exists.
+    #[test]
+    fn a_plan_error_is_shown_on_the_declaring_file_and_clears_when_the_module_appears() {
+        let tmp = temp_crate_dir("plan-error-declaring");
+        let src = tmp.join("src");
+        fs::create_dir_all(&src).expect("creating src dir");
+        fs::write(src.join("main.rsx"), "mod a;\nfn main() {}\n").expect("writing root");
+        fs::write(src.join("a.rsx"), "pub fn a() {}\n").expect("writing a");
+
+        let mut state = load_state(&tmp);
+        let a_rsx_uri = state
+            .workspace
+            .as_ref()
+            .unwrap()
+            .rsx
+            .keys()
+            .find(|uri| uri.ends_with("a.rsx"))
+            .expect("a.rsx is a known unit")
+            .clone();
+        let (connection, client) = Connection::memory();
+
+        handle_rsx_change(
+            &mut state,
+            &connection,
+            a_rsx_uri.clone(),
+            "mod b;\npub fn a() {}\n".to_string(),
+            2,
+        );
+        let shown = last_published(&client, "a.rsx").expect("a.rsx is republished");
+        assert!(shown.iter().any(|d| d.message.contains("`b`")), "{shown:?}");
+        assert_eq!(
+            state.workspace.as_ref().unwrap().plan_error_uri(),
+            Some(a_rsx_uri.as_str())
+        );
+
+        fs::create_dir_all(src.join("a")).expect("creating a/");
+        fs::write(src.join("a/b.rsx"), "pub fn b() {}\n").expect("writing b");
+        let workspace = state.workspace.as_mut().unwrap();
+        let previous = workspace.plan_error_uri().map(str::to_string);
+        workspace.replan_from_disk().expect("b.rsx now resolves");
+        resync_after_replan(
+            &mut state,
+            &connection,
+            &HashMap::new(),
+            previous.as_deref(),
+        );
+        let shown = last_published(&client, "a.rsx").expect("a.rsx is republished");
+        assert!(shown.is_empty(), "{shown:?}");
 
         fs::remove_dir_all(&tmp).ok();
     }

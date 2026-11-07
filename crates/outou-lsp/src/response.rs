@@ -479,6 +479,7 @@ mod tests {
             rsx: std::collections::HashMap::new(),
             generated: std::collections::HashMap::new(),
             rsx_to_generated: std::collections::HashMap::new(),
+            plan_error: None,
         };
         let generated_uri: lsp_types::Uri =
             "file:///app/src/.generated/crate-root.rs".parse().unwrap();
@@ -512,6 +513,7 @@ mod tests {
             rsx: std::collections::HashMap::new(),
             generated: std::collections::HashMap::new(),
             rsx_to_generated: std::collections::HashMap::new(),
+            plan_error: None,
         };
         let generated_uri: lsp_types::Uri =
             "file:///app/src/.generated/crate-root.rs".parse().unwrap();
@@ -566,6 +568,7 @@ mod tests {
             rsx: std::collections::HashMap::new(),
             generated: std::collections::HashMap::new(),
             rsx_to_generated: std::collections::HashMap::new(),
+            plan_error: None,
         };
         workspace.rsx.insert(
             rsx_uri.as_str().to_string(),

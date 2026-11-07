@@ -164,11 +164,12 @@ pub(super) fn handle_deleted_after_close(
 }
 
 /// The same crate-wide re-plan a `mod` edit triggers, minus the edit.
-fn replan_from_disk(state: &mut State, connection: &Connection) {
+pub(super) fn replan_from_disk(state: &mut State, connection: &Connection) {
     let Some(workspace) = state.workspace.as_mut() else {
         return;
     };
     let previous_ra_versions = last_sent_ra_versions(workspace);
+    let previous_plan_error_uri = workspace.plan_error_uri().map(str::to_string);
     let result = workspace.replan_from_disk();
     // A failed re-plan leaves the previous state intact (see
     // `Workspace::replan`), so requests in flight stay valid; only a
@@ -176,9 +177,25 @@ fn replan_from_disk(state: &mut State, connection: &Connection) {
     match result {
         Ok(()) => {
             state.epoch += 1;
-            resync_after_replan(state, connection, &previous_ra_versions)
+            resync_after_replan(
+                state,
+                connection,
+                &previous_ra_versions,
+                previous_plan_error_uri.as_deref(),
+            )
         }
-        Err(e) => eprintln!("outou-lsp: re-planning after a change on disk: {e}"),
+        Err(e) => {
+            eprintln!("outou-lsp: re-planning after a change on disk: {e}");
+            if let Some(workspace) = state.workspace.as_ref() {
+                // `edited` is empty: no document triggered this re-plan.
+                diagnostics::publish_plan_error_change(
+                    connection,
+                    workspace,
+                    previous_plan_error_uri.as_deref(),
+                    "",
+                );
+            }
+        }
     }
 }
 
