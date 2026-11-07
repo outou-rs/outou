@@ -66,7 +66,9 @@ After that:
 - `textDocument/{didOpen,didChange}` for a `.rsx` file regenerates only
   that unit (in `Mode::Recovery`, for the overlay) and forwards a
   `didChange` to rust-analyzer for its generated file, unless the edited
-  file's own set of `mod` declarations changed, in which case the whole
+  file's own set of `mod` declarations changed (names, `#[path]`, inline or not,
+  nesting, and a conditional `#[cfg_attr(.., path = ..)]`, which the resolver
+  rejects; other `#[cfg]` attributes are never evaluated and do not count), in which case the whole
   crate is re-planned — using every currently open buffer's own text, not
   what is on disk, so an unsaved `mod` declaration is seen immediately —
   and every generated unit is resynced (`didOpen` for a newly-planned
@@ -85,7 +87,9 @@ After that:
   re-plans (one crate-wide plan per edit), closing a `.rsx` buffer re-plans
   from disk, saving a `.rs` file re-plans from disk (`**/*.rs` is not
   watched, since the server's own `.generated/*.rs` writes would trigger
-  it), and watched-file events re-plan as before. Errors that name no `mod`
+  it), and watched-file events re-plan as before (plus, while an error
+  stands, a change or delete event for a crate `.rsx` file the plan does not
+  contain, which may be the file the error is shown on). Errors that name no `mod`
   item (two crate roots, a `.rs` file declaring a `.rsx` module) are shown
   at the top of the crate root file. Not covered: a plan error at startup
   (the server then runs in degraded mode for the session) and on save of a

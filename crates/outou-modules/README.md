@@ -6,7 +6,7 @@ Module graph resolver for crates mixing `.rs` and `.rsx`. Outou resolves the mod
 
 - Candidates for `mod foo;` are `foo.rsx`, `foo.rs`, `foo/mod.rsx`, `foo/mod.rs`. More than one existing *file* is `ModuleError::Ambiguous`; there is no implicit priority between `.rs` and `.rsx`, or between `foo.rsx` and `foo/mod.rsx` — the user removes one file. A directory that happens to share a candidate's name is never itself a candidate.
 - `#[path = "…"]` is honored. Directory ownership — both for where an implicit `mod name;` searches and for where an explicit `#[path]` resolves — follows the `DirScope` model in `src/scope.rs`, validated directly against rustc 1.98.1 (see `tests/fixtures/modules/path-dirs/`). The extension of the resolved target decides `SourceKind`.
-- `#[cfg(…)]` is never evaluated. Every module is resolved and generated; the attribute is preserved verbatim on `ModuleNode::cfg` (and, alongside every other attribute, on `ModuleNode::attributes`) so codegen can reproduce it on the generated declaration. `#[cfg_attr(condition, path = "…")]` is the one unsupported exception: Phase 0 cannot decide which of a conditional path's targets to resolve without evaluating `cfg`, so it is rejected with `ModuleError::ConditionalPath` instead of silently resolving the un-conditioned file.
+- `#[cfg(…)]` is never evaluated. Every module is resolved and generated; the attribute is preserved verbatim on `ModuleNode::cfg` (and, alongside every other attribute, on `ModuleNode::attributes`) so codegen can reproduce it on the generated declaration. `#[cfg_attr(condition, path = "…")]` is the one unsupported exception: Outou cannot decide which of a conditional path's targets to resolve without evaluating `cfg`, so it is rejected with `ModuleError::ConditionalPath` (also when nested, `cfg_attr(a, cfg_attr(b, path = "…"))`) instead of silently resolving the un-conditioned file.
 - A `mod` reachable through `#[path]` that re-opens a file already open higher up the same chain is `ModuleError::Circular` instead of a stack overflow. Module nesting (crossing files) is additionally capped at `MAX_MODULE_DEPTH` so an acyclic but very long `#[path]` chain cannot overflow the stack either; exceeding it is `ModuleError::TooDeep`.
 - An explicit `#[path]` that resolves outside the crate root (an absolute path, or enough `..` segments to escape it) is `ModuleError::OutsideCrate`: Outou requires every module file to live under the crate root.
 - Raw identifiers (`mod r#type;`) keep their source spelling on `ModuleNode::path` — codegen must re-emit `mod r#type;` unchanged — but every filesystem lookup and generated-path segment derived from the name strips the `r#` prefix, since no file on disk is ever spelled that way.
@@ -17,6 +17,12 @@ See the module doc on `scope` (`src/scope.rs`) for the full directory-ownership 
 
 ```rust,ignore
 pub fn resolve(root: &Path) -> Result<ModuleGraph, ModuleError>;
+// Like `resolve`, but a file whose path is a key of `overlay` is read from the map (an editor's unsaved buffer).
+pub fn resolve_with_overlay(root: &Path, overlay: &HashMap<PathBuf, String>) -> Result<ModuleGraph, ModuleError>;
+// Strips a raw-identifier prefix: "r#type" -> "type" (what file lookups use).
+pub fn unraw(name: &str) -> &str;
+// The verbatim `#[cfg_attr(cond, path = "…")]` among `attributes`, if any: the form `resolve` rejects.
+pub fn conditional_path_attribute(attributes: &[String]) -> Option<String>;
 
 pub const MAX_MODULE_DEPTH: usize;
 pub const GENERATED_ROOT_STEM: &str; // "crate-root"

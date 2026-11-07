@@ -461,3 +461,232 @@ fn the_error_moves_between_files_and_ends_cleared() {
     assert_eq!(last_published(&client, "a.rsx"), Some(Vec::new()));
     fs::remove_dir_all(&dir).ok();
 }
+
+/// D6: a conditional `#[cfg_attr(.., path = ..)]` typed above a `mod` is a
+/// module-shape change, so the plan error a fresh plan reports is shown, and
+/// removing the attribute clears it.
+#[test]
+fn typing_a_conditional_path_attribute_above_a_mod_shows_the_plan_error() {
+    let dir = crate_dir("d6-conditional-path");
+    fs::write(dir.join("src/main.rsx"), "mod a;\nfn main() {}\n").unwrap();
+    fs::write(dir.join("src/a.rsx"), "pub fn a() {}\n").unwrap();
+    let mut state = load(&dir);
+    let main = key(&state, "main.rsx");
+    let (connection, client) = Connection::memory();
+
+    handle_rsx_change(
+        &mut state,
+        &connection,
+        main.clone(),
+        "#[cfg_attr(unix, path = \"a.rsx\")]\nmod a;\nfn main() {}\n".to_string(),
+        2,
+    );
+    assert_eq!(plan_error_file(&state).as_deref(), Some("main.rsx"));
+    let shown = last_published(&client, "main.rsx").expect("main.rsx is published");
+    assert!(
+        shown
+            .iter()
+            .any(|m| m.contains("conditional module path is not supported")),
+        "{shown:?}"
+    );
+
+    handle_rsx_change(
+        &mut state,
+        &connection,
+        main,
+        "mod a;\nfn main() {}\n".to_string(),
+        3,
+    );
+    assert!(plan_error_file(&state).is_none());
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// D5: a plan error shown on a file that is not in the plan clears when that
+/// file is fixed on disk; the watcher event for it used to be ignored.
+#[test]
+fn fixing_a_file_outside_the_plan_on_disk_clears_the_error_shown_on_it() {
+    let dir = crate_dir("d5-outside-plan");
+    fs::write(dir.join("src/main.rsx"), "fn main() {}\n").unwrap();
+    fs::write(dir.join("src/a.rsx"), "mod missing;\npub fn a() {}\n").unwrap();
+    let mut state = load(&dir);
+    let main = key(&state, "main.rsx");
+    let (connection, client) = Connection::memory();
+    handle_rsx_change(
+        &mut state,
+        &connection,
+        main,
+        "mod a;\nfn main() {}\n".to_string(),
+        2,
+    );
+    assert_eq!(plan_error_file(&state).as_deref(), Some("a.rsx"));
+    assert!(state
+        .workspace
+        .as_ref()
+        .unwrap()
+        .rsx
+        .keys()
+        .all(|u| !u.ends_with("a.rsx")));
+    let shown = last_published(&client, "a.rsx").expect("a.rsx carries the error");
+    assert!(shown.iter().any(|m| m.contains("`missing`")), "{shown:?}");
+
+    fs::write(dir.join("src/a.rsx"), "pub fn a() {}\n").unwrap();
+    watched(
+        &mut state,
+        &connection,
+        &[(&dir.join("src/a.rsx"), WATCH_CHANGED)],
+    );
+
+    let workspace = state.workspace.as_ref().unwrap();
+    assert!(workspace.plan_error.is_none());
+    // The re-plan used the open `main.rsx` buffer (`mod a;`), not disk only.
+    assert!(workspace
+        .rsx_to_generated
+        .keys()
+        .any(|u| u.ends_with("a.rsx")));
+    assert_eq!(last_published(&client, "a.rsx"), Some(Vec::new()));
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// D5: without a standing plan error a change event for a file outside the
+/// plan does not re-plan (the plan epoch is unchanged).
+#[test]
+fn a_change_event_for_a_file_outside_the_plan_does_not_replan_without_an_error() {
+    let dir = crate_dir("d5-no-error");
+    fs::write(dir.join("src/main.rsx"), "fn main() {}\n").unwrap();
+    fs::write(dir.join("src/stray.rsx"), "pub fn s() {}\n").unwrap();
+    let mut state = load(&dir);
+    let (connection, _client) = Connection::memory();
+    let epoch = state.epoch;
+
+    fs::write(dir.join("src/stray.rsx"), "pub fn s2() {}\n").unwrap();
+    watched(
+        &mut state,
+        &connection,
+        &[(&dir.join("src/stray.rsx"), WATCH_CHANGED)],
+    );
+
+    assert_eq!(state.epoch, epoch);
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// D6: the nested `cfg_attr(a, cfg_attr(b, path = ..))` form is rejected
+/// like the flat one.
+#[test]
+fn typing_a_nested_conditional_path_attribute_shows_the_plan_error() {
+    let dir = crate_dir("d6-nested-conditional-path");
+    fs::write(dir.join("src/main.rsx"), "mod a;\nfn main() {}\n").unwrap();
+    fs::write(dir.join("src/a.rsx"), "pub fn a() {}\n").unwrap();
+    let mut state = load(&dir);
+    let main = key(&state, "main.rsx");
+    let (connection, client) = Connection::memory();
+
+    handle_rsx_change(
+        &mut state,
+        &connection,
+        main,
+        "#[cfg_attr(unix, cfg_attr(target_os = \"linux\", path = \"a.rsx\"))]\nmod a;\nfn main() {}\n"
+            .to_string(),
+        2,
+    );
+
+    let shown = last_published(&client, "main.rsx").expect("main.rsx is published");
+    assert!(
+        shown
+            .iter()
+            .any(|m| m.contains("conditional module path is not supported")),
+        "{shown:?}"
+    );
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// D5: deleting the file the error is shown on moves the error to the file
+/// that declares it and clears the deleted file's diagnostics.
+#[test]
+fn deleting_a_file_outside_the_plan_moves_the_error_off_it() {
+    let dir = crate_dir("d5-delete");
+    fs::write(dir.join("src/main.rsx"), "fn main() {}\n").unwrap();
+    fs::write(dir.join("src/a.rsx"), "mod missing;\npub fn a() {}\n").unwrap();
+    let mut state = load(&dir);
+    let main = key(&state, "main.rsx");
+    let (connection, client) = Connection::memory();
+    handle_rsx_change(
+        &mut state,
+        &connection,
+        main,
+        "mod a;\nfn main() {}\n".to_string(),
+        2,
+    );
+    assert_eq!(plan_error_file(&state).as_deref(), Some("a.rsx"));
+    while client.receiver.try_recv().is_ok() {}
+
+    fs::remove_file(dir.join("src/a.rsx")).unwrap();
+    watched(
+        &mut state,
+        &connection,
+        &[(&dir.join("src/a.rsx"), WATCH_DELETED)],
+    );
+
+    assert_eq!(plan_error_file(&state).as_deref(), Some("main.rsx"));
+    let mut a_published = None;
+    let mut main_published = None;
+    while let Ok(msg) = client.receiver.try_recv() {
+        let Message::Notification(note) = msg else {
+            continue;
+        };
+        if note.method != "textDocument/publishDiagnostics" {
+            continue;
+        }
+        let params: lsp_types::PublishDiagnosticsParams =
+            serde_json::from_value(note.params).unwrap();
+        let messages: Vec<String> = params.diagnostics.into_iter().map(|d| d.message).collect();
+        if params.uri.as_str().ends_with("a.rsx") {
+            a_published = Some(messages);
+        } else if params.uri.as_str().ends_with("main.rsx") {
+            main_published = Some(messages);
+        }
+    }
+    assert_eq!(a_published, Some(Vec::new()));
+    let shown = main_published.expect("main.rsx carries the moved error");
+    assert!(!shown.is_empty(), "{shown:?}");
+    fs::remove_dir_all(&dir).ok();
+}
+
+/// D5: a `.rsx` file under the crate's `target/` directory is not part of
+/// the crate; its events do not re-plan even while an error stands.
+#[test]
+fn events_for_rsx_files_under_target_do_not_replan() {
+    let dir = crate_dir("d5-target");
+    fs::create_dir_all(dir.join("target/copy")).unwrap();
+    fs::write(dir.join("src/main.rsx"), "fn main() {}\n").unwrap();
+    fs::write(dir.join("src/a.rsx"), "mod missing;\npub fn a() {}\n").unwrap();
+    fs::write(dir.join("target/copy/b.rsx"), "pub fn b() {}\n").unwrap();
+    let mut state = load(&dir);
+    let main = key(&state, "main.rsx");
+    let (connection, _client) = Connection::memory();
+    handle_rsx_change(
+        &mut state,
+        &connection,
+        main,
+        "mod a;\nfn main() {}\n".to_string(),
+        2,
+    );
+    assert_eq!(plan_error_file(&state).as_deref(), Some("a.rsx"));
+    // The error is fixed on disk, but no event says so yet.
+    fs::write(dir.join("src/a.rsx"), "pub fn a() {}\n").unwrap();
+
+    watched(
+        &mut state,
+        &connection,
+        &[(&dir.join("target/copy/b.rsx"), WATCH_CHANGED)],
+    );
+    assert_eq!(plan_error_file(&state).as_deref(), Some("a.rsx"));
+
+    // Control: the event for the crate file re-plans and clears it.
+    watched(
+        &mut state,
+        &connection,
+        &[(&dir.join("src/a.rsx"), WATCH_CHANGED)],
+    );
+    assert!(plan_error_file(&state).is_none());
+    fs::remove_dir_all(&dir).ok();
+}

@@ -14,7 +14,11 @@
 //! the disk, so its events are ignored. For a closed one, a changed file is
 //! regenerated from disk like an edit; a created or deleted file, or a
 //! changed crate `Cargo.toml`, changes what the module plan contains and
-//! triggers the same full re-plan a `mod` edit does.
+//! triggers the same full re-plan a `mod` edit does. While a plan error
+//! stands, any event for a `.rsx` file of the crate that the plan does not
+//! contain also re-plans: the error may be shown on that file, and the
+//! change may be the fix (#31, D5). Without an error such events are
+//! ignored, since a file no `mod` reaches cannot change the plan.
 
 use std::path::Path;
 
@@ -28,6 +32,9 @@ use crate::{diagnostics, uri};
 
 const RSX_GLOB: &str = "**/*.rsx";
 const MANIFEST_GLOB: &str = "**/Cargo.toml";
+/// Cargo's output directory: `.rsx` files there (copied examples, fixtures)
+/// are not part of the crate and must not cause re-plans.
+const BUILD_DIR: &str = "target";
 const MANIFEST_FILE: &str = "Cargo.toml";
 const REGISTRATION_ID: &str = "outou-watched-files";
 
@@ -104,6 +111,7 @@ fn classify(state: &State, events: &[FileEvent]) -> Plan {
         return plan;
     };
     let manifest = uri::canonicalize_lenient(&workspace.manifest_dir.join(MANIFEST_FILE));
+    let has_plan_error = workspace.plan_error.is_some();
     for event in events {
         let rsx_uri = uri::normalize_file_uri(event.uri.as_str());
         if !rsx_uri.ends_with(".rsx") {
@@ -115,8 +123,12 @@ fn classify(state: &State, events: &[FileEvent]) -> Plan {
         if known.is_some_and(|doc| doc.version != 0) {
             continue;
         }
-        if event.typ == FileChangeType::CREATED {
+        let created = event.typ == FileChangeType::CREATED;
+        if created || (known.is_none() && has_plan_error) {
             // A file outside the crate cannot be reached by its `mod` tree.
+            // Any file the plan does not contain also matters while a plan
+            // error stands: the error may be shown on it, and changing or
+            // deleting it may be what fixes the error (#31, D5).
             plan.replan |= is_inside_crate(&workspace.manifest_dir, &rsx_uri);
         } else if event.typ == FileChangeType::DELETED {
             mark_deleted(&mut plan, &rsx_uri, known.is_some());
@@ -129,8 +141,11 @@ fn classify(state: &State, events: &[FileEvent]) -> Plan {
 
 fn is_inside_crate(manifest_dir: &Path, rsx_uri: &str) -> bool {
     let crate_dir = uri::canonicalize_lenient(manifest_dir);
-    uri::outou_uri_str_to_path(rsx_uri)
-        .is_some_and(|path| uri::canonicalize_lenient(&path).starts_with(crate_dir))
+    let build_dir = crate_dir.join(BUILD_DIR);
+    uri::outou_uri_str_to_path(rsx_uri).is_some_and(|path| {
+        let path = uri::canonicalize_lenient(&path);
+        path.starts_with(&crate_dir) && !path.starts_with(&build_dir)
+    })
 }
 
 fn mark_deleted(plan: &mut Plan, rsx_uri: &str, is_known: bool) {

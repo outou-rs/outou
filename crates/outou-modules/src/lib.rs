@@ -36,6 +36,7 @@ use std::path::{Path, PathBuf};
 
 pub use error::ModuleError;
 pub use graph::{ModuleGraph, ModuleGraphIter, ModuleNode, SourceKind, GENERATED_ROOT_STEM};
+pub use probe::conditional_path_attribute;
 pub use resolve::{resolve, resolve_with_overlay, MAX_MODULE_DEPTH};
 pub use scope::unraw;
 

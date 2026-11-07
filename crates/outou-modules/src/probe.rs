@@ -100,7 +100,7 @@ pub(crate) fn is_cfg_attribute(text: &str) -> bool {
 /// decide which of a conditional path's possible targets to resolve;
 /// resolving the un-conditioned file instead would silently compile a
 /// different file than the one the real build uses.
-pub(crate) fn conditional_path_attribute(attributes: &[String]) -> Option<String> {
+pub fn conditional_path_attribute(attributes: &[String]) -> Option<String> {
     attributes
         .iter()
         .find(|text| {
@@ -111,7 +111,9 @@ pub(crate) fn conditional_path_attribute(attributes: &[String]) -> Option<String
 }
 
 /// Whether a `#[cfg_attr(...)]` attribute's top-level argument list names
-/// `path` as one of its comma-separated meta items.
+/// `path` as one of its comma-separated meta items, directly or inside a
+/// nested `cfg_attr(...)` (`cfg_attr(a, cfg_attr(b, path = "x"))` expands to
+/// the same conditional `#[path]`).
 fn cfg_attr_names_a_path(text: &str) -> bool {
     let Some(open) = text.find('(') else {
         return false;
@@ -124,7 +126,17 @@ fn cfg_attr_names_a_path(text: &str) -> bool {
     }
     split_top_level_commas(&text[open + 1..close])
         .iter()
-        .any(|segment| is_path_meta_item(segment.trim()))
+        .any(|segment| {
+            let segment = segment.trim();
+            is_path_meta_item(segment) || is_nested_cfg_attr_naming_a_path(segment)
+        })
+}
+
+/// Whether `segment` is itself a `cfg_attr(...)` meta item that names `path`.
+fn is_nested_cfg_attr_naming_a_path(segment: &str) -> bool {
+    segment
+        .strip_prefix("cfg_attr")
+        .is_some_and(|rest| rest.trim_start().starts_with('(') && cfg_attr_names_a_path(segment))
 }
 
 /// Whether a single (trimmed) `cfg_attr` argument is the `path` meta item
@@ -240,6 +252,19 @@ mod tests {
         // `path` only counts as the conditional-path hazard when it is a
         // top-level argument, not buried inside a nested predicate.
         let attrs = vec!["#[cfg_attr(all(unix, path), inline)]".to_string()];
+        assert_eq!(conditional_path_attribute(&attrs), None);
+    }
+
+    #[test]
+    fn conditional_path_attribute_finds_a_path_argument_of_a_nested_cfg_attr() {
+        let nested = "#[cfg_attr(unix, cfg_attr(target_os = \"linux\", path = \"a.rsx\"))]";
+        let attrs = vec![nested.to_string()];
+        assert_eq!(conditional_path_attribute(&attrs).as_deref(), Some(nested));
+    }
+
+    #[test]
+    fn conditional_path_attribute_ignores_a_nested_cfg_attr_without_path() {
+        let attrs = vec!["#[cfg_attr(unix, cfg_attr(test, ignore))]".to_string()];
         assert_eq!(conditional_path_attribute(&attrs), None);
     }
 

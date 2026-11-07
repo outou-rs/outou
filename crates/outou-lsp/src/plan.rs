@@ -99,6 +99,12 @@ pub struct ModuleDescriptor {
     /// list, the depths fix the nesting tree uniquely, so moving a `mod`
     /// into or out of an inline module changes the list.
     pub depth: usize,
+    /// Whether the declaration carries a `#[cfg_attr(condition, path = "…")]`
+    /// (`outou_modules::conditional_path_attribute`). `outou-modules` rejects
+    /// it ("conditional module path is not supported"), so adding or
+    /// removing one changes whether the crate plans at all. Other `cfg`
+    /// attributes are preserved, not evaluated, and never change the plan.
+    pub has_conditional_path: bool,
 }
 
 /// Every module declared anywhere in `file`, at any nesting depth, inline
@@ -115,11 +121,15 @@ pub fn declared_modules(file: &ast::File) -> Vec<ModuleDescriptor> {
 fn collect_declared_modules(items: &[ast::Item], depth: usize, out: &mut Vec<ModuleDescriptor>) {
     for item in items {
         if let ast::Item::Module(module) = item {
+            let attributes: Vec<String> =
+                module.attributes.iter().map(|a| a.text.clone()).collect();
             out.push(ModuleDescriptor {
                 name: module.name.name.clone(),
                 path_attr: module.path.clone(),
                 is_inline: module.items.is_some(),
                 depth,
+                has_conditional_path: outou_modules::conditional_path_attribute(&attributes)
+                    .is_some(),
             });
             if let Some(inner) = &module.items {
                 collect_declared_modules(inner, depth + 1, out);
@@ -246,6 +256,33 @@ mod tests {
             declared_modules(&file_based.file),
             declared_modules(&inline.file)
         );
+    }
+
+    #[test]
+    fn a_conditional_path_attribute_changes_the_descriptor() {
+        let plain = declared_modules(&outou_syntax::parse("mod m;").file);
+        let conditional = declared_modules(
+            &outou_syntax::parse("#[cfg_attr(unix, path = \"a.rsx\")] mod m;").file,
+        );
+        assert_ne!(plain, conditional);
+        assert!(conditional[0].has_conditional_path);
+    }
+
+    #[test]
+    fn unrelated_attributes_leave_the_descriptor_alone() {
+        let plain = declared_modules(&outou_syntax::parse("mod m;").file);
+        for attrs in [
+            "#[cfg(unix)]",
+            "#[cfg_attr(unix, allow(dead_code))]",
+            "#[allow(dead_code)]",
+        ] {
+            let text = format!("{attrs} mod m;");
+            assert_eq!(
+                declared_modules(&outou_syntax::parse(&text).file),
+                plain,
+                "{attrs}"
+            );
+        }
     }
 
     #[test]
