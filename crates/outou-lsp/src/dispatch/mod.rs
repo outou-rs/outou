@@ -19,6 +19,8 @@ use lsp_server::RequestId;
 use crate::documents::{self, Workspace};
 use crate::ra::RaClient;
 
+#[cfg(test)]
+mod module_path_tests;
 mod notifications;
 #[cfg(test)]
 mod plan_error_tests;

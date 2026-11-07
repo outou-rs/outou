@@ -18,7 +18,7 @@ const WATCH_CHANGED: u32 = 2;
 const WATCH_DELETED: u32 = 3;
 const MANIFEST: &str = "[package]\nname = \"t\"\nversion = \"0.1.0\"\nedition = \"2021\"\n";
 
-fn crate_dir(tag: &str) -> PathBuf {
+pub(super) fn crate_dir(tag: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("outou-plan-error-{tag}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(dir.join("src")).expect("creating src dir");
@@ -28,7 +28,7 @@ fn crate_dir(tag: &str) -> PathBuf {
 
 /// A state over the crate at `dir`, as the server has it after startup: every
 /// unit already opened on rust-analyzer at the initial version.
-fn load(dir: &Path) -> State {
+pub(super) fn load(dir: &Path) -> State {
     let LoadOutcome::Planned(mut workspace) = Workspace::load(dir).expect("plans") else {
         panic!("the temp crate has a `.rsx` crate root");
     };
@@ -40,13 +40,13 @@ fn load(dir: &Path) -> State {
     state
 }
 
-fn with_mock_ra(state: &mut State, tag: &str) -> PathBuf {
+pub(super) fn with_mock_ra(state: &mut State, tag: &str) -> PathBuf {
     let (ra, log) = mock_ra(tag);
     state.ra = Some(ra);
     log
 }
 
-fn key(state: &State, suffix: &str) -> String {
+pub(super) fn key(state: &State, suffix: &str) -> String {
     let workspace = state.workspace.as_ref().unwrap();
     workspace
         .rsx
@@ -56,7 +56,7 @@ fn key(state: &State, suffix: &str) -> String {
         .clone()
 }
 
-fn generated_text(state: &State, rsx_uri: &str) -> String {
+pub(super) fn generated_text(state: &State, rsx_uri: &str) -> String {
     let workspace = state.workspace.as_ref().unwrap();
     workspace.generated[&workspace.rsx_to_generated[rsx_uri]]
         .text

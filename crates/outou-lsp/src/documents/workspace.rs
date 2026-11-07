@@ -265,7 +265,9 @@ impl Workspace {
         let generated = generate_unit(unit, text, Mode::Recovery)?;
         let rsx_uri = outou_sourcemap::file_uri(&unit.source_file);
         let generated_uri = outou_sourcemap::file_uri(&unit.generated_file);
-        let declared_modules = plan::declared_modules(&outou_syntax::parse(text).file);
+        let parsed = outou_syntax::parse(text);
+        let declared_modules = plan::declared_modules(&parsed.file);
+        let plan_module_spans = plan::module_span_starts(&parsed.file);
 
         self.rsx.insert(
             rsx_uri.as_str().to_string(),
@@ -282,6 +284,7 @@ impl Workspace {
                 ra_version: 0,
                 last_ra_diagnostics: Vec::new(),
                 declared_modules,
+                plan_module_spans,
             },
         );
         self.rsx_to_generated.insert(
@@ -346,16 +349,27 @@ impl Workspace {
         let Some(generated_uri) = self.rsx_to_generated.get(rsx_uri).cloned() else {
             return Ok(None);
         };
-        let planned = self
-            .generated
-            .get(&generated_uri)
-            .map(|u| u.planned.clone());
-        let Some(planned) = planned else {
+        let Some(unit) = self.generated.get(&generated_uri) else {
             return Ok(None);
         };
 
+        let parsed = outou_syntax::parse(new_text);
+        let declared_modules = plan::declared_modules(&parsed.file);
+        let mut planned = unit.planned.clone();
+        // The plan's `module_paths` are keyed by the byte offset of each
+        // `mod` in the text it was planned from. While the module set is
+        // the one planned, the same declarations may have moved (#31, D4);
+        // otherwise (an edit that could not be re-planned) the plan's own
+        // keys are all there is.
+        if declared_modules == unit.declared_modules {
+            planned.module_paths = plan::rekey_module_paths(
+                &unit.planned.module_paths,
+                &unit.plan_module_spans,
+                &plan::module_span_starts(&parsed.file),
+            );
+        }
+
         let generated = generate_unit(&planned, new_text, Mode::Recovery)?;
-        let declared_modules = plan::declared_modules(&outou_syntax::parse(new_text).file);
 
         self.rsx.insert(
             rsx_uri.to_string(),

@@ -66,6 +66,13 @@ pub struct GeneratedUnit {
     /// `pub(super)`: [`super::workspace::Workspace`]'s planning methods
     /// read and update this across the module split.
     pub(super) declared_modules: Vec<ModuleDescriptor>,
+    /// `span.start` of each module declared in the text this unit was last
+    /// planned from, in the order of [`GeneratedUnit::declared_modules`].
+    /// These are the keys of `planned.module_paths`; an edit that moves a
+    /// declaration without changing the module set re-keys that map from
+    /// here ([`crate::plan::rekey_module_paths`], #31 D4). Set only when
+    /// the unit is planned, never by a single-unit regeneration.
+    pub(crate) plan_module_spans: Vec<u32>,
 }
 
 #[cfg(test)]
@@ -91,5 +98,6 @@ pub(crate) fn test_generated_unit(
         ra_version: 0,
         last_ra_diagnostics: Vec::new(),
         declared_modules: Vec::new(),
+        plan_module_spans: Vec::new(),
     }
 }

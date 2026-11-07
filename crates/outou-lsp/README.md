@@ -244,7 +244,7 @@ since it is read-only. See
 | `src/ra.rs` | Spawns rust-analyzer and speaks JSON-RPC to it (reuses `lsp_server::Message`'s own framing for that side too); bounded waits for its `initialize`/`shutdown` responses. |
 | `src/documents/mod.rs` | Re-exports; module doc for the split below. |
 | `src/documents/units.rs` | The per-document (`RsxDocument`) and per-generated-unit (`GeneratedUnit`) types. |
-| `src/documents/workspace.rs` | `Workspace`: the plan, the registry, loading, single-unit regeneration and crate-wide re-planning. |
+| `src/documents/workspace.rs` | `Workspace`: the plan, the registry, loading, single-unit regeneration (re-keying the plan's `module_paths` offsets onto the edited text, so typing above a `mod` keeps its `#[path]`) and crate-wide re-planning. |
 | `src/plan.rs` | Thin wrapper over `outou_cli::build::plan` (degraded-mode detection, module-declaration-change detection, the planning overlay). |
 | `src/mapping.rs` | Position/range translation between `.rsx` and generated Rust; refuses to translate a transformed (non-exact-length) mapping rather than guess. |
 | `src/response.rs` | Rewrites and sanitizes hover/definition/completion response payloads through `mapping.rs`. |
