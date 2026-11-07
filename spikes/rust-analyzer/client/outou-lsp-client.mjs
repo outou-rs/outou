@@ -83,6 +83,9 @@ const PROBES = [
   "rename-component",
   "semantic-tokens-full",
   "references-component",
+  "rename-keyword-prop",
+  "rename-prop-to-keyword",
+  "references-keyword-prop",
 ];
 
 function usage() {
@@ -857,6 +860,49 @@ async function runProbe(probe) {
         {
           textDocument: { uri: mainUri },
           position: { line: pos.line, character: pos.character + 3 },
+          context: { includeDeclaration: true },
+        },
+        (value) => Array.isArray(value) && value.length > 0,
+      );
+      break;
+    }
+    case "rename-keyword-prop":
+    case "rename-prop-to-keyword": {
+      // Issue #31 (ledger rows 17, 29 and 61): `type` on
+      // `<Field label="Name" type="text" />` is lowered to the raw
+      // identifier `r#type`. `rename-keyword-prop` renames that prop
+      // (`type` -> `kind`) from its `.rsx` attribute;
+      // `rename-prop-to-keyword` renames an ordinary prop to a keyword
+      // (`<Greeting name=...>`, `name` -> `type`), where rust-analyzer
+      // itself writes `r#type`. The Rust test driving this script makes
+      // the assertions against `result.prepareRename`/`result.rename`.
+      const toKeyword = probe === "rename-prop-to-keyword";
+      const pos = positionOf(originalText, toKeyword ? "<Greeting name=" : 'type="text"');
+      const position = { line: pos.line, character: pos.character + (toKeyword ? 12 : 1) };
+      await requestUntilReady(
+        "prepareRename",
+        "textDocument/prepareRename",
+        { textDocument: { uri: mainUri }, position },
+        hasNonNullResult,
+      );
+      const renameStart = Date.now();
+      const edit = await request("textDocument/rename", {
+        textDocument: { uri: mainUri },
+        position,
+        newName: toKeyword ? "type" : "kind",
+      });
+      result.latencyMs.rename = Date.now() - renameStart;
+      result.rename = edit;
+      break;
+    }
+    case "references-keyword-prop": {
+      const pos = positionOf(originalText, 'type="text"');
+      await requestUntilReady(
+        "references",
+        "textDocument/references",
+        {
+          textDocument: { uri: mainUri },
+          position: { line: pos.line, character: pos.character + 1 },
           context: { includeDeclaration: true },
         },
         (value) => Array.isArray(value) && value.length > 0,

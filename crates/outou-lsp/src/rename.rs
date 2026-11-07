@@ -285,20 +285,37 @@ fn translate_generated_edits(
         else {
             continue;
         };
-        let sources = mapping::generated_range_to_all_sources(workspace, generated_uri, range)
+        let targets = mapping::generated_range_to_source_targets(workspace, generated_uri, range)
             .unwrap_or_default();
-        if sources.is_empty() {
+        if targets.is_empty() {
             return Err(UnmappableRename {
                 generated_uri: generated_uri.as_str().to_string(),
             });
         }
-        out.extend(
-            sources
-                .into_iter()
-                .map(|(uri, range)| (uri, range, new_text.clone())),
-        );
+        out.extend(targets.into_iter().map(|target| {
+            let text = if target.is_attribute_name {
+                attribute_name_text(&new_text)
+            } else {
+                new_text.clone()
+            };
+            (target.uri, target.range, text)
+        }));
     }
     Ok(out)
+}
+
+/// The new text of an edit at a JSX attribute name, in `.rsx` spelling.
+///
+/// rust-analyzer writes a rename to a keyword as a raw identifier
+/// (`kind` -> `type` is `r#type`), which is what Rust needs but not what
+/// `.rsx` wants: an attribute name is plain (`type`), and codegen adds the
+/// `r#` back (`r#type` in `.rsx` is accepted and means the same attribute,
+/// so the strip is a normalisation, never a change of meaning). Only an
+/// attribute-name target is rewritten; the same edit at a verbatim Rust
+/// position (a component's `fn Field(r#type: String)` in `.rsx`) keeps the
+/// `r#`, because there Rust does need it.
+fn attribute_name_text(new_text: &str) -> String {
+    new_text.strip_prefix("r#").unwrap_or(new_text).to_string()
 }
 
 /// Drops exact duplicate `(uri, range, newText)` triples: several

@@ -102,8 +102,8 @@ enum Cursor {
         /// Span of the partial name, for the completion's `textEdit`.
         span: outou_sourcemap::Span,
     },
-    /// Inside (or immediately after) a JSX attribute's own name, with no
-    /// value yet.
+    /// Inside (or immediately after) a JSX attribute's own name, with or
+    /// without a value.
     AttrName {
         /// The enclosing element's tag name, if it has one.
         tag_name: Option<String>,
@@ -434,7 +434,12 @@ fn classify_attribute(
     text: &str,
     offset: u32,
 ) -> Option<Cursor> {
-    if attribute.value.is_none() && touches(attribute.name.span, offset) {
+    // Every attribute-name position, valued or not (`<input id‸="x">`), is
+    // answered here with the same candidates as a valueless name. The
+    // alternative, forwarding a valued name to rust-analyzer, answered
+    // backend internals (`NAME_SPACE`, `TAG_NAME`, `into`). The edit range
+    // is the name span alone, so accepting an item never touches `="x"`.
+    if touches(attribute.name.span, offset) {
         return Some(Cursor::AttrName {
             tag_name: tag_name(&element.open),
             existing: other_attribute_names(element, Some(attribute.span)),

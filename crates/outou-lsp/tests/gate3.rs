@@ -26,6 +26,8 @@
 //! cargo test -p outou-lsp --test gate3 -- --ignored --nocapture
 //! ```
 //!
+//! `GATE3_ONLY=probe-a,probe-b` limits a run to the named probes.
+//!
 //! Skips (printing why, rather than failing) if `node` or a
 //! `rust-analyzer` binary is not available, since neither is a Rust
 //! toolchain component this repository can assume in every environment
@@ -74,6 +76,9 @@ const PROBES: &[&str] = &[
     "rename-component",
     "semantic-tokens-full",
     "references-component",
+    "rename-keyword-prop",
+    "rename-prop-to-keyword",
+    "references-keyword-prop",
 ];
 
 /// Substrings that must never appear anywhere in a payload sent to the
@@ -421,7 +426,13 @@ fn gate3_probes_pass_through_the_real_parser_and_pipeline() {
     let mut failures: Vec<String> = Vec::new();
     let mut temp_dirs: Vec<PathBuf> = Vec::new();
 
+    let only = std::env::var("GATE3_ONLY").ok();
     for &probe in PROBES {
+        if let Some(only) = &only {
+            if !only.split(',').any(|name| name == probe) {
+                continue;
+            }
+        }
         eprintln!("gate3: running probe `{probe}`...");
         let crate_dir = fresh_copy(&root, probe);
         temp_dirs.push(crate_dir.clone());
@@ -906,6 +917,129 @@ fn check_probe(
                         "expected an 8-column reference range, got width {width}: {range}"
                     ));
                 }
+            }
+            Ok(())
+        }
+        "rename-keyword-prop" => {
+            // Issue #31 (ledger rows 17 and 61): renaming the keyword-named
+            // prop `type` -> `kind` from the `.rsx` attribute `type="text"`
+            // in `main.rsx` must produce a 4-column edit at that attribute
+            // (the plain name, not the generated `r#type`), with the plain
+            // new text `kind`, and none at a `.generated` URI. The
+            // declaration is in `components.rsx` (`r#type: String`).
+            let prepare = result.get("prepareRename");
+            if prepare.is_none_or(serde_json::Value::is_null) {
+                return Err("prepareRename returned null for the `type` attribute".to_string());
+            }
+            let width = prepare
+                .and_then(|p| p.get("range").or(Some(p)))
+                .and_then(range_width);
+            if width != Some(4) {
+                return Err(format!(
+                    "expected a 4-column prepareRename range (`type`), got {width:?}: {prepare:?}"
+                ));
+            }
+            let edit = result.get("rename").ok_or("no rename result")?;
+            if edit.is_null() {
+                return Err("rename returned null for the `type` attribute".to_string());
+            }
+            let main_uri = result
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("no file")?;
+            let main_edits = edits_for_uri(edit, main_uri);
+            let main_line = position_of(main_rsx_text, "type=\"text\"", 0).0;
+            let at_attribute: Vec<_> = main_edits
+                .iter()
+                .filter(|e| {
+                    e.pointer("/range/start/line").and_then(|v| v.as_i64()) == Some(main_line)
+                })
+                .collect();
+            if at_attribute.len() != 1 {
+                return Err(format!(
+                    "expected exactly one edit on the `type=\"text\"` line, got {at_attribute:#?}"
+                ));
+            }
+            let range = at_attribute[0].get("range").ok_or("edit has no range")?;
+            if range_width(range) != Some(4) {
+                return Err(format!("expected a 4-column attribute edit, got {range}"));
+            }
+            let components_uri = main_uri.replace("main.rsx", "components.rsx");
+            let components_edits = edits_for_uri(edit, &components_uri);
+            if components_edits.is_empty() {
+                return Err("no edit in components.rsx for the `r#type` declaration".to_string());
+            }
+            for item in main_edits.iter().chain(components_edits.iter()) {
+                let new_text = item.get("newText").and_then(|v| v.as_str());
+                if new_text != Some("kind") {
+                    return Err(format!(
+                        "expected newText \"kind\", got {new_text:?}: {item}"
+                    ));
+                }
+            }
+            Ok(())
+        }
+        "rename-prop-to-keyword" => {
+            // Issue #31: renaming `Greeting`'s `name` prop to the keyword
+            // `type` makes rust-analyzer write `r#type`. Rust positions
+            // (the parameter, its use `{name}`) keep that spelling; the
+            // `.rsx` attribute `name="Outou"` becomes the plain `type`.
+            let edit = result.get("rename").ok_or("no rename result")?;
+            if edit.is_null() {
+                return Err("rename returned null for the `name` attribute".to_string());
+            }
+            let main_uri = result
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("no file")?;
+            let main_edits = edits_for_uri(edit, main_uri);
+            let attribute_line = position_of(main_rsx_text, "<Greeting name=", 0).0;
+            let mut at_attribute = 0;
+            for item in &main_edits {
+                let new_text = item.get("newText").and_then(|v| v.as_str());
+                let line = item.pointer("/range/start/line").and_then(|v| v.as_i64());
+                if line == Some(attribute_line) {
+                    at_attribute += 1;
+                    if new_text != Some("type") {
+                        return Err(format!(
+                            "an attribute name must be written plain, got {new_text:?}: {item}"
+                        ));
+                    }
+                } else if new_text != Some("r#type") {
+                    return Err(format!(
+                        "a Rust position must keep rust-analyzer's `r#type`, got {new_text:?}: {item}"
+                    ));
+                }
+            }
+            if at_attribute != 1 {
+                return Err(format!(
+                    "expected one edit at the `name=` attribute, got {at_attribute}: {main_edits:#?}"
+                ));
+            }
+            Ok(())
+        }
+        "references-keyword-prop" => {
+            let refs = result
+                .pointer("/references")
+                .and_then(|v| v.as_array())
+                .ok_or("no references result")?;
+            let main_uri = result
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("no file")?;
+            let components_uri = main_uri.replace("main.rsx", "components.rsx");
+            let in_main = refs
+                .iter()
+                .filter(|r| r.get("uri").and_then(|v| v.as_str()) == Some(main_uri))
+                .count();
+            let in_components = refs
+                .iter()
+                .filter(|r| r.get("uri").and_then(|v| v.as_str()) == Some(components_uri.as_str()))
+                .count();
+            if in_main < 1 || in_components < 1 {
+                return Err(format!(
+                    "expected references in main.rsx (the attribute) and components.rsx (the parameter and its uses), got {in_main} and {in_components}: {refs:#?}"
+                ));
             }
             Ok(())
         }

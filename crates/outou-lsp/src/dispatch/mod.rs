@@ -20,6 +20,8 @@ use crate::documents::{self, Workspace};
 use crate::ra::RaClient;
 
 #[cfg(test)]
+mod keyword_prop_tests;
+#[cfg(test)]
 mod module_path_tests;
 mod notifications;
 #[cfg(test)]

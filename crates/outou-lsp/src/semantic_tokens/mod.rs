@@ -62,7 +62,8 @@ fn outou_tokens_absolute(
 /// sources whose generated span exactly equals the query (an element name
 /// mapped from both its opening and closing tag) is emitted at each, per
 /// the issue's own requirement; anything unmappable (synthesized code, a
-/// length-mismatched mapping, an undisambiguatable sub-range, or a source
+/// length-mismatched mapping other than the exact `r#` + name attribute
+/// shape, which maps (ledger row 61), an undisambiguatable sub-range, or a source
 /// belonging to a *different* `.rsx` file than the one this request is
 /// for) is dropped.
 fn map_ra_token(
@@ -425,7 +426,8 @@ mod tests {
     }
 
     /// A rust-analyzer token whose generated span falls inside a
-    /// length-mismatched mapping (the `r#type`/`type` case) must not
+    /// length-mismatched mapping other than the exact `r#` + name attribute
+    /// shape (`type` lowered to `r#type`, which now maps, ledger row 61) must not
     /// produce any `.rsx` token at all — never a proportional guess, and
     /// never the whole mismatched span.
     #[test]

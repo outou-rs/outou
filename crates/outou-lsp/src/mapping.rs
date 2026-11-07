@@ -7,7 +7,7 @@
 //! the same two functions serve hover, completion, definition and
 //! diagnostics, so a single bug fix here fixes all four.
 
-use outou_sourcemap::{Position as OutouPosition, PositionRange, SourceId, Span};
+use outou_sourcemap::{MappingKind, Position as OutouPosition, PositionRange, SourceId, Span};
 
 use crate::documents::Workspace;
 use crate::uri;
@@ -88,7 +88,7 @@ pub fn rsx_position_to_generated(
     // containing source span (the most specific one) rather than
     // whichever happens to come first in generated-span order.
     let query = Span::new(offset, offset);
-    let (source_span, generated_span) = map
+    let (source_span, mapping) = map
         .mappings
         .iter()
         .filter_map(|mapping| {
@@ -96,9 +96,10 @@ pub fn rsx_position_to_generated(
                 .sources
                 .iter()
                 .find(|source| source.source == SourceId(0) && source.span.contains(query))
-                .map(|source| (source.span, mapping.generated))
+                .map(|source| (source.span, mapping))
         })
         .min_by_key(|(source_span, _)| source_span.end - source_span.start)?;
+    let generated_span = mapping.generated;
 
     // S1 (issue #9 Gate 3 review): a transformed mapping — source and
     // generated spans of different lengths, e.g. `type` lowering to
@@ -110,10 +111,18 @@ pub fn rsx_position_to_generated(
     // (same-length, almost always `Writer::verbatim`) mapping is
     // translated; everything else maps to nothing rather than to a
     // plausible-looking wrong position.
-    if span_len(source_span) != span_len(generated_span) {
+    //
+    // The one exception (ADR 0013, amendment of #31, ledger row 61) is
+    // the exact `r#` + name shape of a keyword-named attribute
+    // ([`raw_prefixed_name`]), translated with a fixed offset of
+    // [`RAW_PREFIX_LEN`], never by proportion.
+    let generated_offset = if span_len(source_span) == span_len(generated_span) {
+        outou_sourcemap::scale_offset(offset, source_span, generated_span)
+    } else if raw_prefixed_name(workspace, map, mapping, &unit.text).is_some() {
+        generated_span.start + RAW_PREFIX_LEN + (offset - source_span.start)
+    } else {
         return None;
-    }
-    let generated_offset = outou_sourcemap::scale_offset(offset, source_span, generated_span);
+    };
     let generated_position = unit.line_index.offset_to_position(generated_offset);
 
     Some(GeneratedPosition {
@@ -129,6 +138,88 @@ pub fn rsx_position_to_generated(
 /// see [`narrow_single_source`] below.
 fn span_len(span: Span) -> u32 {
     span.end - span.start
+}
+
+/// The raw-identifier prefix Rust needs on a keyword (`r#type`).
+const RAW_PREFIX: &str = "r#";
+/// [`RAW_PREFIX`]'s length in bytes.
+const RAW_PREFIX_LEN: u32 = 2;
+
+/// Whether `mapping` is the one transformed shape this server translates
+/// exactly: a JSX attribute name (`MappingKind::Attribute`) with exactly
+/// one source whose generated text is `r#` followed by byte-for-byte the
+/// source text (`type` lowered to `r#type`, ledger row 17). Returns that
+/// source.
+///
+/// This is the narrow exception to ADR 0013's refusal of length-mismatched
+/// mappings (ledger row 61): the generated span is the source span shifted
+/// by a fixed [`RAW_PREFIX_LEN`] bytes, so every offset translates exactly,
+/// with no proportional guessing. Anything else — another kind, several
+/// sources, a different prefix, a different name (a hyphenated
+/// `data-id` lowered to `"data-id"`, a string key) — is still refused.
+/// Both texts are compared, so a stale map that no longer matches the text
+/// fails closed.
+fn raw_prefixed_name(
+    workspace: &Workspace,
+    map: &outou_sourcemap::SourceMap,
+    mapping: &outou_sourcemap::Mapping,
+    generated_text: &str,
+) -> Option<outou_sourcemap::SourceSpan> {
+    if mapping.kind != outou_sourcemap::MappingKind::Attribute {
+        return None;
+    }
+    let [source] = mapping.sources.as_slice() else {
+        return None;
+    };
+    if span_len(mapping.generated) != span_len(source.span) + RAW_PREFIX_LEN {
+        return None;
+    }
+    let source_uri = map.source_uri(source.source)?;
+    let source_text = workspace.rsx.get(source_uri.as_str())?.line_index.text();
+    let source_name = source_text.get(source.span.start as usize..source.span.end as usize)?;
+    let generated_name = generated_text
+        .get(mapping.generated.start as usize..mapping.generated.end as usize)?
+        .strip_prefix(RAW_PREFIX)?;
+    let is_identifier = !source_name.is_empty()
+        && source_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_');
+    (is_identifier && generated_name == source_name).then_some(*source)
+}
+
+/// Reverse direction of [`raw_prefixed_name`]: narrows a generated `query`
+/// that lies inside such a mapping to the exact `.rsx` span. The whole
+/// generated `r#type` maps to the whole source `type`; a query inside the
+/// name part (rust-analyzer may report an occurrence without the prefix; only mocks exercised this, real rust-analyzer always returned the whole `r#type`)
+/// maps with the same fixed offset. A query that touches the `r#` prefix
+/// but is not the whole token has no source, so it is `None`. That is
+/// deliberate: rust-analyzer's completion ranges such as `r#ty` are not
+/// translated, completion inside a keyword name is answered locally
+/// (`crate::complete`).
+fn narrow_raw_prefixed(
+    workspace: &Workspace,
+    map: &outou_sourcemap::SourceMap,
+    generated_text: &str,
+    query: Span,
+) -> Option<outou_sourcemap::SourceSpan> {
+    let mapping = map
+        .mappings
+        .iter()
+        .filter(|m| m.generated.contains(query))
+        .min_by_key(|m| span_len(m.generated))?;
+    let source = raw_prefixed_name(workspace, map, mapping, generated_text)?;
+    let name_start = mapping.generated.start + RAW_PREFIX_LEN;
+    let span = if query == mapping.generated {
+        source.span
+    } else if query.start >= name_start {
+        Span::new(
+            source.span.start + (query.start - name_start),
+            source.span.start + (query.end - name_start),
+        )
+    } else {
+        return None;
+    };
+    Some(outou_sourcemap::SourceSpan::new(source.source, span))
 }
 
 /// A location mapped back from generated Rust to its `.rsx` source, or
@@ -193,7 +284,15 @@ pub fn generated_location_to_source(
         // HIGH-7 example, gone since issue #26 copies key expressions verbatim).
         // Reported as unmapped outright, never falling through to the
         // coarser `reverse()` full-span answer below.
-        NarrowOutcome::LengthMismatch => return MappedLocation::Unmapped,
+        //
+        // Except the exact `r#` + name shape of a keyword-named attribute
+        // (ledger row 61), which translates by a fixed prefix offset.
+        NarrowOutcome::LengthMismatch => {
+            return match raw_prefixed_location(workspace, map, &unit.text, query) {
+                Some((uri, range)) => MappedLocation::Source { uri, range },
+                None => MappedLocation::Unmapped,
+            }
+        }
         NarrowOutcome::NotApplicable => {}
     }
 
@@ -222,6 +321,22 @@ pub fn generated_location_to_source(
         uri: uri::to_lsp(&source_uri),
         range: to_lsp_range(source_range),
     }
+}
+
+/// [`narrow_raw_prefixed`] resolved to an LSP URI and range.
+fn raw_prefixed_location(
+    workspace: &Workspace,
+    map: &outou_sourcemap::SourceMap,
+    generated_text: &str,
+    query: Span,
+) -> Option<(lsp_types::Uri, lsp_types::Range)> {
+    let source = narrow_raw_prefixed(workspace, map, generated_text, query)?;
+    let source_uri = map.source_uri(source.source)?;
+    let doc = workspace.rsx.get(source_uri.as_str())?;
+    Some((
+        uri::to_lsp(source_uri),
+        to_lsp_range(doc.line_index.span_to_range(source.span)),
+    ))
 }
 
 /// Result of [`narrow_single_source`].
@@ -299,9 +414,12 @@ fn narrow_single_source(
 ///    [`generated_location_to_source`]). `NarrowOutcome::Exact` narrows to
 ///    that one offset-preserved sub-range: the common case, a verbatim
 ///    (single-source, equal-length) mapping containing the query.
-///    `NarrowOutcome::LengthMismatch` (e.g. `type` -> `r#type`, a source
-///    shorter than its generated counterpart) is unmappable: empty, never
-///    a proportional guess.
+///    `NarrowOutcome::LengthMismatch` (a source shorter or longer than its
+///    generated counterpart) is unmappable: empty, never a proportional
+///    guess. The one exception is a keyword-named attribute, `type`
+///    lowered to `r#type` (ledger rows 17 and 61, ADR 0013 amendment):
+///    when the generated text is exactly `r#` + the source text, the
+///    fixed two-byte prefix is stripped exactly ([`narrow_raw_prefixed`]).
 /// 2. Only when `narrow` finds no single unambiguous source
 ///    (`NarrowOutcome::NotApplicable` — no containing mapping, or one
 ///    with zero or several sources) does a whole-span answer apply, and
@@ -327,6 +445,42 @@ pub fn generated_range_to_all_sources(
     generated_uri: &lsp_types::Uri,
     range: lsp_types::Range,
 ) -> Option<Vec<(lsp_types::Uri, lsp_types::Range)>> {
+    let targets = generated_range_to_source_targets(workspace, generated_uri, range)?;
+    Some(
+        targets
+            .into_iter()
+            .map(|target| (target.uri, target.range))
+            .collect(),
+    )
+}
+
+/// One `.rsx` location a generated range came from, with whether it is a
+/// JSX attribute name (see [`generated_range_to_source_targets`]).
+pub struct SourceTarget {
+    /// The `.rsx` file's URI.
+    pub uri: lsp_types::Uri,
+    /// The range within it.
+    pub range: lsp_types::Range,
+    /// Whether the mapping this came from is a JSX attribute name
+    /// (`MappingKind::Attribute`). A rename edit's new text is written for
+    /// Rust (`r#type`); in `.rsx` an attribute name is plain (`type`), see
+    /// `crate::rename`.
+    pub is_attribute_name: bool,
+}
+
+/// [`generated_range_to_all_sources`], also reporting whether each source
+/// is a JSX attribute name. Same contract and same `None` / `Some(empty)`
+/// meaning.
+///
+/// Keyword-named props (ledger rows 17 and 61, ADR 0013 amendment): the
+/// length-mismatched `type` -> `r#type` attribute mapping is no longer
+/// empty when the generated text is exactly `r#` + the source text
+/// ([`narrow_raw_prefixed`]); every other length mismatch still is.
+pub fn generated_range_to_source_targets(
+    workspace: &Workspace,
+    generated_uri: &lsp_types::Uri,
+    range: lsp_types::Range,
+) -> Option<Vec<SourceTarget>> {
     let generated = uri::to_outou(generated_uri);
     // Issue #14 review (SHOULD-LAND-11): the registry, not
     // `Workspace::generated`, is the authoritative "is this a generated
@@ -342,25 +496,29 @@ pub fn generated_range_to_all_sources(
     };
     let query = unit.line_index.range_to_span(to_outou_range(range));
 
-    let sources: Vec<outou_sourcemap::SourceSpan> = match map.narrow(query) {
-        outou_sourcemap::NarrowOutcome::Exact { source, span } => {
-            vec![outou_sourcemap::SourceSpan::new(source, span)]
-        }
-        // `TODO(alpha) (#31)` (docs/backend-leakage.md row 29): this correctly
-        // refuses rather than guesses (a proportional guess across a
-        // transformed mapping is confidently wrong more often than
-        // right, ADR 0013), but it means a keyword-named prop (`type`,
-        // lowered to `r#type`) has no rename/references answer at all —
-        // not even a text-only fallback that renames the `.rsx`
-        // attribute-name span directly, without asking rust-analyzer.
-        outou_sourcemap::NarrowOutcome::LengthMismatch => Vec::new(),
-        outou_sourcemap::NarrowOutcome::NotApplicable => map
-            .mappings
-            .iter()
-            .find(|mapping| mapping.generated == query)
-            .map(|mapping| mapping.sources.clone())
-            .unwrap_or_default(),
-    };
+    let (sources, kind): (Vec<outou_sourcemap::SourceSpan>, Option<MappingKind>) =
+        match map.narrow(query) {
+            outou_sourcemap::NarrowOutcome::Exact { source, span } => (
+                vec![outou_sourcemap::SourceSpan::new(source, span)],
+                smallest_containing_kind(map, query),
+            ),
+            // A transformed mapping is refused rather than guessed at
+            // (ADR 0013), except the exact `r#` + name shape of a
+            // keyword-named attribute (ledger row 61).
+            outou_sourcemap::NarrowOutcome::LengthMismatch => {
+                match narrow_raw_prefixed(workspace, map, &unit.text, query) {
+                    Some(source) => (vec![source], Some(MappingKind::Attribute)),
+                    None => (Vec::new(), None),
+                }
+            }
+            outou_sourcemap::NarrowOutcome::NotApplicable => map
+                .mappings
+                .iter()
+                .find(|mapping| mapping.generated == query)
+                .map(|mapping| (mapping.sources.clone(), Some(mapping.kind)))
+                .unwrap_or_default(),
+        };
+    let is_attribute_name = kind == Some(MappingKind::Attribute);
 
     Some(
         sources
@@ -368,11 +526,24 @@ pub fn generated_range_to_all_sources(
             .filter_map(|source| {
                 let source_uri = map.source_uri(source.source)?;
                 let doc = workspace.rsx.get(source_uri.as_str())?;
-                let range = to_lsp_range(doc.line_index.span_to_range(source.span));
-                Some((crate::uri::to_lsp(source_uri), range))
+                Some(SourceTarget {
+                    uri: crate::uri::to_lsp(source_uri),
+                    range: to_lsp_range(doc.line_index.span_to_range(source.span)),
+                    is_attribute_name,
+                })
             })
             .collect(),
     )
+}
+
+/// The kind of the smallest mapping whose generated span contains `query`
+/// — the mapping [`outou_sourcemap::SourceMap::narrow`] resolves it with.
+fn smallest_containing_kind(map: &outou_sourcemap::SourceMap, query: Span) -> Option<MappingKind> {
+    map.mappings
+        .iter()
+        .filter(|m| m.generated.contains(query))
+        .min_by_key(|m| span_len(m.generated))
+        .map(|m| m.kind)
 }
 
 /// Best-effort fallback position for a generated-Rust diagnostic whose
@@ -431,7 +602,7 @@ fn generated_distance(a: Span, b: Span) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use outou_sourcemap::{file_uri, Mapping, MappingKind, SourceMap, SourceSpan};
+    use outou_sourcemap::{file_uri, Mapping, SourceMap, SourceSpan};
     use std::path::Path;
 
     // Several test modules in this crate hand-build a similar
@@ -793,6 +964,277 @@ mod tests {
             ident_range,
             type_range,
         )
+    }
+
+    // --- Keyword-named props (ledger rows 17 and 61, ADR 0013 amendment):
+    // `type` lowered to `r#type` translates by a fixed two-byte prefix.
+
+    const RAW_SOURCE: &str = "<Field type=\"text\" />";
+    const RAW_GENERATED: &str = "Field(r#type: \"text\")";
+
+    /// One `Attribute` mapping, `type` (source 7..11) -> generated
+    /// `RAW_GENERATED[6..12]`, with the given kind and texts.
+    fn raw_prefix_workspace(
+        kind: MappingKind,
+        rsx_source: &str,
+        generated_text: &str,
+    ) -> (Workspace, lsp_types::Uri, lsp_types::Uri) {
+        let rsx_uri = file_uri(Path::new("/app/src/main.rsx"));
+        let generated_uri = file_uri(Path::new("/app/src/.generated/main.rs"));
+        let map = SourceMap::new(generated_uri.clone(), vec![rsx_uri.clone()]).with_mapping(
+            Mapping::new(
+                Span::new(6, 12),
+                vec![SourceSpan::new(SourceId(0), Span::new(7, 11))],
+                kind,
+            ),
+        );
+        let mut workspace = Workspace {
+            manifest_dir: std::path::PathBuf::from("/app"),
+            plan: None,
+            registry: outou_sourcemap::Registry::new().with_map(map),
+            rsx: std::collections::HashMap::new(),
+            generated: std::collections::HashMap::new(),
+            rsx_to_generated: std::collections::HashMap::new(),
+            plan_error: None,
+        };
+        workspace.rsx.insert(
+            rsx_uri.as_str().to_string(),
+            crate::documents::RsxDocument::new(rsx_source.to_string(), 0),
+        );
+        workspace.generated.insert(
+            generated_uri.as_str().to_string(),
+            crate::documents::test_generated_unit(&generated_uri, &rsx_uri, generated_text),
+        );
+        workspace.rsx_to_generated.insert(
+            rsx_uri.as_str().to_string(),
+            generated_uri.as_str().to_string(),
+        );
+        (
+            workspace,
+            uri::to_lsp(&rsx_uri),
+            uri::to_lsp(&generated_uri),
+        )
+    }
+
+    fn cols(line: u32, start: u32, end: u32) -> lsp_types::Range {
+        lsp_types::Range::new(
+            lsp_types::Position::new(line, start),
+            lsp_types::Position::new(line, end),
+        )
+    }
+
+    fn range_text(text: &str, range: lsp_types::Range) -> &str {
+        &text[range.start.character as usize..range.end.character as usize]
+    }
+
+    #[test]
+    fn a_raw_prefixed_attribute_maps_forward_past_the_prefix() {
+        let (workspace, rsx_uri, _) =
+            raw_prefix_workspace(MappingKind::Attribute, RAW_SOURCE, RAW_GENERATED);
+        // Cursor at the start, in the middle and at the end of `type`
+        // (7, 9, 11) lands 2 bytes past `r#`, offset-for-offset: 8, 10, 12.
+        for (source_column, generated_column) in [(7, 8), (9, 10), (11, 12)] {
+            let mapped = rsx_position_to_generated(
+                &workspace,
+                &rsx_uri,
+                lsp_types::Position::new(0, source_column),
+            )
+            .expect("mapped");
+            assert_eq!(
+                mapped.position,
+                lsp_types::Position::new(0, generated_column)
+            );
+        }
+    }
+
+    #[test]
+    fn a_raw_prefix_translates_only_when_the_generated_text_is_exactly_r_hash_plus_the_source() {
+        // Same lengths, wrong generated text: still refused.
+        let (workspace, rsx_uri, generated_uri) = raw_prefix_workspace(
+            MappingKind::Attribute,
+            RAW_SOURCE,
+            "Field(ABCDEF: \"text\")",
+        );
+        assert!(
+            rsx_position_to_generated(&workspace, &rsx_uri, lsp_types::Position::new(0, 9))
+                .is_none()
+        );
+        assert_eq!(
+            generated_range_to_all_sources(&workspace, &generated_uri, cols(0, 6, 12)),
+            Some(Vec::new())
+        );
+        // Right text, wrong name (`r#kind` for a source `type`).
+        let (workspace, rsx_uri, _) = raw_prefix_workspace(
+            MappingKind::Attribute,
+            RAW_SOURCE,
+            "Field(r#kind: \"text\")",
+        );
+        assert!(
+            rsx_position_to_generated(&workspace, &rsx_uri, lsp_types::Position::new(0, 9))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_raw_prefix_translates_only_for_an_attribute_mapping() {
+        let (workspace, rsx_uri, generated_uri) =
+            raw_prefix_workspace(MappingKind::Expression, RAW_SOURCE, RAW_GENERATED);
+        assert!(
+            rsx_position_to_generated(&workspace, &rsx_uri, lsp_types::Position::new(0, 9))
+                .is_none()
+        );
+        assert_eq!(
+            generated_range_to_all_sources(&workspace, &generated_uri, cols(0, 6, 12)),
+            Some(Vec::new())
+        );
+        assert!(matches!(
+            generated_location_to_source(&workspace, &generated_uri, cols(0, 6, 12)),
+            MappedLocation::Unmapped
+        ));
+    }
+
+    #[test]
+    fn the_whole_raw_prefixed_name_maps_back_to_the_plain_name() {
+        let (workspace, rsx_uri, generated_uri) =
+            raw_prefix_workspace(MappingKind::Attribute, RAW_SOURCE, RAW_GENERATED);
+        let sources = generated_range_to_all_sources(&workspace, &generated_uri, cols(0, 6, 12))
+            .expect("a known generated file");
+        assert_eq!(sources, vec![(rsx_uri.clone(), cols(0, 7, 11))]);
+        assert_eq!(range_text(RAW_SOURCE, sources[0].1), "type");
+        match generated_location_to_source(&workspace, &generated_uri, cols(0, 6, 12)) {
+            MappedLocation::Source { uri, range } => {
+                assert_eq!(uri, rsx_uri);
+                assert_eq!(range, cols(0, 7, 11));
+            }
+            _ => panic!("expected a mapped source location"),
+        }
+    }
+
+    #[test]
+    fn a_raw_prefixed_name_without_its_prefix_maps_back_at_a_fixed_offset() {
+        let (workspace, _, generated_uri) =
+            raw_prefix_workspace(MappingKind::Attribute, RAW_SOURCE, RAW_GENERATED);
+        // `type` alone (8..12) and `yp` (9..11) inside it.
+        for (generated, expected) in [
+            (cols(0, 8, 12), cols(0, 7, 11)),
+            (cols(0, 9, 11), cols(0, 8, 10)),
+        ] {
+            let sources = generated_range_to_all_sources(&workspace, &generated_uri, generated)
+                .expect("a known generated file");
+            assert_eq!(sources.len(), 1, "{sources:#?}");
+            assert_eq!(sources[0].1, expected);
+        }
+    }
+
+    #[test]
+    fn a_query_touching_the_raw_prefix_but_not_the_whole_token_has_no_source() {
+        let (workspace, _, generated_uri) =
+            raw_prefix_workspace(MappingKind::Attribute, RAW_SOURCE, RAW_GENERATED);
+        for generated in [cols(0, 6, 8), cols(0, 6, 10), cols(0, 7, 12)] {
+            let sources = generated_range_to_all_sources(&workspace, &generated_uri, generated)
+                .expect("a known generated file");
+            assert!(sources.is_empty(), "{generated:?}: {sources:#?}");
+            assert!(matches!(
+                generated_location_to_source(&workspace, &generated_uri, generated),
+                MappedLocation::Unmapped
+            ));
+        }
+    }
+
+    #[test]
+    fn source_targets_flag_an_attribute_name() {
+        let (workspace, _, generated_uri) =
+            raw_prefix_workspace(MappingKind::Attribute, RAW_SOURCE, RAW_GENERATED);
+        let targets = generated_range_to_source_targets(&workspace, &generated_uri, cols(0, 6, 12))
+            .expect("a known generated file");
+        assert_eq!(targets.len(), 1);
+        assert!(targets[0].is_attribute_name);
+        // An equal-length identifier mapping is not an attribute name.
+        let (workspace, _, generated_uri) = sample_workspace();
+        let targets =
+            generated_range_to_source_targets(&workspace, &generated_uri, cols(0, 30, 34))
+                .expect("a known generated file");
+        assert_eq!(targets.len(), 1);
+        assert!(!targets[0].is_attribute_name);
+    }
+
+    /// Real backend output: the attribute mapping of `<Field type="text" />`
+    /// really is `r#type` over `type`, so the translation holds against what
+    /// codegen emits, not just a hand-built map.
+    #[test]
+    fn a_keyword_attribute_maps_both_ways_against_real_generated_code() {
+        use outou_codegen::{Backend, GenerateOptions, Mode};
+
+        let rsx_source = "fn f() { <Field type=\"text\" r#for=\"x\" />; }";
+        let rsx_uri = file_uri(Path::new("/app/src/main.rsx"));
+        let generated_uri = file_uri(Path::new("/app/src/.generated/main.rs"));
+        let parsed = outou_syntax::parse(rsx_source);
+        let generated = outou_backend_dioxus::DioxusBackend
+            .generate(
+                &parsed,
+                rsx_source,
+                Mode::Strict,
+                &GenerateOptions::new(generated_uri.clone(), rsx_uri.clone()),
+            )
+            .expect("generation succeeds");
+        let mut workspace = Workspace {
+            manifest_dir: std::path::PathBuf::from("/app"),
+            plan: None,
+            registry: outou_sourcemap::Registry::new().with_map(generated.source_map.clone()),
+            rsx: std::collections::HashMap::new(),
+            generated: std::collections::HashMap::new(),
+            rsx_to_generated: std::collections::HashMap::new(),
+            plan_error: None,
+        };
+        workspace.rsx.insert(
+            rsx_uri.as_str().to_string(),
+            crate::documents::RsxDocument::new(rsx_source.to_string(), 0),
+        );
+        workspace.generated.insert(
+            generated_uri.as_str().to_string(),
+            crate::documents::test_generated_unit(&generated_uri, &rsx_uri, &generated.rust),
+        );
+        workspace.rsx_to_generated.insert(
+            rsx_uri.as_str().to_string(),
+            generated_uri.as_str().to_string(),
+        );
+        let rsx_lsp = uri::to_lsp(&rsx_uri);
+        let generated_lsp = uri::to_lsp(&generated_uri);
+        let unit = workspace.generated.get(generated_uri.as_str()).unwrap();
+
+        // `type` is plain-typed `r#type`; `r#for` (written raw in the
+        // source, 5 bytes) lowers to `r#for` too: equal length, exact.
+        for (written, generated_name) in [("type", "r#type"), ("r#for", "r#for")] {
+            let source_start = rsx_source.find(written).unwrap() as u32;
+            let generated_start = generated.rust.find(generated_name).unwrap() as u32;
+            let source_position = workspace
+                .rsx
+                .get(rsx_lsp.as_str())
+                .unwrap()
+                .line_index
+                .offset_to_position(source_start + 1);
+            let forward =
+                rsx_position_to_generated(&workspace, &rsx_lsp, to_lsp_position(source_position))
+                    .expect("forward mapping");
+            let forward_offset = unit
+                .line_index
+                .position_to_offset(to_outou_position(forward.position));
+            let name_len = written.len() as u32;
+            let prefix = generated_name.len() as u32 - name_len;
+            assert_eq!(forward_offset, generated_start + prefix + 1, "{written}");
+
+            let generated_range = to_lsp_range(unit.line_index.span_to_range(Span::new(
+                generated_start,
+                generated_start + generated_name.len() as u32,
+            )));
+            let sources =
+                generated_range_to_all_sources(&workspace, &generated_lsp, generated_range)
+                    .expect("a known generated file");
+            assert_eq!(sources.len(), 1, "{written}: {sources:#?}");
+            let doc = workspace.rsx.get(rsx_lsp.as_str()).unwrap();
+            let span = doc.line_index.range_to_span(to_outou_range(sources[0].1));
+            assert_eq!(&rsx_source[span.start as usize..span.end as usize], written);
+        }
     }
 
     /// Issue #26: a `key` expression is copied verbatim into a synthesized

@@ -406,3 +406,62 @@ fn text_inside_element_content_is_not_an_attribute_position() {
     let source = app("    <div class=\"a\">hello wor</div>");
     assert_eq!(complete_after(&source, "hello wor"), None);
 }
+
+// ---- a name that already has a value (D1) -----------------------------
+
+/// The `textEdit` range of the first item, as `(start, end)` columns on one line.
+fn edit_columns(items: &[Value]) -> (u64, u64) {
+    let range = &items[0]["textEdit"]["range"];
+    (
+        range["start"]["character"].as_u64().unwrap(),
+        range["end"]["character"].as_u64().unwrap(),
+    )
+}
+
+#[test]
+fn a_valued_element_attribute_name_is_answered_locally_at_its_end() {
+    let source = app("    <input id=\"x\" />");
+    let items = complete_after(&source, "id").expect("answered locally");
+    assert!(labels(&items).contains(&"id"), "{:?}", labels(&items));
+    for backend in ["NAME_SPACE", "TAG_NAME", "into", "try_into"] {
+        assert!(!labels(&items).contains(&backend), "{backend}");
+    }
+}
+
+#[test]
+fn a_valued_element_attribute_name_is_answered_locally_in_the_middle() {
+    let source = app("    <input id=\"x\" />");
+    let offset = source.find("id=").unwrap() + 1;
+    let items = complete_at(&source, offset).expect("answered locally");
+    // Only the `i` before the cursor filters; the whole name is replaced.
+    assert!(labels(&items).contains(&"id"), "{:?}", labels(&items));
+    let line = source.lines().nth(2).unwrap();
+    let start = line.find("id").unwrap() as u64;
+    assert_eq!(edit_columns(&items), (start, start + 2));
+}
+
+#[test]
+fn a_valued_component_prop_name_is_answered_locally_at_its_end_and_in_the_middle() {
+    let source = "#[component]\nfn Field(label: String, r#type: String) -> Element {\n    <input />\n}\n#[component]\nfn App() -> Element {\n    <Field type=\"text\" label=\"a\" />\n}\n";
+    for offset in [
+        source.find("type=\"text\"").unwrap() + 4,
+        source.find("type=\"text\"").unwrap() + 2,
+    ] {
+        let items = complete_at(source, offset).expect("answered locally");
+        assert_eq!(labels(&items), ["type"], "offset {offset}");
+        for backend in ["into", "try_into"] {
+            assert!(!labels(&items).contains(&backend));
+        }
+        // The edit covers `type` and stops before `="text"`.
+        let line = source.lines().nth(6).unwrap();
+        let start = line.find("type").unwrap() as u64;
+        assert_eq!(edit_columns(&items), (start, start + 4));
+    }
+}
+
+#[test]
+fn a_valued_name_does_not_offer_the_other_written_attributes_again() {
+    let source = app("    <input id=\"x\" class=\"c\" />");
+    let items = complete_after(&source, "id").expect("answered locally");
+    assert!(!labels(&items).contains(&"class"));
+}

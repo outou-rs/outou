@@ -97,8 +97,8 @@ After that:
   already shown from the edit).
 - `textDocument/completion` first classifies the `.rsx` cursor against
   Outou's own parse tree (`src/complete.rs`): a JSX tag name (element or
-  component, opening **or closing**) or attribute name is answered
-  **locally**, from the plan's `#[component]` functions and a static
+  component, opening **or closing**) or attribute name (with or without
+  a value; the edit replaces the name only) is answered **locally**, from the plan's `#[component]` functions and a static
   HTML element list — never forwarded to rust-analyzer, which only ever
   sees the *expanded* Rust and cannot tell a tag-name position from an
   ordinary identifier, and would in any case reverse-map a closing tag's
@@ -282,11 +282,27 @@ and the Windows/UNC file URI limitation is `TODO(alpha) (#31)` at
 Semantic tokens/rename/references (issue #14 review):
 
 - **A keyword-named prop (`type`, lowered to the raw identifier `r#type`)
-  has no rename/references answer at all** — refused (rename) or dropped
-  (references) exactly like synthesized code, since its mapping is
-  length-mismatched (`docs/backend-leakage.md` row 29, ADR 0013). No
-  text-only fallback is implemented for this narrower shape.
-  `TODO(alpha) (#31)`.
+  is renamed and found by reference like any other** (ledger row 61, ADR
+  0013 amendment). Its attribute mapping is length-mismatched (4 source
+  bytes, 6 generated), which is otherwise refused; the one exception is a
+  `MappingKind::Attribute` mapping whose generated text is exactly `r#` plus
+  the source text, translated by a fixed two-byte offset in both
+  directions (`crate::mapping::raw_prefixed_name`). A rename to a keyword
+  (`kind` to `type`) gets rust-analyzer's `r#type` in Rust positions and the
+  plain `type` at a `.rsx` attribute name (`crate::rename`); a rename from
+  one (`type` to `kind`) replaces `type` or `r#type` with `kind`. Position
+  forwarding and diagnostic ranges at such an attribute follow the same
+  translation; semantic tokens at it now map too. Hover and definition at
+  an attribute name show the same content as at any attribute name, which
+  is a separate, older leak (ledger row 62, `TODO(alpha) (#31)`), not made
+  better or worse by this. Completion inside a keyword name does not use
+  the exception: every attribute-name position, with or without a value,
+  is answered locally by `crate::complete`. Left: a hyphenated attribute (`data-id`, lowered to the
+  string key `"data-id"`) stays unmapped; renaming `type` on an HTML element
+  (`<input type=..>`) is forwarded but rust-analyzer refuses it as a
+  non-local definition; rust-analyzer reports no uses of a prop inside an
+  `rsx!` body for any prop name, so those are not renamed. Checked against
+  real rust-analyzer (`tests/gate3.rs`), not yet in a real editor.
 - **`prepareRename` on a closing tag's own name answers with the closing
   tag's range.** The request's `.rsx` cursor picks, among the sources of the
   generated name (`crate::rename::translate_prepare_rename_response`), the

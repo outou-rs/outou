@@ -251,11 +251,12 @@ fn map_one_location(workspace: &Workspace, mut item: Value) -> Option<Value> {
 ///   `additionalTextEdits` already present on the *initial* item is
 ///   applied by a conformant client on accept regardless of whether
 ///   `resolveProvider` is advertised, and `map_range_field` leaves an
-///   unmapped range untouched (i.e. in *generated* coordinates), so such
-///   an edit would otherwise be silently applied at the wrong position
+///   an unmapped range would be in *generated* coordinates, so such an
+///   edit would otherwise be silently applied at the wrong position
 ///   inside the `.rsx` buffer. Dropping it loses an auto-import
-///   suggestion but never corrupts the buffer; mapping it correctly (and
-///   only keeping it when every field maps) is future work.
+///   suggestion but never corrupts the buffer, and the item itself is
+///   kept. The item's own `textEdit` ranges (`range`, `insert`,
+///   `replace`) must all map or the whole item is dropped (D3).
 /// - `documentation` is stripped from every surviving item rather than
 ///   attempting to rewrite it (it is free-form Markdown/plaintext, most
 ///   often rustdoc pulled from the backend's own crates).
@@ -281,8 +282,16 @@ pub fn map_completion_response(
         .filter(|item| !is_backend_leak(item))
         .filter_map(|mut item| {
             if let Some(object) = item.as_object_mut() {
+                // D3: an edit range that fails to map would stay in
+                // *generated* coordinates and be applied at a meaningless
+                // `.rsx` position, so an item with any such range (the
+                // primary edit's `range`, `insert` or `replace`) is dropped
+                // whole. `additionalTextEdits` are stripped below, never
+                // mapped, so an unmappable one costs nothing.
                 if let Some(text_edit) = object.get_mut("textEdit") {
-                    map_text_edit(workspace, generated_uri, text_edit);
+                    if !map_text_edit(workspace, generated_uri, text_edit) {
+                        return None;
+                    }
                 }
                 object.remove("additionalTextEdits");
                 object.remove("documentation");
@@ -384,35 +393,45 @@ fn field_text(value: &Value) -> Option<String> {
     }
 }
 
-fn map_text_edit(workspace: &Workspace, generated_uri: &lsp_types::Uri, text_edit: &mut Value) {
+/// Maps a `textEdit` in place; `false` if any of its ranges failed to map.
+fn map_text_edit(
+    workspace: &Workspace,
+    generated_uri: &lsp_types::Uri,
+    text_edit: &mut Value,
+) -> bool {
     if text_edit.get("range").is_some() {
-        map_range_field(workspace, generated_uri, text_edit, "range");
+        map_range_field(workspace, generated_uri, text_edit, "range")
     } else {
-        map_range_field(workspace, generated_uri, text_edit, "insert");
-        map_range_field(workspace, generated_uri, text_edit, "replace");
+        // Both fields are always attempted; `&` is not short-circuiting.
+        let insert = map_range_field(workspace, generated_uri, text_edit, "insert");
+        let replace = map_range_field(workspace, generated_uri, text_edit, "replace");
+        insert && replace
     }
 }
 
-/// Maps one range-valued field of a JSON object in place, leaving it
-/// untouched if it is absent, unparsable, or maps to nothing (an
-/// unmapped/unchanged edit at the wrong-but-plausible generated position
-/// is more useful to a user than one silently dropped).
+/// Maps one range-valued field of a JSON object in place. Returns `true`
+/// when the field is absent (nothing to map) or was mapped to `.rsx`
+/// coordinates, `false` when it is unparsable or maps to nothing; the
+/// caller drops the whole item then, since a range left in generated
+/// coordinates would be applied at a wrong `.rsx` position (D3).
 fn map_range_field(
     workspace: &Workspace,
     generated_uri: &lsp_types::Uri,
     object: &mut Value,
     field: &str,
-) {
+) -> bool {
     let Some(range_value) = object.get(field).cloned() else {
-        return;
+        return true;
     };
     let Ok(range) = serde_json::from_value::<lsp_types::Range>(range_value) else {
-        return;
+        return false;
     };
-    if let MappedLocation::Source { range, .. } =
-        mapping::generated_location_to_source(workspace, generated_uri, range)
-    {
-        object[field] = serde_json::to_value(range).unwrap();
+    match mapping::generated_location_to_source(workspace, generated_uri, range) {
+        MappedLocation::Source { range, .. } => {
+            object[field] = serde_json::to_value(range).unwrap();
+            true
+        }
+        _ => false,
     }
 }
 
@@ -674,5 +693,118 @@ mod tests {
     fn sanitize_hover_text_drops_content_that_is_only_markdown_layout() {
         let mut text = "## Usage in rsx\n\n```rust\n```".to_string();
         assert!(!sanitize_hover_text(&mut text, &[]));
+    }
+
+    /// A workspace whose one mapping sends generated bytes 30..34 to `.rsx`
+    /// bytes 4..8, for the edit-range mapping tests below (D3).
+    fn d3_workspace() -> (Workspace, lsp_types::Uri) {
+        use outou_sourcemap::{
+            file_uri, Mapping, MappingKind, SourceId, SourceMap, SourceSpan, Span,
+        };
+
+        let rsx_uri = file_uri(std::path::Path::new("/app/src/main.rsx"));
+        let generated_uri = file_uri(std::path::Path::new("/app/src/.generated/main.rs"));
+        let map = SourceMap::new(generated_uri.clone(), vec![rsx_uri.clone()]).with_mapping(
+            Mapping::new(
+                Span::new(30, 34),
+                vec![SourceSpan::new(SourceId(0), Span::new(4, 8))],
+                MappingKind::Identifier,
+            ),
+        );
+        let mut workspace = Workspace {
+            manifest_dir: std::path::PathBuf::from("/app"),
+            plan: None,
+            registry: outou_sourcemap::Registry::new().with_map(map),
+            rsx: std::collections::HashMap::new(),
+            generated: std::collections::HashMap::new(),
+            rsx_to_generated: std::collections::HashMap::new(),
+            plan_error: None,
+        };
+        workspace.rsx.insert(
+            rsx_uri.as_str().to_string(),
+            crate::documents::RsxDocument::new("x".repeat(20), 0),
+        );
+        let text = format!("{}main{}", "y".repeat(30), "z".repeat(10));
+        workspace.generated.insert(
+            generated_uri.as_str().to_string(),
+            crate::documents::test_generated_unit(&generated_uri, &rsx_uri, &text),
+        );
+        workspace.rsx_to_generated.insert(
+            rsx_uri.as_str().to_string(),
+            generated_uri.as_str().to_string(),
+        );
+        let uri = generated_uri.as_str().parse().unwrap();
+        (workspace, uri)
+    }
+
+    fn range_json(start: u32, end: u32) -> Value {
+        json!({ "start": {"line":0,"character":start}, "end": {"line":0,"character":end} })
+    }
+
+    fn mapped_items(item: Value) -> Vec<Value> {
+        mapped_items_at(item, 31, 5)
+    }
+
+    fn mapped_items_at(item: Value, generated_cursor: u32, rsx_cursor: u32) -> Vec<Value> {
+        let (workspace, uri) = d3_workspace();
+        let mut value = json!([item]);
+        map_completion_response(
+            &workspace,
+            &uri,
+            cursor(0, generated_cursor),
+            cursor(0, rsx_cursor),
+            &mut value,
+        );
+        value.as_array().unwrap().clone()
+    }
+
+    #[test]
+    fn an_item_whose_insert_replace_edit_maps_in_full_is_kept_in_rsx_coordinates() {
+        let items = mapped_items(json!({ "label": "main", "textEdit": {
+            "newText": "main", "insert": range_json(30, 32), "replace": range_json(30, 34) } }));
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["textEdit"]["insert"], range_json(4, 6));
+        assert_eq!(items[0]["textEdit"]["replace"], range_json(4, 8));
+    }
+
+    #[test]
+    fn an_item_is_dropped_when_only_its_replace_range_fails_to_map() {
+        let items = mapped_items(json!({ "label": "main", "textEdit": {
+            "newText": "main", "insert": range_json(30, 32), "replace": range_json(35, 39) } }));
+        assert!(items.is_empty(), "{items:#?}");
+    }
+
+    #[test]
+    fn an_item_is_dropped_when_only_its_insert_range_fails_to_map() {
+        // The cursor sits in the unmapped region, so the unmapped `insert`
+        // would still "contain" it after a failed mapping.
+        let items = mapped_items_at(
+            json!({ "label": "main", "textEdit": {
+                "newText": "main", "insert": range_json(35, 39), "replace": range_json(30, 34) } }),
+            36,
+            36,
+        );
+        assert!(items.is_empty(), "{items:#?}");
+    }
+
+    #[test]
+    fn an_item_is_dropped_when_its_text_edit_range_does_not_map() {
+        let items = mapped_items_at(
+            json!({ "label": "main", "textEdit": {
+                "newText": "main", "range": range_json(35, 39) } }),
+            36,
+            36,
+        );
+        assert!(items.is_empty(), "{items:#?}");
+    }
+
+    #[test]
+    fn an_unmappable_additional_text_edit_is_stripped_and_the_item_kept() {
+        let item = json!({ "label": "main", "textEdit": { "newText": "main", "range": range_json(30, 34) },
+            "additionalTextEdits": [{ "newText": "use x;\n", "range": range_json(0, 0) }] });
+        let kept = mapped_items(item);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0]["textEdit"]["range"], range_json(4, 8));
+        assert!(kept[0].get("additionalTextEdits").is_none());
     }
 }
