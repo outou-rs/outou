@@ -107,7 +107,7 @@ mod tests {
     use super::*;
 
     fn parse(source: &str) -> ast::File {
-        outou_syntax::parse(source).file
+        crate::documents::parse_rsx(source).file
     }
 
     #[test]

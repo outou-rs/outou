@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn collects_file_based_and_inline_module_descriptors_in_source_order() {
-        let parsed = outou_syntax::parse("mod a; mod b { mod c; }");
+        let parsed = crate::documents::parse_rsx("mod a; mod b { mod c; }");
         let descriptors = declared_modules(&parsed.file);
         let names: Vec<&str> = descriptors.iter().map(|d| d.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b", "c"]);
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn a_file_with_no_modules_has_no_declarations() {
-        let parsed = outou_syntax::parse("fn f() {}");
+        let parsed = crate::documents::parse_rsx("fn f() {}");
         assert!(declared_modules(&parsed.file).is_empty());
     }
 
@@ -238,8 +238,8 @@ mod tests {
     /// `BTreeSet<String>` of names alone would have missed this.
     #[test]
     fn a_changed_path_attribute_is_a_different_descriptor() {
-        let before = outou_syntax::parse("#[path = \"a.rs\"] mod m;");
-        let after = outou_syntax::parse("#[path = \"b.rs\"] mod m;");
+        let before = crate::documents::parse_rsx("#[path = \"a.rs\"] mod m;");
+        let after = crate::documents::parse_rsx("#[path = \"b.rs\"] mod m;");
         assert_ne!(
             declared_modules(&before.file),
             declared_modules(&after.file)
@@ -250,8 +250,8 @@ mod tests {
     /// also compare unequal.
     #[test]
     fn switching_between_inline_and_file_based_is_a_different_descriptor() {
-        let file_based = outou_syntax::parse("mod m;");
-        let inline = outou_syntax::parse("mod m {}");
+        let file_based = crate::documents::parse_rsx("mod m;");
+        let inline = crate::documents::parse_rsx("mod m {}");
         assert_ne!(
             declared_modules(&file_based.file),
             declared_modules(&inline.file)
@@ -260,9 +260,9 @@ mod tests {
 
     #[test]
     fn a_conditional_path_attribute_changes_the_descriptor() {
-        let plain = declared_modules(&outou_syntax::parse("mod m;").file);
+        let plain = declared_modules(&crate::documents::parse_rsx("mod m;").file);
         let conditional = declared_modules(
-            &outou_syntax::parse("#[cfg_attr(unix, path = \"a.rsx\")] mod m;").file,
+            &crate::documents::parse_rsx("#[cfg_attr(unix, path = \"a.rsx\")] mod m;").file,
         );
         assert_ne!(plain, conditional);
         assert!(conditional[0].has_conditional_path);
@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn unrelated_attributes_leave_the_descriptor_alone() {
-        let plain = declared_modules(&outou_syntax::parse("mod m;").file);
+        let plain = declared_modules(&crate::documents::parse_rsx("mod m;").file);
         for attrs in [
             "#[cfg(unix)]",
             "#[cfg_attr(unix, allow(dead_code))]",
@@ -278,7 +278,7 @@ mod tests {
         ] {
             let text = format!("{attrs} mod m;");
             assert_eq!(
-                declared_modules(&outou_syntax::parse(&text).file),
+                declared_modules(&crate::documents::parse_rsx(&text).file),
                 plain,
                 "{attrs}"
             );
@@ -287,7 +287,7 @@ mod tests {
 
     #[test]
     fn component_functions_finds_top_level_and_inline_components_only() {
-        let parsed = outou_syntax::parse(
+        let parsed = crate::documents::parse_rsx(
             "fn plain() {}\n\
              #[component]\n\
              fn Greeting(name: String) -> Element { <h1>{name}</h1> }\n\
@@ -304,7 +304,7 @@ mod tests {
     }
 
     fn spans(source: &str) -> Vec<u32> {
-        module_span_starts(&outou_syntax::parse(source).file)
+        module_span_starts(&crate::documents::parse_rsx(source).file)
     }
 
     #[test]
@@ -313,7 +313,7 @@ mod tests {
         let starts = spans(source);
         assert_eq!(
             starts.len(),
-            declared_modules(&outou_syntax::parse(source).file).len()
+            declared_modules(&crate::documents::parse_rsx(source).file).len()
         );
         assert!(
             starts.windows(2).all(|pair| pair[0] < pair[1]),

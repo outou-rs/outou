@@ -125,7 +125,7 @@ impl Workspace {
         let Some(unit) = self.generated.get(generated_uri) else {
             return false;
         };
-        let new_modules = plan::declared_modules(&outou_syntax::parse(new_text).file);
+        let new_modules = plan::declared_modules(&crate::documents::parse_rsx(new_text).file);
         new_modules != unit.declared_modules
     }
 
@@ -265,7 +265,7 @@ impl Workspace {
         let generated = generate_unit(unit, text, Mode::Recovery)?;
         let rsx_uri = outou_sourcemap::file_uri(&unit.source_file);
         let generated_uri = outou_sourcemap::file_uri(&unit.generated_file);
-        let parsed = outou_syntax::parse(text);
+        let parsed = crate::documents::parse_rsx(text);
         let declared_modules = plan::declared_modules(&parsed.file);
         let plan_module_spans = plan::module_span_starts(&parsed.file);
 
@@ -353,7 +353,7 @@ impl Workspace {
             return Ok(None);
         };
 
-        let parsed = outou_syntax::parse(new_text);
+        let parsed = crate::documents::parse_rsx(new_text);
         let declared_modules = plan::declared_modules(&parsed.file);
         let mut planned = unit.planned.clone();
         // The plan's `module_paths` are keyed by the byte offset of each

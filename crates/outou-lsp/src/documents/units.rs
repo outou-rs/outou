@@ -26,19 +26,72 @@ pub struct RsxDocument {
     pub line_index: LineIndex,
     /// LSP document version; `0` for a file only read from disk.
     pub version: i32,
-    /// The last `outou_syntax::parse` diagnostics for this text.
+    /// The `outou_syntax::parse` diagnostics for this text.
     pub diagnostics: Vec<SyntaxDiagnostic>,
+    /// The `#[component]` functions this text declares, with their
+    /// parameter names (what tag-name and attribute-name completion offer).
+    /// Derived in [`Self::new`] from the same parse as [`Self::diagnostics`],
+    /// together with [`Self::line_index`]: a document is never edited in
+    /// place (an edit constructs a new one), so none of these can go stale
+    /// (#31 L15). The parse tree itself is not kept: keeping it was measured
+    /// once during that change at about thirty times the source text in
+    /// resident memory.
+    components: Vec<ComponentInfo>,
+}
+
+/// One `#[component]` function as completion needs to see it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComponentInfo {
+    /// The function's name (the tag name that renders it).
+    pub name: String,
+    /// Its parameter names, raw-identifier prefixes stripped.
+    pub params: Vec<String>,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How many times this thread has parsed `.rsx` text through
+    /// [`parse_rsx`], i.e. every parse made by this crate itself (not the
+    /// codegen's own, inside `generate_unit`); lets a test prove a path does
+    /// not re-parse files.
+    pub(crate) static PARSE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// `outou_syntax::parse` for the language server's own per-document and
+/// per-request parses (counted under `cfg(test)`, see [`PARSE_COUNT`]).
+///
+/// Every parse inside this crate goes through here: `clippy.toml` bans
+/// `outou_syntax::parse` everywhere else. The codegen's own parse inside
+/// `outou_cli::build::emit::generate_unit` is outside this crate and not counted.
+pub(crate) fn parse_rsx(text: &str) -> outou_syntax::Parsed {
+    #[cfg(test)]
+    PARSE_COUNT.with(|count| count.set(count.get() + 1));
+    #[allow(clippy::disallowed_methods)]
+    outou_syntax::parse(text)
 }
 
 impl RsxDocument {
     pub(crate) fn new(text: String, version: i32) -> Self {
         let line_index = LineIndex::new(&text);
-        let diagnostics = outou_syntax::parse(&text).diagnostics;
+        let parsed = parse_rsx(&text);
+        let components = crate::plan::component_functions(&parsed.file)
+            .into_iter()
+            .map(|function| ComponentInfo {
+                name: function.name.name.clone(),
+                params: crate::complete::function_params(&function.signature.text),
+            })
+            .collect();
         Self {
             line_index,
             version,
-            diagnostics,
+            diagnostics: parsed.diagnostics,
+            components,
         }
+    }
+
+    /// The `#[component]` functions this document declares, in source order.
+    pub fn components(&self) -> &[ComponentInfo] {
+        &self.components
     }
 }
 

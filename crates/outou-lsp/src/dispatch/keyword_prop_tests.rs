@@ -46,7 +46,7 @@ struct Fixture {
 fn fixture(name: &str, source: &'static str) -> Fixture {
     let rsx_uri = file_uri(Path::new("/app/src/main.rsx"));
     let generated_uri = file_uri(Path::new("/app/src/.generated/main.rs"));
-    let parsed = outou_syntax::parse(source);
+    let parsed = crate::documents::parse_rsx(source);
     let generated = outou_backend_dioxus::DioxusBackend
         .generate(
             &parsed,

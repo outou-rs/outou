@@ -104,7 +104,12 @@ After that:
   ordinary identifier, and would in any case reverse-map a closing tag's
   own name back to its opening tag's position (issue #9 Gate 3 review,
   H1). Every other position (`user.`, a prop *value*) is forwarded and
-  mapped as below.
+  mapped as below. The component and prop names come from each `.rsx`
+  document itself (`RsxDocument::components`, derived once when the
+  document is built, so an edit, a re-plan, a watched-file reload or a
+  close replaces them with the document); a request parses only the
+  document being completed in, not the workspace (#31 L15); hover's
+  component-name set reads the same cached data.
 - `textDocument/hover` uses the same tag-name classification: a tag name
   is answered `null` **locally** too (issue #9 Gate 3 review, H2) —
   neither an HTML element's nor a user component's generated occurrence

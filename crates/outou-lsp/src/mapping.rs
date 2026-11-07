@@ -1168,7 +1168,7 @@ mod tests {
         let rsx_source = "fn f() { <Field type=\"text\" r#for=\"x\" />; }";
         let rsx_uri = file_uri(Path::new("/app/src/main.rsx"));
         let generated_uri = file_uri(Path::new("/app/src/.generated/main.rs"));
-        let parsed = outou_syntax::parse(rsx_source);
+        let parsed = crate::documents::parse_rsx(rsx_source);
         let generated = outou_backend_dioxus::DioxusBackend
             .generate(
                 &parsed,
@@ -1249,7 +1249,7 @@ mod tests {
         let rsx_source = "fn f() { <li key={tag.clone()}></li>; }";
         let rsx_uri = file_uri(Path::new("/app/src/main.rsx"));
         let generated_uri = file_uri(Path::new("/app/src/.generated/main.rs"));
-        let parsed = outou_syntax::parse(rsx_source);
+        let parsed = crate::documents::parse_rsx(rsx_source);
         let generated = outou_backend_dioxus::DioxusBackend
             .generate(
                 &parsed,
@@ -1331,7 +1331,7 @@ mod tests {
         let rsx_source = "fn f() { <p>{count.clone()}</p>; }";
         let rsx_uri = file_uri(Path::new("/app/src/main.rsx"));
         let generated_uri = file_uri(Path::new("/app/src/.generated/main.rs"));
-        let parsed = outou_syntax::parse(rsx_source);
+        let parsed = crate::documents::parse_rsx(rsx_source);
         let generated = outou_backend_dioxus::DioxusBackend
             .generate(
                 &parsed,

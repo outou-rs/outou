@@ -112,7 +112,7 @@ fn encode_response(tokens: Vec<AbsoluteToken>) -> Value {
 /// useful on its own: JSX vocabulary (component vs. element, event
 /// attributes, …) never depended on rust-analyzer in the first place.
 pub fn local_only_response(source: &str, legend: &Legend) -> Value {
-    let file = outou_syntax::parse(source).file;
+    let file = crate::documents::parse_rsx(source).file;
     let line_index = LineIndex::new(source);
     let tokens = outou_tokens_absolute(&file, &line_index, legend);
     encode_response(tokens)
@@ -156,7 +156,7 @@ pub fn rewrite_response(
         *value = Value::Null;
         return;
     };
-    let file = outou_syntax::parse(doc.line_index.text()).file;
+    let file = crate::documents::parse_rsx(doc.line_index.text()).file;
     let outou_tokens = outou_tokens_absolute(&file, &doc.line_index, legend);
 
     *value = encode_response(token::merge(ra_tokens, outou_tokens));

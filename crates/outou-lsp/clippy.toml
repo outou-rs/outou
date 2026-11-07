@@ -1,0 +1,5 @@
+# A crate-level file replaces the workspace one, so `msrv` is repeated here.
+msrv = "1.85"
+disallowed-methods = [
+    { path = "outou_syntax::parse", reason = "parse through `crate::documents::parse_rsx` so every parse is counted in tests (#31 L15)" },
+]

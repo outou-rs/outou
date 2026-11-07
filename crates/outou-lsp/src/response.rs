@@ -24,7 +24,6 @@ use serde_json::Value;
 
 use crate::documents::Workspace;
 use crate::mapping::{self, MappedLocation};
-use crate::plan;
 use crate::translate;
 
 /// Every `#[component]` function name declared anywhere in the workspace's
@@ -34,14 +33,12 @@ use crate::translate;
 /// sanitizer's `Props` heuristic so an ordinary user type coincidentally
 /// named `<Something>Props` (`MyProps`) is not mistaken for one.
 fn known_component_names(workspace: &Workspace) -> Vec<String> {
-    let mut names = Vec::new();
-    for doc in workspace.rsx.values() {
-        let parsed = outou_syntax::parse(doc.line_index.text());
-        for function in plan::component_functions(&parsed.file) {
-            names.push(function.name.name.clone());
-        }
-    }
-    names
+    workspace
+        .rsx
+        .values()
+        .flat_map(|doc| doc.components())
+        .map(|component| component.name.clone())
+        .collect()
 }
 
 /// Rewrites a `textDocument/hover` result in place: maps `range` back to
@@ -439,6 +436,38 @@ fn map_range_field(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// #31 L15: the hover sanitizer's component set comes from each
+    /// document's cached components, not from re-parsing the workspace.
+    #[test]
+    fn known_component_names_reads_the_cached_components_without_parsing() {
+        let mut workspace = crate::documents::Workspace {
+            manifest_dir: std::path::PathBuf::from("/app"),
+            plan: None,
+            registry: outou_sourcemap::Registry::new(),
+            rsx: std::collections::HashMap::new(),
+            generated: std::collections::HashMap::new(),
+            rsx_to_generated: std::collections::HashMap::new(),
+            plan_error: None,
+        };
+        for (uri, name) in [("a", "Alpha"), ("b", "Beta")] {
+            workspace.rsx.insert(
+                format!("file:///app/src/{uri}.rsx"),
+                crate::documents::RsxDocument::new(
+                    format!("#[component]\nfn {name}() -> Element {{ <p /> }}\nfn helper() {{}}\n"),
+                    0,
+                ),
+            );
+        }
+        let before = crate::documents::PARSE_COUNT.with(|count| count.get());
+        let mut names = known_component_names(&workspace);
+        names.sort();
+        assert_eq!(names, ["Alpha", "Beta"]);
+        assert_eq!(
+            crate::documents::PARSE_COUNT.with(|count| count.get()),
+            before
+        );
+    }
 
     fn cursor(line: u32, character: u32) -> lsp_types::Position {
         lsp_types::Position::new(line, character)

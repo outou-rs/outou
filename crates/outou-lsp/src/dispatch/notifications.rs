@@ -403,6 +403,23 @@ fn regenerate_and_forward(
     } else {
         workspace.regenerate(rsx_uri_string, &new_text, version)
     };
+    forward_regenerated(state, rsx_uri_string, new_text, version, result);
+}
+
+/// Installs the outcome of regenerating one unit: tells rust-analyzer when
+/// the generated text changed, and in the two cases where no unit was
+/// regenerated (not part of the plan, or generation failed) still replaces
+/// the document so the editor's current text is what is served.
+pub(super) fn forward_regenerated(
+    state: &mut State,
+    rsx_uri_string: &str,
+    new_text: String,
+    version: i32,
+    result: Result<Option<crate::documents::Regenerated>, crate::documents::LoadError>,
+) {
+    let Some(workspace) = state.workspace.as_mut() else {
+        return;
+    };
     match result {
         Ok(Some(regenerated)) => {
             // Unchanged generated text (a `didOpen` of a file as it is on

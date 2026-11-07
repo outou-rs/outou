@@ -24,7 +24,6 @@ use serde_json::{json, Value};
 
 use crate::documents::Workspace;
 use crate::mapping;
-use crate::plan;
 
 /// A small, deliberately non-exhaustive list of HTML element names: enough
 /// for Gate 3's `<di` probe and ordinary Phase 0 use, not a full HTML
@@ -150,7 +149,9 @@ pub fn local_completion(
             position.character,
         ));
     let text = doc.line_index.text();
-    let parsed = outou_syntax::parse(text);
+    // The one parse of this request: the current document's cursor context.
+    // Every other document contributes its cached `components()`.
+    let parsed = crate::documents::parse_rsx(text);
 
     match classify(&parsed.file, text, offset) {
         Cursor::TagName { partial, span } => {
@@ -216,7 +217,7 @@ pub fn is_tag_name_position(
             position.character,
         ));
     let text = doc.line_index.text();
-    let parsed = outou_syntax::parse(text);
+    let parsed = crate::documents::parse_rsx(text);
     matches!(classify(&parsed.file, text, offset), Cursor::TagName { .. })
 }
 
@@ -246,7 +247,7 @@ pub fn tag_name_at_position(
             position.line,
             position.character,
         ));
-    let parsed = outou_syntax::parse(doc.line_index.text());
+    let parsed = crate::documents::parse_rsx(doc.line_index.text());
     for element in parsed.file.jsx_elements() {
         if let ast::JsxTag::Named { name, .. } = &element.open {
             if touches(name.span, offset) {
@@ -534,40 +535,19 @@ fn classify_child(child: &ast::JsxChild, text: &str, offset: u32) -> Option<Curs
     }
 }
 
-/// Every parsed `.rsx` file this workspace currently knows the text of
-/// (`Workspace::rsx`, populated for every planned unit whether or not the
-/// editor has it open), reparsed fresh so tag-name/attribute-name
-/// completion always reflects the current buffers rather than a plan-time
-/// snapshot.
-///
-/// `TODO(alpha) (#31)` (issue #9 Gate 3 review, L15's SKIP item): this reparses
-/// **every** `.rsx` file in the workspace on every tag/attribute-name
-/// keystroke (plus one further reparse of the current document inside
-/// `local_completion`, whose own `RsxDocument` already parsed it). Fine
-/// at the current scale (`examples/phase0-app`'s two files reparse in well
-/// under a millisecond); caching each file's last parse (invalidated on
-/// its own edit) or reusing the current document's own parse is future
-/// work, not required for Gate 3.
-fn parsed_files(workspace: &Workspace) -> Vec<outou_syntax::Parsed> {
-    workspace
-        .rsx
-        .values()
-        .map(|doc| outou_syntax::parse(doc.line_index.text()))
-        .collect()
-}
-
 fn tag_name_items(workspace: &Workspace, partial: &str, range: lsp_types::Range) -> Vec<Value> {
-    let mut labels: Vec<String> = Vec::new();
-    for parsed in parsed_files(workspace) {
-        for function in plan::component_functions(&parsed.file) {
-            if function.name.name.starts_with(partial) && !labels.contains(&function.name.name) {
-                labels.push(function.name.name.clone());
-            }
+    let mut labels: Vec<&str> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for component in workspace.rsx.values().flat_map(|doc| doc.components()) {
+        if component.name.starts_with(partial) && seen.insert(component.name.as_str()) {
+            labels.push(&component.name);
         }
     }
+    // `Workspace::rsx` is a `HashMap`: sort so the order does not depend on it.
+    labels.sort_unstable();
     let mut items: Vec<Value> = labels
         .into_iter()
-        .map(|label| completion_item(&label, CompletionKind::Class, range))
+        .map(|label| completion_item(label, CompletionKind::Class, range))
         .collect();
     for element in HTML_ELEMENTS {
         if element.starts_with(partial) {
@@ -603,18 +583,20 @@ fn attr_name_items(
             .map(|name| completion_item(name, CompletionKind::Field, range))
             .collect();
     }
-    for parsed in parsed_files(workspace) {
-        for function in plan::component_functions(&parsed.file) {
-            if function.name.name == tag_name {
-                return function_params(&function.signature.text)
-                    .into_iter()
-                    .filter(|param| offered(param))
-                    .map(|param| completion_item(&param, CompletionKind::Field, range))
-                    .collect();
-            }
-        }
-    }
-    Vec::new()
+    // The first component of this name wins, documents taken in URI order so
+    // the answer is deterministic (a duplicate name is a build error anyway).
+    let mut docs: Vec<(&String, &crate::documents::RsxDocument)> = workspace.rsx.iter().collect();
+    docs.sort_unstable_by_key(|(uri, _)| *uri);
+    let component = docs
+        .into_iter()
+        .flat_map(|(_, doc)| doc.components())
+        .find(|component| component.name == tag_name);
+    component
+        .into_iter()
+        .flat_map(|component| &component.params)
+        .filter(|param| offered(param))
+        .map(|param| completion_item(param, CompletionKind::Field, range))
+        .collect()
 }
 
 #[derive(Clone, Copy)]
@@ -647,7 +629,7 @@ fn completion_item(label: &str, kind: CompletionKind, range: lsp_types::Range) -
 /// text (`ast::Function::signature`, verbatim from `fn` to the opening
 /// `{`), stripping the raw-identifier prefix (`r#type` -> `type`) per
 /// grammar §5 / `docs/backend-leakage.md` row 17.
-fn function_params(signature: &str) -> Vec<String> {
+pub(crate) fn function_params(signature: &str) -> Vec<String> {
     let Some(open) = signature.find('(') else {
         return Vec::new();
     };
@@ -710,6 +692,8 @@ fn param_name(param: &str) -> Option<String> {
 
 #[cfg(test)]
 mod attr_tests;
+#[cfg(test)]
+mod bench;
 
 #[cfg(test)]
 mod tests {
@@ -742,7 +726,7 @@ mod tests {
     #[test]
     fn classify_finds_a_partial_component_tag_name() {
         let source = "#[component]\nfn App() -> Element {\n    <UserC\n}\n";
-        let parsed = outou_syntax::parse(source);
+        let parsed = crate::documents::parse_rsx(source);
         let offset = source.find("<UserC").unwrap() as u32 + "<UserC".len() as u32;
         match classify(&parsed.file, source, offset) {
             Cursor::TagName { partial, .. } => assert_eq!(partial, "UserC"),
@@ -753,7 +737,7 @@ mod tests {
     #[test]
     fn classify_finds_a_partial_attribute_name_on_a_known_tag() {
         let source = "#[component]\nfn App() -> Element {\n    <UserCard us\n}\n";
-        let parsed = outou_syntax::parse(source);
+        let parsed = crate::documents::parse_rsx(source);
         let offset = source.find("<UserCard us").unwrap() as u32 + "<UserCard us".len() as u32;
         match classify(&parsed.file, source, offset) {
             Cursor::AttrName {
@@ -769,7 +753,7 @@ mod tests {
     #[test]
     fn classify_treats_a_missing_attribute_value_as_attr_value() {
         let source = "#[component]\nfn App() -> Element {\n    <div class=\n}\n";
-        let parsed = outou_syntax::parse(source);
+        let parsed = crate::documents::parse_rsx(source);
         let offset = source.find("class=").unwrap() as u32 + "class=".len() as u32;
         assert!(matches!(
             classify(&parsed.file, source, offset),
@@ -783,7 +767,7 @@ mod tests {
     #[test]
     fn classify_finds_the_missing_attribute_value_before_a_sibling_element() {
         let source = "#[component]\nfn App() -> Element {\n    <section>\n        <div class=\n        <Greeting name=\"Outou\" />\n    </section>\n}\n";
-        let parsed = outou_syntax::parse(source);
+        let parsed = crate::documents::parse_rsx(source);
         let offset = source.find("class=").unwrap() as u32 + "class=".len() as u32;
         assert!(matches!(
             classify(&parsed.file, source, offset),
@@ -803,7 +787,7 @@ mod tests {
     #[test]
     fn classify_finds_a_closing_tag_name() {
         let source = "#[component]\nfn App() -> Element {\n    <p>hi</p>\n}\n";
-        let parsed = outou_syntax::parse(source);
+        let parsed = crate::documents::parse_rsx(source);
         let offset = source.find("</p>").unwrap() as u32 + "</p".len() as u32;
         match classify(&parsed.file, source, offset) {
             Cursor::TagName { partial, .. } => assert_eq!(partial, "p"),
@@ -822,7 +806,7 @@ mod tests {
     #[test]
     fn classify_treats_a_bare_open_angle_bracket_as_an_empty_tag_name() {
         let source = "#[component]\nfn App() -> Element {\n    <div>\n        <\n    </div>\n}\n";
-        let parsed = outou_syntax::parse(source);
+        let parsed = crate::documents::parse_rsx(source);
         let offset = source.find("<\n").unwrap() as u32 + 1;
         match classify(&parsed.file, source, offset) {
             Cursor::TagName { partial, .. } => assert_eq!(partial, ""),
@@ -836,7 +820,7 @@ mod tests {
     #[test]
     fn classify_uses_the_prefix_before_the_cursor_not_the_whole_name() {
         let source = "#[component]\nfn App() -> Element {\n    <TagList\n}\n";
-        let parsed = outou_syntax::parse(source);
+        let parsed = crate::documents::parse_rsx(source);
         let offset = source.find("<TagList").unwrap() as u32 + "<TagL".len() as u32;
         match classify(&parsed.file, source, offset) {
             Cursor::TagName { partial, .. } => assert_eq!(partial, "TagL"),

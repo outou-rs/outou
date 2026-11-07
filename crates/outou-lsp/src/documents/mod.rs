@@ -14,7 +14,10 @@ mod plan_error;
 mod units;
 mod workspace;
 
+pub(crate) use units::parse_rsx;
 #[cfg(test)]
 pub(crate) use units::test_generated_unit;
+#[cfg(test)]
+pub(crate) use units::PARSE_COUNT;
 pub use units::{RsxDocument, INITIAL_RA_VERSION};
-pub use workspace::{LoadOutcome, Workspace};
+pub use workspace::{LoadError, LoadOutcome, Regenerated, Workspace};
