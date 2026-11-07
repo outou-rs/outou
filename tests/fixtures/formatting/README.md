@@ -36,9 +36,12 @@ Non-ASCII and non-printable characters inside `Text("…")` are written as Rust 
 | `tab-becomes-space` | A tab inside text on a single line becomes a single space, not a trim. |
 | `nbsp-not-trimmed` | A no-break space (U+00A0) on its own line survives; only U+0020 is trimmed. |
 | `crlf-line-endings` | `\r\n` and a lone `\r` are both line breaks, exactly like `\n`. The file uses CRLF throughout, with one lone CR between `Hello` and `world`; an implementation that treats only `\r\n` as a break yields `Text("Hello\r        world")`. The lone CR sits inside JSX text, where Outou's lexer — not rustc — decides line breaks. |
+| `lt-space-before-tag-name` | Trivia between `<` and the tag name (`a < b>`, `<\n  u>`, `< i/>`) and inside a closing tag (`< /b>`, `</\n  u>`) is skipped, so the children and their whitespace are exactly those of the unspaced tags. Cross-checked with the real `@babel/core` 8.1.0 and `@babel/preset-react` (see below). |
 | `attribute-escapes` | A plain (non-raw) attribute string decodes Rust's own escape sequences (`\"`, `\\`, `\t`, `\n`), not just its surrounding text-normalization rules — MEDIUM-8, issue #6 fix list item 9. `expected.txt` only covers the element's children (`Text("note")`); the attribute's decoded value is asserted directly in `crates/outou-syntax/tests/attributes.rs` and observed in the Dioxus backend's golden output (`crates/outou-backend-dioxus/tests/golden/formatting-attribute-escapes/expected.rs`). |
 
 ## Provenance
+
+`lt-space-before-tag-name` (issue #31) was run through the real `@babel/core` 8.1.0 with `@babel/preset-react`, which produced `createElement("div", null, "a ", createElement("b", null, "x"), " c", createElement("i", null), createElement("u", null, "y"))`, the children in its `expected.txt`.
 
 The 12 whitespace cases (every row above except `attribute-escapes`) were derived by hand from the algorithm in `docs/grammar.md` §8, which is a description of Babel's `cleanJSXElementLiteralChild` (the function `@babel/plugin-transform-react-jsx` — and so React's own JSX transform — uses to normalize JSX text). `@babel/parser` and `@babel/core` were not available in the local npm cache (checked with `npm ls -g`, `node -e "require.resolve(...)"`, and `npx --offline`, all of which failed to resolve them without network access), so **none of the cases were cross-checked by running the real Babel package**.
 

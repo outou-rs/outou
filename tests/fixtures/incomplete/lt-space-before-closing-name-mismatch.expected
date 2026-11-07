@@ -1,0 +1,2 @@
+error: closing tag `</b>` does not match opening tag `<span>`
+ --> lt-space-before-closing-name-mismatch.rsx:5:17

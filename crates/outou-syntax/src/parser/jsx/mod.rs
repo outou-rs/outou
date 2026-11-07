@@ -79,6 +79,22 @@ fn skip_ws(bytes: &[u8], mut pos: usize) -> usize {
     pos
 }
 
+/// The first position at or after `pos` that is not whitespace or a comment
+/// (grammar §4: trivia is skipped when identifying a token).
+fn skip_trivia(bytes: &[u8], pos: usize) -> usize {
+    next_significant(bytes, pos).start
+}
+
+/// For the `<` at `lt`: the position of the `/` that makes it a closing tag
+/// (`</`, `< /`, `<\n/`, `< /* c */ /`), `None` when the next significant
+/// byte is anything else. Trivia between `<` and `/` is skipped as Babel
+/// does, so `</* c */ span>` is `<`, a comment and an opening `span` (Babel
+/// reads it that way too), and `<// c\n/span>` is a closing tag.
+fn closing_slash_after_lt(bytes: &[u8], lt: usize) -> Option<usize> {
+    let at = skip_trivia(bytes, lt + 1);
+    (bytes.get(at) == Some(&b'/')).then_some(at)
+}
+
 /// Whether `c` can start a `JsxName` (grammar §5) — the guard used before
 /// scanning an attribute or closing-tag name at the current position.
 /// Delegates to [`crate::lexer::is_jsx_name_start_byte`] so a leading digit

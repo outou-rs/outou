@@ -10,7 +10,9 @@ use crate::lexer::scan_jsx_name;
 
 use super::super::diag;
 use super::super::Parser;
-use super::{is_jsx_name_byte, pos_span, skip_ws, CloseResolution};
+use super::{
+    closing_slash_after_lt, is_jsx_name_byte, pos_span, skip_trivia, skip_ws, CloseResolution,
+};
 
 /// How far a `</...` scan got. Every shape but `Named` is a truncated
 /// closing tag; those carry the byte range of the tag name scanned before
@@ -191,10 +193,13 @@ impl<'s> Parser<'s> {
     /// without consulting the open-name stack. Shared by real closing
     /// tags and by the top-level "stray close" recovery.
     pub(super) fn scan_closing_tag_shape(&self, at: usize) -> (ClosingTagShape, usize) {
-        let mut pos = at + 2; // past `</`
-        pos = skip_ws(self.bytes, pos);
+        // Past `</`; trivia may sit on either side of the `/` and before the
+        // name (`< /span>`, `</ span>`, `</* c */span>`), as React accepts.
+        let slash = closing_slash_after_lt(self.bytes, at).unwrap_or(at + 1);
+        let mut pos = slash + 1; // trivia before the name is skipped below
         let mut name: Option<(usize, usize)> = None;
         loop {
+            pos = skip_trivia(self.bytes, pos);
             match self.bytes.get(pos).copied() {
                 None => return (ClosingTagShape::Eof { name }, pos),
                 Some(b'<') => return (ClosingTagShape::InterruptedByLt { lt: pos, name }, pos),
@@ -214,6 +219,8 @@ impl<'s> Parser<'s> {
                     let name_end = scan_jsx_name(self.bytes, pos);
                     // Keep the first name: `</div class` reports `div`.
                     name.get_or_insert((name_start, name_end));
+                    // Only whitespace after the name: a comment inside a tag
+                    // head is `TODO(alpha) (#31)` (docs/grammar.md §9).
                     pos = skip_ws(self.bytes, name_end);
                     match self.bytes.get(pos).copied() {
                         Some(b'>') => {

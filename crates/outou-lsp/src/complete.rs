@@ -527,11 +527,166 @@ fn classify_blank_attribute_position(
 fn classify_child(child: &ast::JsxChild, text: &str, offset: u32) -> Option<Cursor> {
     match child {
         ast::JsxChild::Text(_) | ast::JsxChild::Error(_) => None,
-        ast::JsxChild::Element(element) => classify_element(element, text, offset),
+        ast::JsxChild::Element(element) => classify_spaced_lt_in_text(element, text, offset)
+            .or_else(|| classify_element(element, text, offset)),
         ast::JsxChild::Expression(island) => island
             .parts
             .iter()
             .find_map(|part| classify_expr(part, text, offset)),
+    }
+}
+
+/// A child-position `<` followed by trivia is a tag (`< span/>`), but while
+/// the tag is still being typed (`< |</div>`, `< Us|</div>`,
+/// `< span cl|</div>`) the tag head does not reach a `>`, so the parser
+/// recovers the lone `<` as the literal `<` of text
+/// (`outou_syntax`'s `looks_like_text_after_spaced_lt`) and the typed part
+/// lands in a text child. The parser cannot tell `< span cl` from prose
+/// (`a < b c`), so the editor-side reading lives here: after trivia, a tag
+/// name, then attributes, then a partial name at the cursor.
+///
+/// To keep prose from popping completions, the `<` must start a text run:
+/// nothing but whitespace before it on its line, or a `>` / `}` right
+/// before it (`<div>< sp`). Path names (`a.b`, `Foo::B`) are not claimed.
+fn classify_spaced_lt_in_text(
+    element: &ast::JsxElement,
+    text: &str,
+    offset: u32,
+) -> Option<Cursor> {
+    let ast::JsxTag::Incomplete(incomplete) = &element.open else {
+        return None;
+    };
+    if incomplete.name.is_some()
+        || element.span.end - element.span.start != 1
+        || offset < element.span.end
+        || !lt_starts_a_text_run(text, element.span.start as usize)
+    {
+        return None;
+    }
+    let typed = text
+        .get(element.span.end as usize..offset as usize)?
+        .as_bytes();
+    let (tag, existing, partial) = parse_typed_tag_head(typed)?;
+    let span = outou_sourcemap::Span::new(offset - partial.len() as u32, offset);
+    Some(match tag {
+        None => Cursor::TagName { partial, span },
+        Some(tag_name) => Cursor::AttrName {
+            tag_name: Some(tag_name),
+            existing,
+            partial,
+            span,
+        },
+    })
+}
+
+/// Whether the `<` at `lt` is the first thing on its line, or follows a `>`
+/// or `}` (ignoring spaces and tabs).
+fn lt_starts_a_text_run(text: &str, lt: usize) -> bool {
+    let before = &text.as_bytes()[..lt];
+    let prev = before.iter().rev().find(|b| !matches!(**b, b' ' | b'\t'));
+    matches!(prev, None | Some(b'\n' | b'\r' | b'>' | b'}'))
+}
+
+fn is_name_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-') || b >= 0x80
+}
+
+fn starts_a_name(b: u8) -> bool {
+    b.is_ascii_alphabetic() || b == b'_' || b >= 0x80
+}
+
+/// Skips ASCII whitespace and block comments.
+fn skip_typed_trivia(bytes: &[u8], mut pos: usize) -> usize {
+    loop {
+        match bytes.get(pos) {
+            Some(b) if b.is_ascii_whitespace() => pos += 1,
+            Some(b'/') if bytes.get(pos + 1) == Some(&b'*') => {
+                match bytes[pos + 2..].windows(2).position(|w| w == b"*/") {
+                    Some(end) => pos += end + 4,
+                    None => return bytes.len(),
+                }
+            }
+            _ => return pos,
+        }
+    }
+}
+
+/// The name run starting at `pos`: its end, `None` unless it starts with a
+/// letter or `_` (so `a < 10` is not a tag name).
+fn typed_name_end(bytes: &[u8], pos: usize) -> Option<usize> {
+    if !starts_a_name(*bytes.get(pos)?) {
+        return None;
+    }
+    Some(
+        pos + bytes[pos..]
+            .iter()
+            .take_while(|b| is_name_byte(**b))
+            .count(),
+    )
+}
+
+/// Reads `trivia name (trivia attr)* trivia partial` from the text between
+/// a `<` and the cursor. Returns the tag name (`None` while the name itself
+/// is the partial), the complete attribute names and the partial.
+fn parse_typed_tag_head(bytes: &[u8]) -> Option<(Option<String>, Vec<String>, String)> {
+    let word = |from: usize, to: usize| String::from_utf8_lossy(&bytes[from..to]).into_owned();
+    let mut pos = skip_typed_trivia(bytes, 0);
+    if pos == bytes.len() {
+        return Some((None, Vec::new(), String::new()));
+    }
+    let name_end = typed_name_end(bytes, pos)?;
+    if name_end == bytes.len() {
+        return Some((None, Vec::new(), word(pos, name_end)));
+    }
+    let tag = word(pos, name_end);
+    let mut existing = Vec::new();
+    pos = name_end;
+    loop {
+        let after = skip_typed_trivia(bytes, pos);
+        if after == pos {
+            return None;
+        }
+        pos = after;
+        if pos == bytes.len() {
+            return Some((Some(tag), existing, String::new()));
+        }
+        let end = typed_name_end(bytes, pos)?;
+        if end == bytes.len() {
+            return Some((Some(tag), existing, word(pos, end)));
+        }
+        existing.push(word(pos, end));
+        pos = end;
+        if bytes.get(pos) == Some(&b'=') {
+            pos = skip_typed_value(bytes, pos + 1)?;
+        }
+    }
+}
+
+/// Skips an attribute value (`"…"` or a balanced `{…}`); `None` when it is
+/// not closed before the cursor (the cursor is then inside the value).
+fn skip_typed_value(bytes: &[u8], pos: usize) -> Option<usize> {
+    match bytes.get(pos)? {
+        b'"' => {
+            let close = bytes[pos + 1..].iter().position(|b| *b == b'"')?;
+            Some(pos + close + 2)
+        }
+        b'{' => {
+            let mut depth = 0usize;
+            for (i, b) in bytes[pos..].iter().enumerate() {
+                match b {
+                    b'{' => depth += 1,
+                    b'}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return Some(pos + i + 1);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        }
+        _ => None,
     }
 }
 
@@ -811,6 +966,92 @@ mod tests {
         match classify(&parsed.file, source, offset) {
             Cursor::TagName { partial, .. } => assert_eq!(partial, ""),
             _ => panic!("expected an empty TagName cursor"),
+        }
+    }
+
+    /// A child-position `<` followed by whitespace is a tag-name position
+    /// both when the name is complete (`< sp‸an/>`, a real tag) and while
+    /// it is still being typed (`< ‸`, `< Us‸`, which the parser recovers
+    /// as a literal `<`).
+    #[test]
+    fn classify_finds_a_tag_name_after_lt_and_a_space_in_child_position() {
+        for (body, marker, partial) in [
+            ("<div>< sp/></div>", "sp", "sp"),
+            ("<div>< ", "< ", ""),
+            ("<div>< \n</div>", "< ", ""),
+            ("<div>< Us</div>", "Us", "Us"),
+        ] {
+            let source = format!("#[component]\nfn App() -> Element {{\n    {body}\n}}\n");
+            let parsed = crate::documents::parse_rsx(&source);
+            let at = source.find(marker).unwrap() + marker.len();
+            let offset = if marker == "sp" { at - 1 } else { at } as u32;
+            let expected = if marker == "sp" { "s" } else { partial };
+            match classify(&parsed.file, &source, offset) {
+                Cursor::TagName { partial, .. } => assert_eq!(partial, expected, "{body}"),
+                _ => panic!("expected a TagName cursor for {body:?}"),
+            }
+        }
+    }
+
+    /// While a spaced tag is still being typed, the cursor after the tag
+    /// name is an attribute-name position with the attributes already
+    /// written (`< span id="a" cl‸`); the parser cannot tell it from prose.
+    #[test]
+    fn classify_finds_an_attribute_name_after_a_spaced_lt_tag_name() {
+        for (body, marker, tag, existing, partial) in [
+            ("<div>< span cl</div>", "cl", "span", vec![], "cl"),
+            ("<div>< span </div>", "span ", "span", vec![], ""),
+            (
+                "<div>< span hidden id=\"a b\" on={x} cl</div>",
+                "cl",
+                "span",
+                vec!["hidden", "id", "on"],
+                "cl",
+            ),
+            ("<div>< /* c */ span cl</div>", "cl", "span", vec![], "cl"),
+        ] {
+            let source = format!("#[component]\nfn App() -> Element {{\n    {body}\n}}\n");
+            let parsed = crate::documents::parse_rsx(&source);
+            let offset = (source.rfind(marker).unwrap() + marker.len()) as u32;
+            match classify(&parsed.file, &source, offset) {
+                Cursor::AttrName {
+                    tag_name,
+                    existing: found,
+                    partial: typed,
+                    ..
+                } => {
+                    assert_eq!(tag_name.as_deref(), Some(tag), "{body}");
+                    assert_eq!(found, existing, "{body}");
+                    assert_eq!(typed, partial, "{body}");
+                }
+                _ => panic!("expected an AttrName cursor for {body:?}"),
+            }
+        }
+    }
+
+    /// Prose and non-names are not claimed: a number is not a tag name, a
+    /// `<` in the middle of a sentence does not start a text run, a cursor
+    /// inside an attribute value or right after one is not a name position,
+    /// and path names are left to rust-analyzer.
+    #[test]
+    fn classify_does_not_claim_prose_after_a_spaced_lt() {
+        for (body, marker) in [
+            ("<div>a < 10</div>", "10"),
+            ("<div>a < b</div>", "b"),
+            ("<div>if a < b c</div>", "c"),
+            ("<div>< span id=\"a</div>", "id=\"a"),
+            ("<div>< span id=\"a\"</div>", "\"a\""),
+            ("<div>< a.b</div>", "a.b"),
+            ("<div>< Foo::B</div>", "Foo::B"),
+            ("<div>< 3</div>", "3"),
+        ] {
+            let source = format!("#[component]\nfn App() -> Element {{\n    {body}\n}}\n");
+            let parsed = crate::documents::parse_rsx(&source);
+            let offset = (source.rfind(marker).unwrap() + marker.len()) as u32;
+            assert!(
+                matches!(classify(&parsed.file, &source, offset), Cursor::Expression),
+                "{body:?} should not be claimed"
+            );
         }
     }
 

@@ -63,6 +63,8 @@ golden_test!(long_attribute_list_wraps, "long-attribute-list-wraps");
 golden_test!(crlf_input, "crlf-input");
 golden_test!(already_formatted, "already-formatted");
 golden_test!(parse_error_refused, "parse-error-refused");
+golden_test!(lt_space_before_tag_name, "lt-space-before-tag-name");
+golden_test!(lt_space_comment_kept, "lt-space-comment-kept");
 golden_test!(placeholder_collision, "placeholder-collision");
 golden_test!(
     blank_lines_between_children_collapse,
@@ -98,6 +100,8 @@ fn every_golden_directory_is_covered_by_a_case_above() {
         "nested-jsx-in-braces",
         "attributes-mixed",
         "self-closing",
+        "lt-space-before-tag-name",
+        "lt-space-comment-kept",
         "significant-text",
         "comment-near-jsx",
         "long-attribute-list-wraps",

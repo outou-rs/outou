@@ -1,0 +1,2 @@
+error: unexpected `<` inside tag `<b>`, expected an attribute or `>`
+ --> lt-no-space-name-unterminated-in-child.rsx:5:15

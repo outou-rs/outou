@@ -68,6 +68,12 @@ pub(crate) fn format_jsx_element_at(
     options: &Ctx,
 ) -> Result<String, FormatError> {
     let name = element_name(element)?;
+    if tag_trivia_has_comment(element, source) {
+        // A comment between `<` and a tag name (`< /* c */ span/>`,
+        // `</ /* c */ span>`) is trivia the AST does not model; rebuilding
+        // the tags would silently drop it, so the element stays as written.
+        return Ok(source[element.span.start as usize..element.span.end as usize].to_string());
+    }
     let open = tag::format_open_tag(element, indent, placement, source, options)?;
     if element.close.is_none() {
         // Self-closing: no children, no closing tag.
@@ -104,6 +110,29 @@ pub(crate) fn format_jsx_element_at(
 
     let body = children::format_multiline(element, indent, source, options)?;
     Ok(format!("{open}{body}</{name}>"))
+}
+
+/// Whether a comment sits between the `<` of a tag and its name, or between
+/// its name and the closing `>` of a closing tag (grammar §4 rule 2 skips
+/// trivia there). The pretty printer rebuilds those tags from the AST and
+/// would lose the comment.
+fn tag_trivia_has_comment(element: &ast::JsxElement, source: &str) -> bool {
+    let has_comment = |start: u32, end: u32| {
+        source
+            .get(start as usize..end as usize)
+            .is_some_and(|gap| gap.contains("/*") || gap.contains("//"))
+    };
+    let open_gap = match &element.open {
+        ast::JsxTag::Named { name, .. } => has_comment(element.span.start, name.span.start),
+        ast::JsxTag::Incomplete(_) => false,
+    };
+    let close_gap = match &element.close {
+        Some(ast::JsxTag::Named { span, name }) => {
+            has_comment(span.start, name.span.start) || has_comment(name.span.end, span.end)
+        }
+        _ => false,
+    };
+    open_gap || close_gap
 }
 
 /// The element or component name of `element`'s opening tag.

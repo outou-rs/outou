@@ -1,0 +1,2 @@
+error: unexpected `<` inside tag `<span>`, expected an attribute or `>`
+ --> lt-space-tag-attribute-unterminated-in-child.rsx:5:30

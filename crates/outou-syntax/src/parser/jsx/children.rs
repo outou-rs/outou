@@ -10,7 +10,10 @@ use crate::lexer::scan_jsx_name;
 
 use super::super::region::RegionEnd;
 use super::super::Parser;
-use super::{incomplete_element, pos_span, ChildrenOutcome, CloseResolution};
+use super::{
+    closing_slash_after_lt, incomplete_element, pos_span, skip_trivia, ChildrenOutcome,
+    CloseResolution,
+};
 
 fn flush_text(children: &mut Vec<ast::JsxChild>, source: &str, start: usize, end: usize) {
     if start >= end {
@@ -100,7 +103,11 @@ impl<'s> Parser<'s> {
                         }
                     }
                 }
-                Some(b'<') if self.bytes.get(pos + 1) == Some(&b'/') => {
+                Some(b'<')
+                    if closing_slash_after_lt(self.bytes, pos).is_some_and(|slash| {
+                        slash == pos + 1 || self.is_complete_closing(slash)
+                    }) =>
+                {
                     flush_text(&mut children, self.source, text_start, pos);
                     match self.resolve_closing_tag(pos, name) {
                         CloseResolution::Resolved { close, end } => {
@@ -136,22 +143,37 @@ impl<'s> Parser<'s> {
     /// names, namespaced names, spread attributes, `Self`) uniformly for
     /// both nested and top-level tags.
     fn parse_nested_child_element(&mut self, lt_pos: usize) -> (ast::JsxElement, usize) {
-        if self.bytes.get(lt_pos + 1) == Some(&b'>') {
+        // Trivia between `<` and the name is skipped, as at the top level
+        // (grammar §4 rule 2) and as React accepts: `< span/>` is `<span/>`.
+        let name_start = skip_trivia(self.bytes, lt_pos + 1);
+        if self.bytes.get(name_start) == Some(&b'>') {
             return self.recover_fragment(lt_pos);
         }
-        let name_start = lt_pos + 1;
         let name_end = scan_jsx_name(self.bytes, name_start);
-        if name_end == name_start {
-            // No valid name at all (`<3>`, `<<A/>`, `< span/>`, `a < b` in
-            // text): diagnose it, then recover by consuming just the `<` as
-            // an error and resuming text scanning right after it. Every
-            // incomplete tag carries a diagnostic (parser/mod.rs). A space
-            // after `<` is not accepted as an element here; whether it
-            // should be (it is at the top level) is `TODO(alpha) (#31)`.
+        let after_name = next_significant(self.bytes, name_end);
+        let generic_args_skipped_at =
+            if name_end > name_start && matches!(self.bytes.get(after_name.start), Some(b'<')) {
+                Some(after_name.start)
+            } else {
+                None
+            };
+        let resume_at = match generic_args_skipped_at {
+            Some(inner_lt) => {
+                crate::lexer::disambiguate::skip_nested_generic_arguments(self.bytes, inner_lt)
+            }
+            None => name_end,
+        };
+        if name_end == name_start
+            || self.looks_like_text_after_spaced_lt(lt_pos, name_start, resume_at)
+        {
+            // No valid name at all (`<3>`, `<<A/>`, `< 3`), or a literal `<`
+            // in text (`a < b`): diagnose it, then recover by consuming just
+            // the `<` as an error and resuming text scanning right after
+            // it. Every incomplete tag carries a diagnostic (parser/mod.rs).
             self.push_diag(
                 Span::new(lt_pos as u32, lt_pos as u32 + 1),
                 super::super::diag::missing_tag_name_after_lt(
-                    self.bytes[lt_pos + 1..].starts_with(b"!--"),
+                    self.bytes[name_start..].starts_with(b"!--"),
                 ),
             );
             return (
@@ -159,18 +181,6 @@ impl<'s> Parser<'s> {
                 lt_pos + 1,
             );
         }
-        let after_name = next_significant(self.bytes, name_end);
-        let generic_args_skipped_at = if matches!(self.bytes.get(after_name.start), Some(b'<')) {
-            Some(after_name.start)
-        } else {
-            None
-        };
-        let resume_at = match generic_args_skipped_at {
-            Some(inner_lt) => {
-                crate::lexer::disambiguate::skip_nested_generic_arguments(self.bytes, inner_lt)
-            }
-            None => name_end,
-        };
         self.parse_named_element(
             lt_pos,
             NamedTag {
@@ -180,5 +190,71 @@ impl<'s> Parser<'s> {
                 generic_args_skipped_at,
             },
         )
+    }
+
+    /// Whether the `/` at `slash`, which has trivia between it and its `<`,
+    /// begins a complete `/name>` (only whitespace around the name). Anything
+    /// else (`a < /b</p>`, `a < /b and c > d`) is a literal `<` in text.
+    fn is_complete_closing(&self, slash: usize) -> bool {
+        let name_start = skip_trivia(self.bytes, slash + 1);
+        let name_end = scan_jsx_name(self.bytes, name_start);
+        name_end > name_start && self.bytes.get(super::skip_ws(self.bytes, name_end)) == Some(&b'>')
+    }
+
+    /// Whether `pos` (right after a tag name) starts an attribute assignment:
+    /// a name, `=`, then a `"` string or a `{` island. Only this shape makes
+    /// an unfinished head a tag rather than text; prose such as `a < b = c`,
+    /// `while n < max { n += 1 }` or `x < y then say "hi"` never matches it.
+    fn attribute_assignment_follows(&self, pos: usize) -> bool {
+        let attr = skip_trivia(self.bytes, pos);
+        let attr_end = scan_jsx_name(self.bytes, attr);
+        if attr_end == attr {
+            return false;
+        }
+        let eq = next_significant(self.bytes, attr_end);
+        if eq.end != eq.start + 1 || self.bytes.get(eq.start) != Some(&b'=') {
+            return false;
+        }
+        matches!(
+            self.bytes.get(skip_trivia(self.bytes, eq.end)),
+            Some(b'"' | b'{')
+        )
+    }
+
+    /// Recovery heuristic for `a < b` text now that `< name` is a tag in
+    /// child position: a `<` followed by trivia and a name whose tag head
+    /// never reaches `>` (it runs into a `<`, an unbalanced `}` or the end
+    /// of the file first) is reported as a literal `<` in text, with the
+    /// "write `{"<"}`" advice, instead of as a broken tag.
+    ///
+    /// A head that starts with an attribute assignment (`name="…"`,
+    /// `name={…}`) stays a tag, so `< span class="x"` reports like `<span`.
+    ///
+    /// This only picks which diagnostic an already-invalid file gets: a
+    /// tag head that never reaches `>` is an error whichever way it is
+    /// read, so no valid file changes meaning. A `<` with no space
+    /// (`a<b`) keeps the ordinary tag diagnostics.
+    fn looks_like_text_after_spaced_lt(
+        &self,
+        lt_pos: usize,
+        name_start: usize,
+        head_start: usize,
+    ) -> bool {
+        if name_start == lt_pos + 1 || self.attribute_assignment_follows(head_start) {
+            return false;
+        }
+        let mut pos = head_start;
+        loop {
+            let tok = next_significant(self.bytes, pos);
+            if tok.start == tok.end {
+                return true;
+            }
+            match self.bytes[tok.start] {
+                b'>' => return false,
+                b'<' | b'}' => return true,
+                b'{' => pos = crate::lexer::rust_token::skip_balanced_group(self.bytes, tok.start),
+                _ => pos = tok.end,
+            }
+        }
     }
 }
