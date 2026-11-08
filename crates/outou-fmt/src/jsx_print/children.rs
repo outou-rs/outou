@@ -20,6 +20,10 @@
 //! `crates/outou-fmt/tests/golden/README.md` records the observed Prettier
 //! behaviour and the goldens that pin it.
 //!
+//! **Multi-line text is re-indented, not reflowed.** See
+//! [`reindent_text`]: only whitespace that §8 discards changes, so the text
+//! value is the same.
+//!
 //! **Why a `Text` child is never given extra surrounding whitespace.**
 //! [`ast::JsxText::span`] always covers the *entire* maximal run of text
 //! between two boundaries (`docs/grammar.md` §8) — never a partial gap
@@ -202,7 +206,7 @@ fn render_inline(
     options: &Ctx,
 ) -> Result<Option<String>, FormatError> {
     let rendered = match child {
-        ast::JsxChild::Text(text) => verbatim_text(text, source),
+        ast::JsxChild::Text(text) => reindent_text(source_of(text, source), "", "", true, true),
         ast::JsxChild::Expression(value) => island::format_island(value, indent, source, options)?,
         ast::JsxChild::Element(nested) => format_jsx_element(nested, indent, source, options)?,
         ast::JsxChild::Error(_) => return Ok(None),
@@ -235,7 +239,20 @@ pub(super) fn format_multiline(
     for (index, child) in element.children.iter().enumerate() {
         match child {
             ast::JsxChild::Text(text) => {
-                out.push_str(&verbatim_text(text, source));
+                // The text's last line is either the closing tag's line (when
+                // the text ends the element) or the line the next child starts on.
+                let tail_pad = if index + 1 == element.children.len() {
+                    " ".repeat(indent)
+                } else {
+                    pad.clone()
+                };
+                out.push_str(&reindent_text(
+                    source_of(text, source),
+                    &pad,
+                    &tail_pad,
+                    index == 0,
+                    index + 1 == element.children.len(),
+                ));
                 previous_was_text = true;
             }
             other => {
@@ -280,8 +297,127 @@ fn render_owned_line(
     }
 }
 
-fn verbatim_text(text: &ast::JsxText, source: &str) -> String {
-    source[text.span.start as usize..text.span.end as usize].to_string()
+fn source_of<'a>(text: &ast::JsxText, source: &'a str) -> &'a str {
+    &source[text.span.start as usize..text.span.end as usize]
+}
+
+/// The only characters `docs/grammar.md` §8 trims from the edges of a line:
+/// U+0020 and tab (a tab becomes U+0020 before the trim). No-break space,
+/// U+000B, U+000C and every other Unicode space are text and are never
+/// touched.
+const TRIMMED_BY_JSX: [char; 2] = [' ', '\t'];
+
+/// Re-indents a text run that spans several lines, without reflowing it.
+///
+/// Only whitespace that `docs/grammar.md` §8 discards is changed, so the
+/// run's JSX text value stays the same. Only U+0020 and tab are ever removed.
+///
+/// - **First line.** If it starts with U+0020 or tab, that whitespace is
+///   significant (the line continues the one holding the preceding tag or
+///   island): it is kept and the line stays where it is. If it starts with
+///   anything else it moves onto a line of its own at `line_pad`, but only
+///   when the run is the element's first child (`is_first`), so that it
+///   follows the opening tag; the old first line is then whitespace-only
+///   and §8 drops it. After a sibling child the line stays glued to it, as
+///   Prettier keeps `<b>x</b>after` and `All ({x})` together. Trailing
+///   whitespace is removed either way.
+/// - **Middle lines.** Leading and trailing whitespace is removed and the
+///   line starts at `line_pad`. An empty line is a blank line; two or more
+///   in a row become one, and blank lines next to the tag or child before
+///   the text, or the child or closing tag after it, are dropped (as
+///   between element children, `docs/grammar.md` §8 step 4 discards them).
+/// - **Last line.** Leading whitespace is removed. If it ends with U+0020 or
+///   tab, that is significant: the line is kept at `line_pad` and what
+///   follows is glued to it. When a sibling child follows (`!is_last`) the
+///   child is glued to the text in the same way, whatever the line ends
+///   with. Only when the run is the element's last child and its last line
+///   has no trailing whitespace does the closing tag go onto its own line,
+///   at `tail_pad`. An empty last line is a line start for what follows,
+///   at `tail_pad`.
+///
+/// Words are never joined, split or moved between lines. A run on a single
+/// line is returned as written.
+fn reindent_text(
+    raw: &str,
+    line_pad: &str,
+    tail_pad: &str,
+    is_first: bool,
+    is_last: bool,
+) -> String {
+    let lines = split_lines(raw);
+    let [first, middle @ .., last] = lines.as_slice() else {
+        return raw.to_string();
+    };
+
+    let first = first.trim_end_matches(TRIMMED_BY_JSX);
+    let first_is_blank = first.is_empty();
+    let first_moves = is_first && !first_is_blank && !first.starts_with(TRIMMED_BY_JSX);
+    let last = last.trim_start_matches(TRIMMED_BY_JSX);
+    let last_is_glued = !last.is_empty() && (!is_last || last.ends_with(TRIMMED_BY_JSX));
+
+    // The lines between the first line's start and the tail, "" being a
+    // blank line.
+    let mut body: Vec<&str> = Vec::new();
+    if first_moves {
+        body.push(first);
+    }
+    body.extend(middle.iter().map(|line| line.trim_matches(TRIMMED_BY_JSX)));
+    if !last_is_glued && !last.is_empty() {
+        body.push(last);
+    }
+    if first_is_blank {
+        while body.first() == Some(&"") {
+            body.remove(0);
+        }
+    }
+    if !last_is_glued {
+        while body.last() == Some(&"") {
+            body.pop();
+        }
+    }
+    body.dedup_by(|line, previous| line.is_empty() && previous.is_empty());
+
+    let mut out = if first_moves { "" } else { first }.to_string();
+    for line in body {
+        out.push('\n');
+        if !line.is_empty() {
+            out.push_str(line_pad);
+            out.push_str(line);
+        }
+    }
+    out.push('\n');
+    if last_is_glued {
+        out.push_str(line_pad);
+        out.push_str(last);
+    } else {
+        out.push_str(tail_pad);
+    }
+    out
+}
+
+/// Splits on `\n`, `\r\n` and a lone `\r`, keeping empty lines. `\r\n` has
+/// already been normalised to `\n` upstream (`crate::newline::normalize`), so
+/// that arm only mirrors `docs/grammar.md` §8; a lone `\r` is what really
+/// reaches here.
+fn split_lines(raw: &str) -> Vec<&str> {
+    let mut lines = Vec::new();
+    let mut start = 0;
+    let mut chars = raw.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        let width = match c {
+            '\n' => 1,
+            '\r' if chars.peek().is_some_and(|&(_, next)| next == '\n') => {
+                chars.next();
+                2
+            }
+            '\r' => 1,
+            _ => continue,
+        };
+        lines.push(&raw[start..at]);
+        start = at + width;
+    }
+    lines.push(&raw[start..]);
+    lines
 }
 
 #[cfg(test)]
@@ -368,6 +504,83 @@ mod tests {
     #[test]
     fn a_kept_blank_line_rules_out_the_single_line_form() {
         let source = "fn f() { <div><a/>\n\n<b/></div> }";
+        let element = only_element(source);
+        assert_eq!(
+            try_single_line(&element, 0, source, &Ctx::default()).unwrap(),
+            None
+        );
+    }
+
+    /// A run that is both the first and the last child of its element.
+    fn alone(raw: &str, line_pad: &str, tail_pad: &str) -> String {
+        reindent_text(raw, line_pad, tail_pad, true, true)
+    }
+
+    #[test]
+    fn text_after_a_sibling_child_keeps_its_first_line_glued() {
+        let out = reindent_text("after\n  more ", "    ", "  ", false, true);
+        assert_eq!(out, "after\n    more ");
+    }
+
+    #[test]
+    fn text_before_a_sibling_child_keeps_the_child_glued_to_its_last_line() {
+        let out = reindent_text(" a\n  b", "    ", "  ", true, false);
+        assert_eq!(out, " a\n    b");
+        let out = reindent_text("a\n  b", "    ", "  ", true, false);
+        assert_eq!(out, "\n    a\n    b");
+        let out = reindent_text(" a\n  ", "    ", "  ", true, false);
+        assert_eq!(out, " a\n  ");
+    }
+
+    #[test]
+    fn text_between_two_siblings_only_gets_the_middle_re_indented() {
+        let out = reindent_text("a\n\n\n   b\n   c", "    ", "  ", false, false);
+        assert_eq!(out, "a\n\n    b\n    c");
+    }
+
+    #[test]
+    fn reindent_text_leaves_a_single_line_run_alone() {
+        assert_eq!(alone("  a  b  ", "    ", "  "), "  a  b  ");
+    }
+
+    #[test]
+    fn reindent_text_only_trims_ascii_space_and_tab() {
+        let out = alone(" a \t\n \t\u{a0}b\u{a0} \n\u{c} \n\t c\t", "    ", "  ");
+        assert_eq!(out, " a\n    \u{a0}b\u{a0}\n    \u{c}\n    c\t");
+    }
+
+    #[test]
+    fn reindent_text_treats_cr_lf_and_lone_cr_as_line_breaks() {
+        assert_eq!(alone("a\r\n  b\r  c ", "  ", ""), "\n  a\n  b\n  c ");
+    }
+
+    #[test]
+    fn an_empty_last_line_gets_the_tail_pad_and_a_glued_one_keeps_the_line_pad() {
+        assert_eq!(alone(" a\n      ", "    ", "  "), " a\n  ");
+        assert_eq!(alone(" a\n      b ", "    ", "  "), " a\n    b ");
+    }
+
+    #[test]
+    fn a_last_line_without_trailing_whitespace_puts_what_follows_on_its_own_line() {
+        assert_eq!(alone(" a\n  b", "    ", "  "), " a\n    b\n  ");
+    }
+
+    #[test]
+    fn a_first_line_without_leading_whitespace_moves_to_its_own_line() {
+        assert_eq!(alone("a\n  b ", "    ", "  "), "\n    a\n    b ");
+        assert_eq!(alone(" a\n  b ", "    ", "  "), " a\n    b ");
+    }
+
+    #[test]
+    fn blank_lines_inside_text_collapse_and_edge_ones_go() {
+        assert_eq!(alone("\n\n a\n\n\n b\n\n", "  ", ""), "\n  a\n\n  b\n");
+        // A blank line next to a first line that moved is an inner one.
+        assert_eq!(alone("a\n\n b ", "  ", ""), "\n  a\n\n  b ");
+    }
+
+    #[test]
+    fn a_lone_cr_inside_text_rules_out_the_single_line_form() {
+        let source = "fn f() { <p>a\r b</p> }";
         let element = only_element(source);
         assert_eq!(
             try_single_line(&element, 0, source, &Ctx::default()).unwrap(),

@@ -86,7 +86,7 @@ fn expr_has_multiline_jsx_text(expr: &ast::Expr, source: &str) -> bool {
 fn element_has_multiline_jsx_text(element: &ast::JsxElement, source: &str) -> bool {
     element.children.iter().any(|child| match child {
         ast::JsxChild::Text(text) => {
-            source[text.span.start as usize..text.span.end as usize].contains('\n')
+            source[text.span.start as usize..text.span.end as usize].contains(['\n', '\r'])
         }
         ast::JsxChild::Element(nested) => element_has_multiline_jsx_text(nested, source),
         ast::JsxChild::Expression(island) => island
@@ -142,6 +142,13 @@ mod tests {
     #[test]
     fn multiline_jsx_text_is_unsafe() {
         let source = "fn f() { <div>{<span>a\nb</span>}</div> }";
+        let island = only_child_island(source);
+        assert!(island_has_unsafe_multiline_content(&island, source));
+    }
+
+    #[test]
+    fn jsx_text_with_a_lone_cr_is_multiline_as_in_the_whitespace_rule() {
+        let source = "fn f() { <div>{<span>a\r b</span>}</div> }";
         let island = only_child_island(source);
         assert!(island_has_unsafe_multiline_content(&island, source));
     }

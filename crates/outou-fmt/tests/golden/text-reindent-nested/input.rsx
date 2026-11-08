@@ -3,11 +3,11 @@ use outou::prelude::*;
 #[component]
 fn App() -> Element {
     <div>
-        <a />
-
-        text
-
-        more
-        <b />
+  <section>
+  <p>
+  first line
+  second line
+  </p>
+  </section>
     </div>
 }

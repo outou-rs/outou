@@ -99,8 +99,8 @@ golden_test!(
 golden_test!(blank_lines_nested, "blank-lines-nested");
 golden_test!(blank_lines_around_comments, "blank-lines-around-comments");
 golden_test!(
-    blank_lines_in_text_kept_verbatim,
-    "blank-lines-in-text-kept-verbatim"
+    blank_lines_in_text_collapsed,
+    "blank-lines-in-text-collapsed"
 );
 golden_test!(
     multiline_raw_string_in_island,
@@ -114,6 +114,22 @@ golden_test!(
 golden_test!(
     multiline_block_comment_in_island,
     "multiline-block-comment-in-island"
+);
+
+golden_test!(text_reindent_nested, "text-reindent-nested");
+golden_test!(text_reindent_outdented, "text-reindent-outdented");
+golden_test!(text_reindent_before_element, "text-reindent-before-element");
+golden_test!(text_reindent_after_element, "text-reindent-after-element");
+golden_test!(text_reindent_tabs, "text-reindent-tabs");
+golden_test!(text_reindent_nbsp, "text-reindent-nbsp");
+golden_test!(text_reindent_crlf, "text-reindent-crlf");
+golden_test!(text_reindent_blank_lines, "text-reindent-blank-lines");
+golden_test!(text_reindent_fragment, "text-reindent-fragment");
+golden_test!(text_reindent_edges, "text-reindent-edges");
+golden_test!(text_reindent_glued_edges, "text-reindent-glued-edges");
+golden_test!(
+    text_reindent_comment_island_verbatim,
+    "text-reindent-comment-island-verbatim"
 );
 
 /// Every golden case with an `expected.rsx` is idempotent starting from
@@ -151,7 +167,7 @@ fn every_golden_directory_is_covered_by_a_case_above() {
         "blank-lines-whitespace-only-lines",
         "blank-lines-nested",
         "blank-lines-around-comments",
-        "blank-lines-in-text-kept-verbatim",
+        "blank-lines-in-text-collapsed",
         "multiline-raw-string-in-island",
         "multiline-string-in-island",
         "multiline-attr-string-in-nested-jsx",
@@ -160,6 +176,18 @@ fn every_golden_directory_is_covered_by_a_case_above() {
         "fragment-text",
         "fragment-comments",
         "fragment-in-map",
+        "text-reindent-nested",
+        "text-reindent-outdented",
+        "text-reindent-before-element",
+        "text-reindent-after-element",
+        "text-reindent-tabs",
+        "text-reindent-nbsp",
+        "text-reindent-crlf",
+        "text-reindent-blank-lines",
+        "text-reindent-fragment",
+        "text-reindent-edges",
+        "text-reindent-glued-edges",
+        "text-reindent-comment-island-verbatim",
     ]
     .into_iter()
     .collect();

@@ -26,13 +26,15 @@
 //! produces the same output, and formatting already-formatted output is
 //! a no-op: every decision in [`jsx_print`] depends only on the AST and
 //! on `rustfmt`'s own (deterministic) output, never on incidental
-//! whitespace outside a preserved [`outou_syntax::ast::JsxText`] span or
+//! whitespace outside a [`outou_syntax::ast::JsxText`] span or
 //! a whole expression island left verbatim by `multiline_guard` (below).
 //!
-//! **What is left verbatim.** A JSX attribute's string value and every
-//! [`outou_syntax::ast::JsxText`] child are always copied byte-for-byte
-//! from the source (see `jsx_print`'s module doc for why) — comments and
-//! text are never at risk of being lost or reflowed. A file containing
+//! **What is left verbatim.** A JSX attribute's string value is always
+//! copied byte-for-byte from the source, and so is a
+//! [`outou_syntax::ast::JsxText`] child on one line. A multi-line text
+//! child is re-indented to follow its element, changing only whitespace that
+//! `docs/grammar.md` §8 discards (see `jsx_print`'s module doc) — comments
+//! and text are never at risk of being lost or reflowed. A file containing
 //! any [`outou_syntax::ast::ErrorNode`] is refused outright rather than
 //! partially formatted. An expression island containing a multi-line
 //! string/raw-string literal, a multi-line block comment, or multi-line

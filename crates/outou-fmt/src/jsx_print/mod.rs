@@ -7,14 +7,22 @@
 //! child), and [`island`] (an expression island's own placeholder ->
 //! `rustfmt` -> splice pass, reusing [`crate::snippet`]).
 //!
-//! **Text is never reflowed.** Every [`ast::JsxText`] child is emitted as
-//! the exact source bytes of its span, never its normalized `.value` and
-//! never with injected surrounding whitespace: `ast::JsxText::span`
-//! always covers the *entire* maximal run between two boundaries
-//! (`docs/grammar.md` §8), so there is never spare, purely-insignificant
-//! whitespace directly adjacent to a text node left over to reformat.
+//! **Text is never reflowed, only re-indented.** Every [`ast::JsxText`]
+//! child is emitted from the source bytes of its span, never its normalized
+//! `.value` and never with injected surrounding whitespace:
+//! `ast::JsxText::span` always covers the *entire* maximal run between two
+//! boundaries (`docs/grammar.md` §8), so there is never spare,
+//! purely-insignificant whitespace directly adjacent to a text node.
 //! [`children::format_multiline`]'s doc comment spells out why adding a
-//! newline next to one anyway would be unsafe.
+//! newline next to one would be unsafe. A run on one line is copied as
+//! written. A run on several lines has the whitespace that §8 discards
+//! (leading on every line but the first, trailing on every line but the
+//! last, whole whitespace-only lines; only U+0020 and tab) rewritten so the
+//! lines follow the element's indentation, extra blank lines are collapsed,
+//! and the opening and closing tags get their own lines when the text has
+//! no significant edge whitespace next to them (text glued to a sibling
+//! child stays glued); words are never joined, split or moved between lines
+//! and its text value is unchanged (`children::reindent_text`).
 
 mod children;
 mod island;
