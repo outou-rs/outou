@@ -23,6 +23,8 @@ mod response;
 mod semantic_tokens;
 mod server;
 mod status;
+#[cfg(test)]
+mod test_script;
 mod translate;
 mod uri;
 

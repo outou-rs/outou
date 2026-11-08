@@ -14,6 +14,7 @@ use super::requests::dispatch_client_request;
 use super::responses::{dispatch_client_response, dispatch_ra_message};
 use super::State;
 use crate::ra::RaClient;
+use crate::test_script::write_script;
 
 const MOCK_WAIT: Duration = Duration::from_secs(3);
 
@@ -24,16 +25,8 @@ pub(super) fn mock_ra(name: &str) -> (RaClient, PathBuf) {
     let log = dir.join("stdin.log");
     let _ = std::fs::remove_file(&log);
     let script = dir.join("mock-ra.sh");
-    std::fs::write(
-        &script,
-        format!("#!/bin/sh\nexec cat > '{}'\n", log.display()),
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
+    // Waits out an ETXTBSY from a concurrent fork before the first spawn.
+    write_script(&script, &format!("exec cat > '{}'\n", log.display()));
     (
         RaClient::spawn(script.to_str().unwrap(), &dir).unwrap(),
         log,

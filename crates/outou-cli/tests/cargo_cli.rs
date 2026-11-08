@@ -12,15 +12,16 @@
 
 #![cfg(unix)]
 
+mod script_support;
 mod support;
 
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
 use serde_json::{json, Value};
 
+use script_support::write_script;
 use support::{copy_to_temp, fixtures_dir};
 
 /// Substrings that must never reach a user (`tests/leak.rs`'s list).
@@ -54,12 +55,10 @@ impl Fixture {
         let fake_cargo = dir.join("fake-cargo.sh");
         let args_file = dir.join("fake-cargo.args");
         let stdout_file = dir.join("fake-cargo.stdout");
-        fs::write(
+        write_script(
             &fake_cargo,
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$FAKE_ARGS_FILE\"\ncat \"$FAKE_STDOUT_FILE\"\nexit \"$FAKE_EXIT\"\n",
-        )
-        .unwrap();
-        fs::set_permissions(&fake_cargo, fs::Permissions::from_mode(0o755)).unwrap();
+            "printf '%s\\n' \"$@\" > \"$FAKE_ARGS_FILE\"\ncat \"$FAKE_STDOUT_FILE\"\nexit \"$FAKE_EXIT\"\n",
+        );
         fs::write(&stdout_file, "").unwrap();
         Self {
             dir,
@@ -833,8 +832,7 @@ fn an_unknown_reason_is_not_cargos_and_passes_through() {
 fn a_cargo_killed_by_a_signal_gives_128_plus_the_signal_number() {
     let fixture = Fixture::new("cargo-cli-signal");
     let killer = fixture.dir.join("kill-cargo.sh");
-    fs::write(&killer, "#!/bin/sh\nkill -TERM $$\nsleep 5\n").unwrap();
-    fs::set_permissions(&killer, fs::Permissions::from_mode(0o755)).unwrap();
+    write_script(&killer, "kill -TERM $$\nsleep 5\n");
     let output = Command::new(env!("CARGO_BIN_EXE_outou"))
         .args(["cargo", "check"])
         .current_dir(&fixture.dir)

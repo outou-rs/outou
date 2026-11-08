@@ -5,8 +5,9 @@
 
 #![cfg(unix)]
 
+mod script_support;
+
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -41,15 +42,13 @@ impl Crate {
         fs::write(dir.join("src/main.rsx"), source).unwrap();
         let dir = dir.canonicalize().unwrap();
         let fake_cargo = dir.join("fake-cargo.sh");
-        fs::write(
+        script_support::write_script(
             &fake_cargo,
-            format!(
-                "#!/bin/sh\necho {CARGO_MARKER} >&2\ntouch \"{}/cargo-ran\"\nexit 0\n",
+            &format!(
+                "echo {CARGO_MARKER} >&2\ntouch \"{}/cargo-ran\"\nexit 0\n",
                 dir.display()
             ),
-        )
-        .unwrap();
-        fs::set_permissions(&fake_cargo, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         Self { dir, fake_cargo }
     }
 
