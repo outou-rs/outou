@@ -1,0 +1,2 @@
+error: unexpected `class="x"` inside closing tag `</div>`; a closing tag holds only the tag name
+ --> closing-tag-extra-attribute.rsx:5:17

@@ -1,0 +1,2 @@
+error: unexpected `foo bar` inside closing tag `</span>`; a closing tag holds only the tag name
+ --> closing-tag-extra-names.rsx:6:23

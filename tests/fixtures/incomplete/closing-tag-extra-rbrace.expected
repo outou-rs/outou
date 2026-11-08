@@ -1,0 +1,4 @@
+error: unexpected `}` inside closing tag, expected `>`
+ --> closing-tag-extra-rbrace.rsx:6:1
+error: missing closing tag `</div>`
+ --> closing-tag-extra-rbrace.rsx:5:5

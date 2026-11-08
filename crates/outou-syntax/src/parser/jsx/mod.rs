@@ -195,6 +195,7 @@ impl<'s> Parser<'s> {
     fn recover_stray_close(&mut self, lt: usize) -> (ast::JsxElement, usize) {
         let (shape, end) = self.scan_closing_tag_shape(lt);
         self.diagnose_truncated_closing_tag(lt, &shape, end);
+        self.diagnose_closing_tag_extras(&shape);
         let name = shape.name_text(self.source).unwrap_or_default();
         self.push_diag(
             Span::new(lt as u32, lt as u32 + 1),

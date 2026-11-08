@@ -1,0 +1,4 @@
+error: unexpected end of file inside closing tag, expected `>`
+ --> closing-tag-extra-eof-no-gt.rsx:5:11
+error: missing closing tag `</div>`
+ --> closing-tag-extra-eof-no-gt.rsx:5:5

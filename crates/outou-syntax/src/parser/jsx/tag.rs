@@ -243,6 +243,7 @@ impl<'s> Parser<'s> {
                 super::closing::ClosingTagShape::Named {
                     name_start,
                     name_end,
+                    ..
                 },
                 _,
             ) = self.scan_closing_tag_shape(pos)

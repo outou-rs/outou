@@ -1,0 +1,4 @@
+error: missing closing tag `</span>`
+ --> closing-tag-extra-ancestor.rsx:6:9
+error: unexpected `class` inside closing tag `</div>`; a closing tag holds only the tag name
+ --> closing-tag-extra-ancestor.rsx:7:11

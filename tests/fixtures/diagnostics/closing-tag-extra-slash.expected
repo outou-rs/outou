@@ -1,0 +1,4 @@
+error: unexpected `/` inside closing tag `</p>`; a closing tag holds only the tag name
+ --> closing-tag-extra-slash.rsx:6:17
+error: unexpected `/` inside closing tag `</div>`; a closing tag holds only the tag name
+ --> closing-tag-extra-slash.rsx:7:10

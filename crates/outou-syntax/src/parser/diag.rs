@@ -51,6 +51,25 @@ pub fn stray_closing_tag(name: &str) -> String {
     format!("closing tag `</{name}>` has no matching opening tag")
 }
 
+/// Longest run of the offending tokens quoted in
+/// [`extra_inside_closing_tag`] before it is cut with `…`.
+const MAX_QUOTED_EXTRA_CHARS: usize = 40;
+
+/// ``unexpected `{extra}` inside closing tag `</{name}>`; a closing tag holds only the tag name``:
+/// attributes, expressions or stray punctuation after the name of a closing
+/// tag (`</div class>`, `</div/>`). `extra` is quoted from the source, cut at
+/// the first line break and at [`MAX_QUOTED_EXTRA_CHARS`] characters.
+pub fn extra_inside_closing_tag(extra: &str, name: &str) -> String {
+    let first_line = extra.lines().next().unwrap_or(extra);
+    let mut quoted: String = first_line.chars().take(MAX_QUOTED_EXTRA_CHARS).collect();
+    if quoted.len() < extra.len() {
+        quoted.push('…');
+    }
+    format!(
+        "unexpected `{quoted}` inside closing tag `</{name}>`; a closing tag holds only the tag name"
+    )
+}
+
 /// `unexpected end of file inside closing tag, expected `>``
 pub fn eof_inside_closing_tag() -> String {
     "unexpected end of file inside closing tag, expected `>`".to_string()

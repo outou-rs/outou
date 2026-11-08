@@ -1,0 +1,2 @@
+error: unexpected `class` inside closing tag `</span>`; a closing tag holds only the tag name
+ --> closing-tag-extra-name.rsx:6:23

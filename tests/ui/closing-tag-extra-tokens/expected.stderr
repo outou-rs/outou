@@ -1,0 +1,2 @@
+error: unexpected `class="x"` inside closing tag `</span>`; a closing tag holds only the tag name
+ --> $DIR/input.rsx:6:23

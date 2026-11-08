@@ -28,9 +28,15 @@ pub(super) enum ClosingTagShape {
     InterruptedByRbrace {
         name: Option<(usize, usize)>,
     },
+    /// A complete `</Name>`. `extras` are the byte ranges of any tokens
+    /// other than the first name before the `>` (`</div class>`,
+    /// `</div/>`), one range for each run of them on either side of the
+    /// name; the tag still closes by its first name and the extras are
+    /// diagnosed.
     Named {
         name_start: usize,
         name_end: usize,
+        extras: Vec<(usize, usize)>,
     },
 }
 
@@ -42,6 +48,7 @@ impl ClosingTagShape {
             ClosingTagShape::Named {
                 name_start,
                 name_end,
+                ..
             } => (*name_start, *name_end),
             ClosingTagShape::Eof { name }
             | ClosingTagShape::InterruptedByLt { name, .. }
@@ -103,6 +110,7 @@ impl<'s> Parser<'s> {
             ClosingTagShape::Named {
                 name_start,
                 name_end,
+                ..
             } => {
                 let found = self.source[name_start..name_end].to_string();
                 let found_ident = ast::Ident {
@@ -115,6 +123,9 @@ impl<'s> Parser<'s> {
                     .map(|(n, _)| n.clone())
                     .unwrap_or_default();
                 let match_index = self.open_names.iter().rposition(|(n, _)| *n == found);
+                if !matches!(match_index, Some(idx) if idx + 1 != self.open_names.len()) {
+                    self.diagnose_closing_tag_extras(&shape);
+                }
                 match match_index {
                     Some(idx) if idx + 1 == self.open_names.len() => {
                         let span = Span::new(at as u32, shape_end as u32);
@@ -135,6 +146,10 @@ impl<'s> Parser<'s> {
                         }
                     }
                     Some(_) => {
+                        // The closing tag is scanned again by the frame it
+                        // closes (here, or in `recover_stray_close` across
+                        // an island boundary), which reports its extra
+                        // tokens.
                         // Grammar §9's span convention: "missing" is
                         // reported at the opening of the unterminated
                         // construct, not at the closing tag that revealed
@@ -197,6 +212,46 @@ impl<'s> Parser<'s> {
         }
     }
 
+    /// Reports extra tokens in an otherwise complete `</Name ...>`
+    /// (`</div class>`, `</div/>`) at the tokens themselves; a no-op for
+    /// every other shape. Called once per closing tag: not for a tag that
+    /// closes an ancestor, which the enclosing frame scans again.
+    pub(super) fn diagnose_closing_tag_extras(&mut self, shape: &ClosingTagShape) {
+        let ClosingTagShape::Named {
+            name_end, extras, ..
+        } = shape
+        else {
+            return;
+        };
+        let Some(&(first_start, first_end)) = extras.first() else {
+            return;
+        };
+        // `</Foo.Bar>` and `</svg:rect>` are the reserved dotted and
+        // namespaced names (grammar §10), diagnosed as the opening tag is.
+        // That diagnostic takes precedence over any further extra tokens.
+        if first_start == *name_end {
+            let reserved = match self.bytes[first_start] {
+                b'.' => Some(diag::dotted_tag_name_not_supported()),
+                b':' => Some(diag::namespaced_name_not_supported()),
+                _ => None,
+            };
+            if let Some(message) = reserved {
+                self.push_diag_at(pos_span(first_start), message);
+                return;
+            }
+        }
+        let name = shape.name_text(self.source).unwrap_or_default();
+        let quoted = extras
+            .iter()
+            .map(|&(start, end)| &self.source[start..end])
+            .collect::<Vec<_>>()
+            .join(" ");
+        self.push_diag_at(
+            Span::new(first_start as u32, first_end as u32),
+            diag::extra_inside_closing_tag(&quoted, &name),
+        );
+    }
+
     /// Scans the shape of a `</...` construct starting at `at` (the `<`),
     /// without consulting the open-name stack. Shared by real closing
     /// tags and by the top-level "stray close" recovery.
@@ -206,52 +261,58 @@ impl<'s> Parser<'s> {
         let slash = closing_slash_after_lt(self.bytes, at).unwrap_or(at + 1);
         let mut pos = slash + 1; // trivia before the name is skipped below
         let mut name: Option<(usize, usize)> = None;
+        // Everything between `</` and `>` that is not the first name.
+        let mut extras: Vec<(usize, usize)> = Vec::new();
+        // Whether the name was found after the last extra token, which
+        // starts a new range (`</=div class>` has two).
+        let mut name_after_extra = false;
         loop {
-            pos = skip_trivia(self.bytes, pos);
-            match self.bytes.get(pos).copied() {
+            // Trivia is accepted before the name only: a comment inside a
+            // tag head is `TODO(alpha) (#31)` (docs/grammar.md §9).
+            pos = if name.is_none() && extras.is_empty() {
+                skip_trivia(self.bytes, pos)
+            } else {
+                skip_ws(self.bytes, pos)
+            };
+            let (name_start, name_end) = match self.bytes.get(pos).copied() {
                 None => return (ClosingTagShape::Eof { name }, pos),
                 Some(b'<') => return (ClosingTagShape::InterruptedByLt { lt: pos, name }, pos),
                 Some(b'}') => return (ClosingTagShape::InterruptedByRbrace { name }, pos),
                 Some(b'>') => {
-                    // No name was ever found; treat as an empty name.
+                    // `</>` has no name: the empty name.
+                    let (name_start, name_end) = name.unwrap_or((pos, pos));
                     return (
                         ClosingTagShape::Named {
-                            name_start: pos,
-                            name_end: pos,
+                            name_start,
+                            name_end,
+                            extras,
                         },
                         pos + 1,
                     );
                 }
                 Some(c) if is_jsx_name_byte(c) => {
-                    let name_start = pos;
-                    let name_end = scan_jsx_name(self.bytes, pos);
-                    // Keep the first name: `</div class` reports `div`.
-                    name.get_or_insert((name_start, name_end));
-                    // Only whitespace after the name: a comment inside a tag
-                    // head is `TODO(alpha) (#31)` (docs/grammar.md §9).
-                    pos = skip_ws(self.bytes, name_end);
-                    match self.bytes.get(pos).copied() {
-                        Some(b'>') => {
-                            return (
-                                ClosingTagShape::Named {
-                                    name_start,
-                                    name_end,
-                                },
-                                pos + 1,
-                            )
-                        }
-                        Some(b'<') => {
-                            return (ClosingTagShape::InterruptedByLt { lt: pos, name }, pos)
-                        }
-                        Some(b'}') => return (ClosingTagShape::InterruptedByRbrace { name }, pos),
-                        None => return (ClosingTagShape::Eof { name }, pos),
-                        Some(_) => {
-                            pos += 1; // best-effort: skip stray bytes and keep looking for `>`
-                        }
-                    }
+                    let end = scan_jsx_name(self.bytes, pos);
+                    (pos, end)
                 }
-                Some(_) => pos += 1,
+                Some(_) => {
+                    // A stray token; skip one character, keep looking for `>`.
+                    let width = self.source[pos..].chars().next().map_or(1, char::len_utf8);
+                    (pos, pos + width)
+                }
+            };
+            let is_name = is_jsx_name_byte(self.bytes[name_start]);
+            if is_name && name.is_none() {
+                // Keep the first name: `</div class` reports `div`.
+                name = Some((name_start, name_end));
+                name_after_extra = true;
+            } else {
+                match extras.last_mut() {
+                    Some(last) if !name_after_extra => last.1 = name_end,
+                    _ => extras.push((name_start, name_end)),
+                }
+                name_after_extra = false;
             }
+            pos = name_end;
         }
     }
 }

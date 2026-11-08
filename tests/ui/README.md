@@ -39,6 +39,6 @@ Always inspect a blessed diff before committing it — a `BLESS=1` run cannot te
 
 ## Provenance
 
-`mismatched-closing-tag/` and `unterminated-attribute-value/` are copies of `tests/fixtures/{diagnostics,incomplete}/*.rsx` fixtures of the same shape (the originals stay where they are — they belong to the parser's own fixture suite, `crates/outou-syntax/tests/fixtures.rs`, and are not removed). `fragment-closing-tag-mismatch/`, `keyed-fragment-attempt/`, the `semantic-*` case and every `backend-*` case are new to this directory.
+`mismatched-closing-tag/` and `unterminated-attribute-value/` are copies of `tests/fixtures/{diagnostics,incomplete}/*.rsx` fixtures of the same shape (the originals stay where they are — they belong to the parser's own fixture suite, `crates/outou-syntax/tests/fixtures.rs`, and are not removed). `fragment-closing-tag-mismatch/`, `keyed-fragment-attempt/`, `closing-tag-extra-tokens/`, the `semantic-*` case and every `backend-*` case are new to this directory.
 
 See `docs/backend-leakage.md` and `docs/phase0/issues/11-diagnostics-ui-tests.md` for which ledger rows each `backend-*` case exercises, and for the rows that describe a diagnostic but have no case here (with the reason why).

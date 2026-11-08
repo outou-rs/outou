@@ -1,0 +1,2 @@
+error: unexpected `/` inside closing tag `</>`; a closing tag holds only the tag name
+ --> fragment-closing-tag-extra.rsx:7:8
