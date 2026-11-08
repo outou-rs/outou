@@ -1,0 +1,2 @@
+error: closing tag `</div>` does not match opening tag `<>`
+ --> fragment-closing-tag-mismatch.rsx:7:5

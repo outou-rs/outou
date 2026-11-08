@@ -661,10 +661,10 @@ mod tests {
 
     #[test]
     fn recovery_mode_replaces_a_name_less_element_with_the_placeholder() {
-        // A fragment (`<>`) never recovers a tag name at all (grammar §10),
-        // unlike e.g. `<div cl` which still knows its name is `div` and
-        // lowers as an ordinary (if attribute-less) element.
-        let source = "fn App() -> Element {\n    <>\n}\n";
+        // A stray closing tag never recovers a tag name at all, unlike e.g.
+        // `<div cl` which still knows its name is `div` and lowers as an
+        // ordinary (if attribute-less) element.
+        let source = "fn App() -> Element {\n    </div>\n}\n";
         let generated = generate(source, Mode::Recovery).expect("recovery generation succeeds");
         assert!(generated
             .rust

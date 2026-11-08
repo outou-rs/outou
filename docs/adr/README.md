@@ -18,3 +18,4 @@ One file per decision. Each record has the sections Context, Decision, Consequen
 | [0012](0012-semantic-tokens-legend-and-overlay.md) | Semantic tokens: legend reuse and overlay precedence | Accepted |
 | [0013](0013-rename-translation-and-refusal.md) | Rename/references translation and the refusal policy | Accepted |
 | [0014](0014-dioxus-continues-as-backend-not-as-specification.md) | Dioxus continues as the current backend, but is not the specification | Accepted |
+| [0015](0015-fragments.md) | Fragments: `<>…</>` is real syntax (amends 0004) | Accepted |

@@ -1,0 +1,4 @@
+error: unexpected `=` after the tag name `key`: a fragment `<>` takes no attributes, so it has no `key`; put the `key` on an element
+ --> $DIR/input.rsx:5:9
+error: closing tag `</>` does not match opening tag `<key>`
+ --> $DIR/input.rsx:7:5

@@ -229,8 +229,10 @@ fn text_with_a_later_greater_than_reads_as_a_tag_as_in_react() {
 }
 
 #[test]
-fn a_spaced_fragment_is_still_diagnosed_as_a_fragment() {
-    assert_eq!(errors("<div>< ></div>"), ["fragments are not supported"]);
+fn a_spaced_fragment_is_a_fragment() {
+    assert!(errors("<div>< >x</ ></div>").is_empty());
+    assert!(errors("<div><\n></></div>").is_empty());
+    assert_eq!(errors("<div>< ></div>"), ["missing closing tag `</>`"]);
 }
 
 #[test]
@@ -278,4 +280,13 @@ fn a_spaced_lt_before_a_slash_that_is_not_a_complete_closing_tag_is_text() {
         shape("<div><p>x</p><i>ok< /i></div>"),
         "div(p(\"x\"),i(\"ok\"))"
     );
+}
+
+#[test]
+fn a_spaced_slash_gt_in_text_is_a_literal_lt_but_fragment_closes_still_close() {
+    // `< />` has trivia between `<` and `/`, and no name: prose, not a close.
+    assert_eq!(errors("<div>a < /> b</div>"), [LT_MESSAGE]);
+    // `</>` and `</ >` keep closing a fragment.
+    assert!(errors("<div><>a</></div>").is_empty());
+    assert!(errors("<div><>a</ ></div>").is_empty());
 }

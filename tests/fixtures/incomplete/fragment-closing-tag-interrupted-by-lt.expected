@@ -1,4 +1,2 @@
-error: fragments are not supported
- --> fragment-closing-tag-interrupted-by-lt.rsx:5:5
 error: unexpected `<` inside closing tag, expected `>`
  --> fragment-closing-tag-interrupted-by-lt.rsx:5:13

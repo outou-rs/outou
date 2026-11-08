@@ -6,6 +6,7 @@
   "patterns": [
     { "include": "#jsx-comment" },
     { "include": "#jsx-element" },
+    { "include": "#jsx-fragment" },
     { "include": "source.rust" }
   ],
   "repository": {
@@ -42,6 +43,28 @@
         { "include": "#jsx-children-island" },
         { "include": "#jsx-comment" },
         { "include": "#jsx-element" },
+        { "include": "#jsx-fragment" },
+        { "include": "#jsx-text" }
+      ]
+    },
+    "jsx-fragment": {
+      "comment": "A fragment, `<>` through `</>` (ADR 0015). It takes no attributes and has no name, so the begin is the bare `<` `>` pair, optionally with whitespace between (`< >`), under the same lookbehind as #jsx-element: Rust's empty generics `Vec<>`, `foo::<>()`, `impl<>` and `fn g<>()` all have a word character, `:` or `>` right before the `<` and never start a fragment. The children are those of an element.",
+      "begin": "(?<![A-Za-z0-9_>\\)\\]:.])(<)\\s*(>)",
+      "beginCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.outou-rsx" },
+        "2": { "name": "punctuation.definition.tag.end.outou-rsx" }
+      },
+      "end": "(?:(</)\\s*(>))|(?=^\\s*(?:\\}|fn\\s|pub\\s|impl\\s|struct\\s|enum\\s|trait\\s|mod\\s|use\\s|#\\[))",
+      "endCaptures": {
+        "1": { "name": "punctuation.definition.tag.begin.outou-rsx" },
+        "2": { "name": "punctuation.definition.tag.end.outou-rsx" }
+      },
+      "name": "meta.tag.fragment.outou-rsx",
+      "patterns": [
+        { "include": "#jsx-children-island" },
+        { "include": "#jsx-comment" },
+        { "include": "#jsx-element" },
+        { "include": "#jsx-fragment" },
         { "include": "#jsx-text" }
       ]
     },
@@ -123,6 +146,7 @@
       "patterns": [
         { "include": "#jsx-comment" },
         { "include": "#jsx-element" },
+        { "include": "#jsx-fragment" },
         { "include": "source.rust" }
       ]
     },

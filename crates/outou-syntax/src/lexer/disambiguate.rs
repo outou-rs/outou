@@ -33,7 +33,7 @@ pub enum Classification {
     /// a qualified path. The parser should treat it as ordinary Rust and
     /// keep scanning.
     Rust,
-    /// `<>`: a fragment. Reserved in Phase 0 (grammar §10).
+    /// `<>`: a fragment (grammar §5, ADR 0015).
     Fragment {
         /// Position of the `<`.
         lt: usize,

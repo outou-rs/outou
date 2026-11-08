@@ -383,6 +383,21 @@ fn is_intrinsic_tag_rename(
         .is_some_and(|name| name.chars().next().is_some_and(|c| !c.is_ascii_uppercase()))
 }
 
+/// Why a rename at `position` is refused locally, in Outou vocabulary, or
+/// `None` when it is forwarded: an intrinsic HTML element name, or the `<>`
+/// or `</>` of a fragment, which has no name at all (ADR 0015).
+fn rename_refusal(
+    workspace: &Workspace,
+    rsx_uri_string: &str,
+    position: lsp_types::Position,
+) -> Option<&'static str> {
+    if is_intrinsic_tag_rename(workspace, rsx_uri_string, position) {
+        return Some("Outou cannot rename an HTML element name; only components can be renamed");
+    }
+    complete::is_fragment_tag_position(workspace, rsx_uri_string, position)
+        .then_some("Outou cannot rename a fragment; `<>` and `</>` have no name")
+}
+
 /// `textDocument/prepareRename` on an intrinsic tag name answers `null`
 /// (not renameable) locally, never forwarded — see
 /// [`is_intrinsic_tag_rename`]. Every other position forwards as usual.
@@ -390,7 +405,7 @@ fn dispatch_prepare_rename_request(state: &mut State, connection: &Connection, r
     if let Some(workspace) = &state.workspace {
         if let Some((rsx_uri, position)) = extract_position_params(&req.params) {
             let rsx_uri_string = uri::to_outou(&rsx_uri).as_str().to_string();
-            if is_intrinsic_tag_rename(workspace, &rsx_uri_string, position) {
+            if rename_refusal(workspace, &rsx_uri_string, position).is_some() {
                 respond_null(connection, req.id);
                 return;
             }
@@ -411,14 +426,12 @@ fn dispatch_rename_request(state: &mut State, connection: &Connection, req: Requ
     if let Some(workspace) = &state.workspace {
         if let Some((rsx_uri, position)) = extract_position_params(&req.params) {
             let rsx_uri_string = uri::to_outou(&rsx_uri).as_str().to_string();
-            if is_intrinsic_tag_rename(workspace, &rsx_uri_string, position) {
+            if let Some(message) = rename_refusal(workspace, &rsx_uri_string, position) {
                 let _ = connection.sender.send(Message::Response(Response {
                     id: req.id,
                     response_result: Err(ResponseError {
                         code: lsp_server::ErrorCode::InvalidRequest as i32,
-                        message: "Outou cannot rename an HTML element name; only components can \
-                                  be renamed"
-                            .to_string(),
+                        message: message.to_string(),
                         data: None,
                     }),
                 }));

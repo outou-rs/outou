@@ -67,8 +67,17 @@ fn lower_element_body(
         return;
     }
 
-    let JsxTag::Named { name, .. } = &element.open else {
-        unreachable!("is_broken already handled the only other JsxTag variant");
+    let name = match &element.open {
+        JsxTag::Named { name, .. } => name,
+        // A fragment is no node: its children are the parent's (ADR 0015).
+        // Only the root of an `rsx!` call reaches this arm; a fragment in
+        // child position is flattened by `lower_children`.
+        JsxTag::Fragment { .. } => {
+            // The call's prefix already ends in a space.
+            lower_children(writer, source, &element.children, &mut false, bindings, cx);
+            return;
+        }
+        JsxTag::Incomplete(_) => unreachable!("is_broken already handled this variant"),
     };
     let mut sources = vec![name.span];
     if let Some(JsxTag::Named {
@@ -90,6 +99,11 @@ fn lower_element_body(
         if matches!(attribute.value, Some(JsxAttributeValue::Error(_))) {
             continue;
         }
+        // A key on a later root of a fragment (warned about by the front
+        // end) is bound but not passed on.
+        if bindings.is_ignored_key(attribute) {
+            continue;
+        }
         writer.raw(" ");
         lower_attribute(writer, source, attribute, bindings, cx);
         writer.raw(",");
@@ -100,12 +114,39 @@ fn lower_element_body(
         writer.raw(&format!(" {text},"));
     }
 
-    for child in &element.children {
-        writer.raw(" ");
-        lower_child(writer, source, child, bindings, cx);
-    }
+    lower_children(writer, source, &element.children, &mut true, bindings, cx);
 
     writer.raw(" }");
+}
+
+/// Lowers a child list. A fragment child (`<>…</>`) emits no node of its
+/// own: its children are spliced into this list, at any depth, so
+/// `<ul><><li/><li/></></ul>` is `ul { li {}, li {} }` and an empty
+/// fragment emits nothing at all (grammar §5, ADR 0015). Each child is
+/// preceded by a space, except the first when `space_first` is false (the
+/// root list of a call, whose prefix ends in one).
+fn lower_children(
+    writer: &mut Writer,
+    source: &str,
+    children: &[JsxChild],
+    space_first: &mut bool,
+    bindings: &CallBindings,
+    cx: Cx<'_>,
+) {
+    for child in children {
+        match child {
+            JsxChild::Element(nested) if matches!(nested.open, JsxTag::Fragment { .. }) => {
+                lower_children(writer, source, &nested.children, space_first, bindings, cx);
+            }
+            _ => {
+                if *space_first {
+                    writer.raw(" ");
+                }
+                *space_first = true;
+                lower_child(writer, source, child, bindings, cx);
+            }
+        }
+    }
 }
 
 /// The recovery placeholder in child position. A bare path call there is not

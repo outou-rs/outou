@@ -57,6 +57,13 @@ fn cases() -> Vec<Case> {
                 .join("tests/golden/selects/input.rsx"),
             module_paths: vec![],
         },
+        // ADR 0015: every shape of a fragment.
+        Case {
+            name: "fragments".to_string(),
+            source_path: PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("tests/golden/fragments/input.rsx"),
+            module_paths: vec![],
+        },
     ];
 
     let formatting_dir = root.join("tests/fixtures/formatting");

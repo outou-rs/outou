@@ -190,6 +190,53 @@ fn row_fragment_is_jsx() {
 }
 
 #[test]
+fn empty_generics_are_rust_not_a_fragment() {
+    for body in [
+        "let v: Vec<> = x;",
+        "foo::<>();",
+        "let v = Vec::<>::new();",
+        "fn g<>() {}",
+        "let z = y as Vec<>;",
+        "let p: PhantomData<> = q;",
+        "fn h() -> Vec<> { x }",
+    ] {
+        assert_row(body, body, false);
+    }
+    // Item level: `impl<>` and a `-> Vec<>` signature.
+    for item in ["impl<> T for X {}", "fn g<>() {}", "fn h() -> Vec<> { x }"] {
+        let source = format!("{item}\n");
+        let parsed = outou_syntax::parse(&source);
+        assert!(!contains_jsx_in_file(&parsed.file), "{item}");
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "{item}: {:?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+#[test]
+fn fragments_are_jsx_wherever_an_expression_starts() {
+    for body in [
+        "return <>a</>;",
+        "let f = || <></>;",
+        "let e = (<>a</>);",
+        "let m = xs.map(|a| <>{a}</>);",
+        "let c = if t { <>a</> } else { <></> };",
+        "match m { _ => <>a</> };",
+    ] {
+        assert_row(body, body, true);
+        let source = format!("fn f() {{\n    {body}\n}}\n");
+        let parsed = outou_syntax::parse(&source);
+        assert!(
+            parsed.diagnostics.is_empty(),
+            "{body}: {:?}",
+            parsed.diagnostics
+        );
+    }
+}
+
+#[test]
 fn row_stray_closing_tag_is_jsx() {
     assert_row("</div> with nothing open", "</div>;", true);
 }
@@ -363,6 +410,7 @@ fn find_jsx_element(file: &ast::File) -> Option<&ast::JsxElement> {
 fn tag_name(element: &ast::JsxElement) -> &str {
     match &element.open {
         ast::JsxTag::Named { name, .. } => &name.name,
+        ast::JsxTag::Fragment { .. } => "<>",
         ast::JsxTag::Incomplete(tag) => tag.name.as_ref().map(|n| n.name.as_str()).unwrap_or(""),
     }
 }

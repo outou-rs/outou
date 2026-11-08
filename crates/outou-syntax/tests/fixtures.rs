@@ -124,6 +124,7 @@ fn render_children(children: &[ast::JsxChild], source: &str, depth: usize, out: 
 fn element_name(element: &ast::JsxElement) -> String {
     match &element.open {
         ast::JsxTag::Named { name, .. } => name.name.clone(),
+        ast::JsxTag::Fragment { .. } => "<>".to_string(),
         ast::JsxTag::Incomplete(tag) => tag
             .name
             .as_ref()

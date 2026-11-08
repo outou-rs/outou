@@ -15,6 +15,7 @@ Phase 0: droppable item, issue #13 (`docs/phase0/issues/13-formatter.md`), taken
 - Formatting is deterministic and idempotent: `format_source(format_source(x)?)? == format_source(x)?`.
 - A JSX text child and an attribute's string value are always copied byte-for-byte from the source — never reflowed, never re-escaped.
 - A JSX element whose tag has a comment between `<` and the name, or between `</` and the name (`< /* c */ span/>`), is kept as written (the printer cannot rebuild the tag without losing the comment). It keeps its original interior indentation and line breaks, like the other verbatim regions: it is not re-indented to the surrounding code.
+- A fragment is printed as `<>`, its children as for an element, and `</>`; one with a single child, or none, is kept (ADR 0015). A fragment tag whose trivia holds a comment (`< /* c */ >`) keeps the element as written, like a comment between `<` and a tag name.
 - A JSX children region containing something the AST does not model (an empty island, i.e. a comment) is left byte-for-byte untouched rather than risking data loss.
 - An expression island containing a multi-line string/raw-string literal, a multi-line block comment, or multi-line JSX text *anywhere in its subtree* (including inside a nested element's attributes or children) is left byte-for-byte untouched, braces included, rather than formatted at all — this crate's line-based reindentation cannot safely touch a token whose own content spans more than one physical line (`multiline_guard.rs`).
 

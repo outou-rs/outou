@@ -136,61 +136,55 @@ impl<'s> Parser<'s> {
     ) -> (ast::JsxElement, usize) {
         match classification {
             Classification::Rust => unreachable!("caller only calls this for a JSX classification"),
-            Classification::Fragment { lt } => self.recover_top_level_fragment(lt),
+            Classification::Fragment { lt } => self.parse_fragment(lt),
             Classification::StrayClose { lt } => self.recover_stray_close(lt),
             Classification::Named(tag) => self.parse_named_element(lt_pos, tag),
         }
     }
 
-    /// `<>` at expression level: [`Self::recover_fragment`], plus the
-    /// truncated `</` that may directly follow it.
-    ///
-    /// After a recovered fragment the caller resumes with an operand just
-    /// finished, so a following `<` reads as a less-than operator and
-    /// `</` would be spliced into the Rust output verbatim as invalid
-    /// Rust. A closing tag cut short right after the fragment (nothing but
-    /// whitespace and comments between) is therefore consumed here with
-    /// the same per-shape diagnostics a real closing tag gets. A complete
-    /// `</...>` is left alone: it is not a truncation, and a fragment's
-    /// body and close are not scanned (reserved syntax, grammar §10).
-    //
-    // `TODO(alpha) (#31)`: two fragment shapes are still not recovered
-    // (found while fixing #18). (1) A
-    // complete `</Name>` after a top-level `<>` is left to the caller and
-    // reaches Recovery output as a `<` operator followed by invalid Rust.
-    // (2) A fragment *body* before a truncated `</` (`<>\n<p/>\n</`) is
-    // never scanned, so the `</` is not found by the look-ahead above.
-    // Fixing them needs the fragment's body and matching `</>` scanned the
-    // way a real element's children are; reserved syntax (grammar §10) did
-    // not justify that in the alpha's recovery issue (#18).
-    fn recover_top_level_fragment(&mut self, lt: usize) -> (ast::JsxElement, usize) {
-        let (element, end) = self.recover_fragment(lt);
-        let close_at = next_significant(self.bytes, end).start;
-        if !self.bytes[close_at..].starts_with(b"</") {
-            return (element, end);
+    /// `<>` (ADR 0015): a fragment, `lt` the position of its `<`. The `>`
+    /// is the next significant byte (trivia may sit between: `< >`). The
+    /// children are parsed like any element's, against an open-tag entry
+    /// whose name is empty, which is what `</>` scans as, so the closing
+    /// rules of grammar §2.1 apply unchanged and the mismatch diagnostics
+    /// read ``closing tag `</div>` does not match opening tag `<>` ``.
+    /// The same entry point serves expression level and child position, and
+    /// counts against the nesting cap like a named element.
+    fn parse_fragment(&mut self, lt: usize) -> (ast::JsxElement, usize) {
+        if self.jsx_depth >= diag::MAX_NESTING {
+            return self.recover_too_deeply_nested_element(lt);
         }
-        let (shape, shape_end) = self.scan_closing_tag_shape(close_at);
-        if matches!(shape, closing::ClosingTagShape::Named { .. }) {
-            return (element, end);
-        }
-        self.diagnose_truncated_closing_tag(close_at, &shape, shape_end);
-        let end = self.absorb_element_after_interrupted_close(&shape, shape_end);
-        (incomplete_element(lt, end, "a tag name"), end)
+        self.jsx_depth += 1;
+        let result = self.parse_fragment_at_depth(lt);
+        self.jsx_depth -= 1;
+        result
     }
 
-    /// `<>`: reserved in Phase 0 (grammar §10). Recovery: consume just the
-    /// two characters and report a placeholder element. The fragment's
-    /// body is never scanned; the one thing that follows it that cannot be
-    /// left to the caller, a truncated `</`, is handled by
-    /// [`Self::recover_top_level_fragment`].
-    fn recover_fragment(&mut self, lt: usize) -> (ast::JsxElement, usize) {
-        let gt = next_significant(self.bytes, lt + 1);
-        self.push_diag(
-            Span::new(lt as u32, lt as u32 + 1),
-            diag::fragments_not_supported(),
-        );
-        let end = if gt.start == gt.end { lt + 1 } else { gt.end };
-        (incomplete_element(lt, end, "a tag name"), end)
+    fn parse_fragment_at_depth(&mut self, lt: usize) -> (ast::JsxElement, usize) {
+        let gt = next_significant(self.bytes, lt + 1).start;
+        debug_assert_eq!(self.bytes.get(gt), Some(&b'>'));
+        let tag_end = gt + 1;
+        self.open_names
+            .push((String::new(), Span::new(lt as u32, lt as u32 + 1)));
+        let (children, close, end_pos, outcome) = self.parse_jsx_children("", tag_end);
+        self.open_names.pop();
+        if outcome == ChildrenOutcome::Terminated {
+            self.push_diag(
+                Span::new(lt as u32, lt as u32 + 1),
+                diag::missing_closing_tag(""),
+            );
+        }
+        let element = ast::JsxElement {
+            span: Span::new(lt as u32, end_pos as u32),
+            open: ast::JsxTag::Fragment {
+                span: Span::new(lt as u32, tag_end as u32),
+            },
+            attributes: Vec::new(),
+            children,
+            close,
+            errors: Vec::new(),
+        };
+        (element, end_pos)
     }
 
     /// `</Name>` where nothing is open (grammar §4.1, §9). A closing tag
@@ -271,7 +265,7 @@ impl<'s> Parser<'s> {
     /// whole element-nesting call chain.
     fn parse_named_element(&mut self, lt_pos: usize, tag: NamedTag) -> (ast::JsxElement, usize) {
         if self.jsx_depth >= diag::MAX_NESTING {
-            return self.recover_too_deeply_nested_element(lt_pos, tag);
+            return self.recover_too_deeply_nested_element(lt_pos);
         }
         self.jsx_depth += 1;
         let result = self.parse_named_element_at_depth(lt_pos, tag);
@@ -287,11 +281,7 @@ impl<'s> Parser<'s> {
     /// the terminator (grammar §2.2 already treats end of input as a valid
     /// JSX terminator). The enclosing elements each still get their own
     /// "missing closing tag" diagnostic as the call stack unwinds normally.
-    fn recover_too_deeply_nested_element(
-        &mut self,
-        lt_pos: usize,
-        _tag: NamedTag,
-    ) -> (ast::JsxElement, usize) {
+    fn recover_too_deeply_nested_element(&mut self, lt_pos: usize) -> (ast::JsxElement, usize) {
         self.push_diag(
             Span::new(lt_pos as u32, lt_pos as u32 + 1),
             diag::jsx_nested_too_deeply(),
@@ -308,7 +298,19 @@ impl<'s> Parser<'s> {
     }
 }
 
+/// Whether `element` ended right before a `<` that it did not consume, because
+/// its opening tag never reached `>` (`<div` then `<p/>`), or because its
+/// closing tag was cut short by that `<` (`</div <p/>`).
 fn is_terminated_at_lt(element: &ast::JsxElement, pos: usize, bytes: &[u8]) -> bool {
+    if bytes.get(pos) != Some(&b'<') {
+        return false;
+    }
     let no_gt = matches!(&element.open, ast::JsxTag::Named { span, name } if *span == name.span);
-    no_gt && element.close.is_none() && bytes.get(pos) == Some(&b'<')
+    let open_cut_short = no_gt && element.close.is_none();
+    let close_cut_short = matches!(
+        &element.close,
+        Some(ast::JsxTag::Incomplete(tag))
+            if tag.span.end as usize == pos && tag.is_interrupted_by_lt()
+    );
+    open_cut_short || close_cut_short
 }

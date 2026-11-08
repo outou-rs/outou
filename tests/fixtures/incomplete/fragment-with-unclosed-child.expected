@@ -1,0 +1,2 @@
+error: missing closing tag `</div>`
+ --> fragment-with-unclosed-child.rsx:6:9

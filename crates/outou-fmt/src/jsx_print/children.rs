@@ -64,14 +64,14 @@ fn is_whitespace_gap(source: &str, start: u32, end: u32) -> bool {
 
 fn open_tag_end(element: &ast::JsxElement) -> Option<u32> {
     match &element.open {
-        ast::JsxTag::Named { span, .. } => Some(span.end),
+        ast::JsxTag::Named { span, .. } | ast::JsxTag::Fragment { span } => Some(span.end),
         ast::JsxTag::Incomplete(_) => None,
     }
 }
 
 fn close_tag_start(element: &ast::JsxElement) -> Option<u32> {
     match &element.close {
-        Some(ast::JsxTag::Named { span, .. }) => Some(span.start),
+        Some(ast::JsxTag::Named { span, .. } | ast::JsxTag::Fragment { span }) => Some(span.start),
         _ => None,
     }
 }

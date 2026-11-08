@@ -127,6 +127,14 @@ enum Cursor {
         /// End of the attribute name, to check an `=` precedes the cursor.
         name_end: u32,
     },
+    /// On the punctuation of a fragment, `<>` or `</>` (ADR 0015). There is
+    /// no name to complete, and the generated Rust has nothing meaningful at
+    /// this position (the fragment adds no node), so hover and rename are
+    /// answered locally and completion falls through as before.
+    FragmentTag,
+    /// Right after a typed `</` inside a fragment, where the only closing
+    /// tag that fits is `</>`.
+    FragmentClose,
     /// Anywhere else: an ordinary Rust expression position (`user.`, an
     /// attribute value, plain Rust). Forward to rust-analyzer as before.
     Expression,
@@ -180,8 +188,23 @@ pub fn local_completion(
             let between = text.get(name_end as usize..offset as usize)?;
             between.contains('=').then(Vec::new)
         }
-        Cursor::Expression => None,
+        Cursor::FragmentClose => {
+            let at = outou_sourcemap::Span::new(offset, offset);
+            let range = mapping::to_lsp_range(doc.line_index.span_to_range(at));
+            Some(vec![fragment_close_item(range)])
+        }
+        Cursor::FragmentTag | Cursor::Expression => None,
     }
+}
+
+/// The `</>` completion: the user has typed `</`, so only `>` is inserted.
+fn fragment_close_item(range: lsp_types::Range) -> Value {
+    json!({
+        "label": "</>",
+        "kind": CompletionKind::Class.lsp_number(),
+        "filterText": "",
+        "textEdit": { "range": range, "newText": ">" },
+    })
 }
 
 /// The `textDocument/completion` response for locally answered `items`.
@@ -218,7 +241,33 @@ pub fn is_tag_name_position(
         ));
     let text = doc.line_index.text();
     let parsed = crate::documents::parse_rsx(text);
-    matches!(classify(&parsed.file, text, offset), Cursor::TagName { .. })
+    matches!(
+        classify(&parsed.file, text, offset),
+        Cursor::TagName { .. } | Cursor::FragmentTag
+    )
+}
+
+/// Whether `position` inside `rsx_uri` sits on the `<>` or `</>` of a
+/// fragment. Rename has nothing to rename there (a fragment has no name),
+/// and forwarding it would reach whatever the generated Rust maps the call
+/// site to, so `crate::dispatch::requests` refuses it locally.
+pub fn is_fragment_tag_position(
+    workspace: &Workspace,
+    rsx_uri: &str,
+    position: lsp_types::Position,
+) -> bool {
+    let Some(doc) = workspace.rsx.get(rsx_uri) else {
+        return false;
+    };
+    let offset = doc
+        .line_index
+        .position_to_offset(outou_sourcemap::Position::new(
+            position.line,
+            position.character,
+        ));
+    let text = doc.line_index.text();
+    let parsed = crate::documents::parse_rsx(text);
+    matches!(classify(&parsed.file, text, offset), Cursor::FragmentTag)
 }
 
 /// The full (not partial-before-cursor) tag name at `position`, if it
@@ -349,6 +398,9 @@ fn classify_element(element: &ast::JsxElement, text: &str, offset: u32) -> Optio
             return Some(cursor);
         }
     }
+    if let Some(cursor) = classify_fragment_close(element, text, offset) {
+        return Some(cursor);
+    }
     // H1 (issue #9 Gate 3 review): a closing tag's own name is a tag-name
     // position too, exactly like the opening tag's, and must be answered
     // locally for the same reason — forwarding it to rust-analyzer
@@ -366,8 +418,35 @@ fn classify_element(element: &ast::JsxElement, text: &str, offset: u32) -> Optio
     None
 }
 
+/// `</` typed as the last thing before the cursor, directly inside a
+/// fragment: the one closing tag that fits is `</>`. The parser has not seen
+/// a closing tag yet (it is missing, or it is this half-typed `</`), and no
+/// element inside the fragment is open at the cursor; an unclosed child that
+/// runs to the cursor owns the `</` and its own name.
+fn classify_fragment_close(element: &ast::JsxElement, text: &str, offset: u32) -> Option<Cursor> {
+    let ast::JsxTag::Fragment { span: open } = &element.open else {
+        return None;
+    };
+    let close_is_missing = match &element.close {
+        None => true,
+        Some(ast::JsxTag::Incomplete(incomplete)) => incomplete.name.is_none(),
+        Some(_) => false,
+    };
+    let in_a_child = element.children.iter().any(|child| match child {
+        ast::JsxChild::Element(nested) => touches(nested.span, offset),
+        _ => false,
+    });
+    let after_slash = text.get(..offset as usize)?.ends_with("</");
+    (close_is_missing && after_slash && offset >= open.end && !in_a_child)
+        .then_some(Cursor::FragmentClose)
+}
+
 fn classify_tag(tag: &ast::JsxTag, offset: u32) -> Option<Cursor> {
     match tag {
+        // Strictly inside: the cursor after the `>` is in the children.
+        ast::JsxTag::Fragment { span } => {
+            (span.start <= offset && offset < span.end).then_some(Cursor::FragmentTag)
+        }
         ast::JsxTag::Named { name, .. } => touches(name.span, offset).then(|| Cursor::TagName {
             partial: prefix_before_cursor(name, offset),
             span: name.span,
@@ -411,6 +490,7 @@ fn prefix_before_cursor(name: &ast::Ident, cursor: u32) -> String {
 fn tag_name(tag: &ast::JsxTag) -> Option<String> {
     match tag {
         ast::JsxTag::Named { name, .. } => Some(name.name.clone()),
+        ast::JsxTag::Fragment { .. } => None,
         ast::JsxTag::Incomplete(incomplete) => incomplete.name.as_ref().map(|n| n.name.clone()),
     }
 }
@@ -483,6 +563,8 @@ fn classify_blank_attribute_position(
 ) -> Option<Cursor> {
     let name = match &element.open {
         ast::JsxTag::Named { name, .. } => name,
+        // A fragment takes no attributes, so there is no blank spot for one.
+        ast::JsxTag::Fragment { .. } => return None,
         ast::JsxTag::Incomplete(incomplete) => incomplete.name.as_ref()?,
     };
     let previous_end = element
@@ -849,6 +931,8 @@ fn param_name(param: &str) -> Option<String> {
 mod attr_tests;
 #[cfg(test)]
 mod bench;
+#[cfg(test)]
+mod fragment_tests;
 
 #[cfg(test)]
 mod tests {

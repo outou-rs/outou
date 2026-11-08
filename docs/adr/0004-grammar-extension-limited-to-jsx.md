@@ -1,6 +1,6 @@
 # 0004. The grammar extension is limited to JSX expressions
 
-Status: Accepted
+Status: Accepted. Amended by 0015: fragments (`<>…</>`) are JSX expressions and are no longer reserved.
 
 ## Context
 

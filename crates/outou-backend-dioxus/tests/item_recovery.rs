@@ -118,10 +118,61 @@ fn closing_tags_interrupted_by_a_following_element_stay_valid_rust() {
         ("stray div", "fn A() -> Element {\n    </div <p/>\n}\n"),
         ("stray bare", "fn A() -> Element {\n    </ <p/>\n}\n"),
         ("fragment", "fn A() -> Element {\n    <></div <p/>\n}\n"),
+        ("named", "fn A() -> Element {\n    <p></div <p/>\n}\n"),
         ("stray rbrace", "fn A() -> Element {\n    </div\n}\n"),
         ("fragment rbrace", "fn A() -> Element {\n    <></div\n}\n"),
     ];
     for (label, source) in cases {
         assert_refused_in_strict_and_recovered(label, source, &["fn A()"]);
     }
+}
+
+#[test]
+fn broken_fragments_stay_valid_rust_in_recovery() {
+    let cases = [
+        ("unclosed", "fn A() -> Element {\n    <>\n        <p/>\n}\n"),
+        (
+            "unclosed eof",
+            "fn A() -> Element {\n    <>\n        <p/>\n",
+        ),
+        (
+            "unclosed child",
+            "fn A() -> Element {\n    <div><><p/></div>\n}\n",
+        ),
+        ("mismatch", "fn A() -> Element {\n    <><p/></div>\n}\n"),
+        (
+            "reverse mismatch",
+            "fn A() -> Element {\n    <div><p/></>\n}\n",
+        ),
+        ("stray", "fn A() -> Element {\n    </>\n}\n"),
+        ("stray truncated", "fn A() -> Element {\n    </\n}\n"),
+        (
+            "keyed attempt",
+            "fn A() -> Element {\n    <key={x}><p/></>\n}\n",
+        ),
+        ("spaced", "fn A() -> Element {\n    <div>< ></div>\n}\n"),
+        ("truncated close", "fn A() -> Element {\n    <>x</\n}\n"),
+        (
+            "interrupted close",
+            "fn A() -> Element {\n    <>x</ <p/>\n}\n",
+        ),
+    ];
+    for (label, source) in cases {
+        assert_refused_in_strict_and_recovered(label, source, &["fn A()"]);
+    }
+}
+
+#[test]
+fn a_fragment_that_survives_in_recovery_is_still_lowered() {
+    // An unclosed fragment is an error, but its children stay analyzable.
+    let source = "fn A() -> Element {\n    <>\n        <p>one</p>\n        <q>two</q>\n}\n";
+    let parsed = outou_syntax::parse(source);
+    let generated = DioxusBackend
+        .generate(&parsed, source, Mode::Recovery, &options())
+        .expect("recovery generation never fails");
+    assert!(
+        generated.rust.contains("p { \"one\", }, q { \"two\", }"),
+        "{}",
+        generated.rust
+    );
 }

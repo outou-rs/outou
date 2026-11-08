@@ -1,0 +1,2 @@
+error: closing tag `</>` does not match opening tag `<div>`
+ --> element-closed-by-fragment-closing-tag.rsx:7:5

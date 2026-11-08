@@ -228,3 +228,66 @@ test("jsx-element's end pattern closes a hyphenated tag name", () => {
   assert.equal(endRe.test("</my-element>"), true);
   assert.equal(endRe.test("</my>"), false);
 });
+
+function jsxFragmentRule() {
+  return loadGrammar().repository["jsx-fragment"];
+}
+
+test("jsx-fragment's begin pattern matches `<>` and `< >` as JSX roots", () => {
+  const rule = jsxFragmentRule();
+  assert.ok(rule, "the grammar must define jsx-fragment");
+  for (const line of [
+    "<>",
+    "< >",
+    "return <>a</>;",
+    "|| <></>",
+    "(<>a</>)",
+    "{ <>hello {n}</> }",
+    "    <>",
+    "=> <>",
+  ]) {
+    assert.equal(new RegExp(rule.begin).test(line), true, `MUST match: ${line}`);
+  }
+});
+
+test("jsx-fragment's begin pattern does not match Rust's empty generics", () => {
+  const rule = jsxFragmentRule();
+  for (const line of [
+    "let v: Vec<> = x;",
+    "foo::<>()",
+    "Vec::<>::new()",
+    "impl<> T for X {}",
+    "fn g<>() {}",
+    "y as Vec<>",
+    "PhantomData<>",
+    "-> Vec<>",
+    "if a < b {",
+    "x = y <z;",
+    "<div>",
+    "<Greeting />",
+  ]) {
+    assert.equal(new RegExp(rule.begin).test(line), false, `must NOT match: ${line}`);
+  }
+});
+
+test("jsx-fragment's end pattern closes with `</>` and `</ >`", () => {
+  const rule = jsxFragmentRule();
+  for (const line of ["</>", "</ >", "x</>"]) {
+    assert.equal(new RegExp(rule.end, "m").test(line), true, `end MUST match: ${line}`);
+  }
+  assert.equal(new RegExp(rule.end, "m").test("</div>"), false);
+});
+
+test("jsx-fragment is included wherever jsx-element is", () => {
+  const grammar = loadGrammar();
+  const holders = [grammar, ...Object.values(grammar.repository)].filter((rule) =>
+    [...includesOf(rule)].includes("#jsx-element"),
+  );
+  assert.ok(holders.length >= 3);
+  for (const rule of holders) {
+    assert.ok(
+      [...includesOf(rule)].includes("#jsx-fragment"),
+      "a rule includes #jsx-element but not #jsx-fragment",
+    );
+  }
+});

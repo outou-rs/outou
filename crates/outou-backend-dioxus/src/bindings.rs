@@ -36,6 +36,12 @@ impl<'a> CallBindings<'a> {
             .or_else(|| self.selects.identifier(attribute))
     }
 
+    /// Whether `attribute` is a `key` the backend must not be given (on a
+    /// later root of a fragment); it is evaluated but not emitted.
+    pub fn is_ignored_key(&self, attribute: &JsxAttribute) -> bool {
+        self.keys.is_ignored(attribute)
+    }
+
     /// The generated `selected: …` attribute of `option`, if it gets one.
     pub fn selected_attribute(&self, option: &JsxElement, scan: &SelectScan) -> Option<String> {
         self.selects.selected_attribute(option, scan)

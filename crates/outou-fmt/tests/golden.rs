@@ -66,6 +66,10 @@ golden_test!(parse_error_refused, "parse-error-refused");
 golden_test!(lt_space_before_tag_name, "lt-space-before-tag-name");
 golden_test!(lt_space_comment_kept, "lt-space-comment-kept");
 golden_test!(placeholder_collision, "placeholder-collision");
+golden_test!(fragment_layout, "fragment-layout");
+golden_test!(fragment_text, "fragment-text");
+golden_test!(fragment_comments, "fragment-comments");
+golden_test!(fragment_in_map, "fragment-in-map");
 golden_test!(
     blank_lines_between_children_collapse,
     "blank-lines-between-children-collapse"
@@ -114,6 +118,10 @@ fn every_golden_directory_is_covered_by_a_case_above() {
         "multiline-string-in-island",
         "multiline-attr-string-in-nested-jsx",
         "multiline-block-comment-in-island",
+        "fragment-layout",
+        "fragment-text",
+        "fragment-comments",
+        "fragment-in-map",
     ]
     .into_iter()
     .collect();

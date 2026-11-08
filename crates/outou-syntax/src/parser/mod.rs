@@ -36,13 +36,16 @@ pub fn parse(source: &str) -> Parsed {
     let mut parser = Parser::new(source);
     let file = parser.parse_file();
     let mut diagnostics = parser.diagnostics;
-    // Warnings about `<select value>` and reserved names (issue #28) need the
+    // Warnings about `<select value>`, reserved names (issue #28) and keys that
+    // a fragment cannot use (ADR 0015) need the
     // whole AST, so they are found after parsing and merged in source order.
     let (_, select_warnings) = crate::select::scan(&file);
     let reserved_names = crate::reserved::check(&file);
-    if !select_warnings.is_empty() || !reserved_names.is_empty() {
+    let ignored_keys = crate::roots::check(&file);
+    if !select_warnings.is_empty() || !reserved_names.is_empty() || !ignored_keys.is_empty() {
         diagnostics.extend(select_warnings);
         diagnostics.extend(reserved_names);
+        diagnostics.extend(ignored_keys);
         diagnostics.sort_by_key(|diagnostic| diagnostic.span.start);
     }
     Parsed {

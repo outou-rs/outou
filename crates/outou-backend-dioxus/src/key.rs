@@ -25,6 +25,11 @@
 //! separate block with its own numbering, which may shadow an outer name
 //! only inside that island's code, where the outer binding is never used.
 //!
+//! A fragment's call can have several roots, and the backend uses the key of
+//! the first only (`docs/backend-leakage.md` row 63): a key on a later root
+//! is evaluated and checked here but left out of the `rsx!` text, and Outou
+//! warns about it (`outou_syntax::roots`).
+//!
 //! Evaluation order: all keys of a call are evaluated once, in source
 //! order, before any other attribute or child of that call
 //! (`docs/grammar.md`, "The `key` attribute").
@@ -57,6 +62,10 @@ pub(crate) const BINDING_LINT_ALLOW: &str = "#[allow(clippy::borrow_deref_ref)] 
 /// The `key` attributes of one `rsx!` call, in source order.
 pub struct KeyBindings<'a> {
     attributes: Vec<&'a JsxAttribute>,
+    /// The keys on a root other than the first of a fragment's call. They are
+    /// still evaluated (and so type-checked) but not given to the backend,
+    /// which accepts a key on the first root only (ledger row 63).
+    ignored: Vec<&'a JsxAttribute>,
 }
 
 impl<'a> KeyBindings<'a> {
@@ -66,7 +75,18 @@ impl<'a> KeyBindings<'a> {
     pub fn collect(element: &'a JsxElement) -> Self {
         let mut attributes = Vec::new();
         collect_into(element, &mut attributes);
-        Self { attributes }
+        Self {
+            attributes,
+            ignored: outou_syntax::roots::ignored_keys(element),
+        }
+    }
+
+    /// Whether `attribute` is a key the backend must not be given: one on a
+    /// root after the first of a fragment (`outou_syntax::roots`).
+    pub fn is_ignored(&self, attribute: &JsxAttribute) -> bool {
+        self.ignored
+            .iter()
+            .any(|candidate| std::ptr::eq(*candidate, attribute))
     }
 
     /// Whether the call has no key at all (and so needs no block).

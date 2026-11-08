@@ -1,0 +1,2 @@
+error: missing closing tag `</>`
+ --> fragment-unclosed-in-element.rsx:6:9

@@ -1,0 +1,2 @@
+error: closing tag `</div>` does not match opening tag `<>`
+ --> $DIR/input.rsx:7:5

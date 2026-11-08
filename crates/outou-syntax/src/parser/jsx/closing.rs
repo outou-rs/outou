@@ -80,7 +80,7 @@ impl<'s> Parser<'s> {
         match shape {
             ClosingTagShape::Eof { .. } => CloseResolution::Terminated { end: shape_end },
             ClosingTagShape::InterruptedByLt { lt, .. } => {
-                let close = incomplete_tag(at, lt, None, "`>`");
+                let close = incomplete_tag(at, lt, None, ast::IncompleteTag::MISSING_TAG_END);
                 CloseResolution::Resolved {
                     close: Some(close),
                     end: lt,
@@ -117,9 +117,17 @@ impl<'s> Parser<'s> {
                 let match_index = self.open_names.iter().rposition(|(n, _)| *n == found);
                 match match_index {
                     Some(idx) if idx + 1 == self.open_names.len() => {
-                        let close = ast::JsxTag::Named {
-                            span: Span::new(at as u32, shape_end as u32),
-                            name: found_ident,
+                        let span = Span::new(at as u32, shape_end as u32);
+                        // `</>` scans as a closing tag with an empty name
+                        // and closes the fragment whose open-tag entry is
+                        // the empty name.
+                        let close = if found.is_empty() {
+                            ast::JsxTag::Fragment { span }
+                        } else {
+                            ast::JsxTag::Named {
+                                span,
+                                name: found_ident,
+                            }
                         };
                         CloseResolution::Resolved {
                             close: Some(close),
@@ -150,7 +158,7 @@ impl<'s> Parser<'s> {
                         let close = incomplete_tag(
                             at,
                             shape_end,
-                            Some(found_ident),
+                            (!found.is_empty()).then_some(found_ident),
                             &format!("closing tag `</{top}>`"),
                         );
                         CloseResolution::Resolved {
@@ -166,7 +174,7 @@ impl<'s> Parser<'s> {
     /// Reports the diagnostic for a truncated `</...` (end of file, a `<`
     /// or a `}` before the closing `>`); a no-op for `Named`. Shared by
     /// [`Self::resolve_closing_tag`] and the top-level recoveries
-    /// (`recover_stray_close`, `recover_fragment`'s trailing close), so
+    /// (`recover_stray_close`, the absorbed element after an interrupted close), so
     /// every place a closing tag can be cut short words it identically.
     pub(super) fn diagnose_truncated_closing_tag(
         &mut self,

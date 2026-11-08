@@ -1,0 +1,4 @@
+error: unexpected `}` here; write `{"}"}` to include a literal `}` in text
+ --> fragment-unclosed-mid-file.rsx:16:1
+error: missing closing tag `</>`
+ --> fragment-unclosed-mid-file.rsx:14:5

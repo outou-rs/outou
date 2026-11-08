@@ -190,6 +190,12 @@ failure):
   `additionalTextEdits` is stripped from every surviving item rather than
   mapped (an unmapped one would apply at the wrong, generated-coordinate
   position), and so is `documentation`.
+- A fragment's `<>` and `</>` (ADR 0015) are treated like a tag name for
+  hover (answered `null`) and for rename and prepareRename (refused locally:
+  ``Outou cannot rename a fragment; `<>` and `</>` have no name``), since the
+  generated code has nothing at that position. Completion on them is
+  forwarded as before; `</` typed directly in a fragment offers `</>`
+  (`crate::complete`, `fragment_tests.rs`).
 - A JSX tag name (element or component, opening **or closing**) is never
   even sent to rust-analyzer for hover: it is classified locally, exactly
   like completion, and answered `null` directly
@@ -213,7 +219,8 @@ failure):
 own tokens for the generated file (decoded, mapped back through the
 source map, split per line where a mapped range crosses a line break) and
 Outou's own AST-derived tokens (component name, HTML element name — both
-opening and closing tag — attribute name, event attribute, JSX text),
+opening and closing tag — attribute name, event attribute, JSX text, and
+the `<>` / `</>` punctuation of a fragment as `operator`, ADR 0015),
 which always win an overlapping position. The advertised legend is
 rust-analyzer's own (read from its `initialize` response) when it is
 attached, or the standard LSP legend in degraded mode / when no

@@ -14,7 +14,7 @@ One node per line, depth-first, top to bottom:
 
 - `Text("…")` — a normalized text child (`ast::JsxChild::Text`). The quoted content is the exact normalized string, including any leading/trailing spaces it keeps.
 - `Expr(…)` — a `{ … }` Rust expression island (`ast::JsxChild::Expression`). The content is the island's source text, not re-parsed.
-- `Element(name)` — a nested JSX element (`ast::JsxChild::Element`).
+- `Element(name)` — a nested JSX element (`ast::JsxChild::Element`). A fragment is `Element(<>)`.
 
 Lines are relative to the function's own returned JSX element, which is not itself printed (the fixture file already names it). If an `Element(name)` line has children of its own, they follow immediately below it, each indented two spaces per level of nesting relative to its parent's line. An element with no listed children (self-closing, or all of its children normalized away) is a leaf: nothing is indented under it.
 
@@ -37,9 +37,13 @@ Non-ASCII and non-printable characters inside `Text("…")` are written as Rust 
 | `nbsp-not-trimmed` | A no-break space (U+00A0) on its own line survives; only U+0020 is trimmed. |
 | `crlf-line-endings` | `\r\n` and a lone `\r` are both line breaks, exactly like `\n`. The file uses CRLF throughout, with one lone CR between `Hello` and `world`; an implementation that treats only `\r\n` as a break yields `Text("Hello\r        world")`. The lone CR sits inside JSX text, where Outou's lexer — not rustc — decides line breaks. |
 | `lt-space-before-tag-name` | Trivia between `<` and the tag name (`a < b>`, `<\n  u>`, `< i/>`) and inside a closing tag (`< /b>`, `</\n  u>`) is skipped, so the children and their whitespace are exactly those of the unspaced tags. Cross-checked with the real `@babel/core` 8.1.0 and `@babel/preset-react` (see below). |
+| `fragment-whitespace` | A fragment's children follow the same rules as any element's: `<>{n} apples</>`, `<> <i/> </>` and `<>   </>` keep their single-line spaces, `<>\n</>` and `<></>` are empty, a nested `<>` and a spaced `< >…</ >` behave alike, and `a <>b</> c` keeps the spaces around the fragment. Run through the real `@babel/core` 8.1.0 and `@babel/preset-react` (see below). |
+| `fragment-top-level` | A fragment that is the returned expression: its children are the roots (`<tr>`, text, `{x}`, `<tr>`), with the same normalization. Same Babel cross-check. |
 | `attribute-escapes` | A plain (non-raw) attribute string decodes Rust's own escape sequences (`\"`, `\\`, `\t`, `\n`), not just its surrounding text-normalization rules — MEDIUM-8, issue #6 fix list item 9. `expected.txt` only covers the element's children (`Text("note")`); the attribute's decoded value is asserted directly in `crates/outou-syntax/tests/attributes.rs` and observed in the Dioxus backend's golden output (`crates/outou-backend-dioxus/tests/golden/formatting-attribute-escapes/expected.rs`). |
 
 ## Provenance
+
+`fragment-whitespace` and `fragment-top-level` (issue #31, ADR 0015) were run through the real `@babel/core` 8.1.0 with `@babel/preset-react` (classic runtime), whose output (`React.createElement(React.Fragment, null, "text a ", createElement("b", null, "x"), " c")`, and so on) gives the children in each `expected.txt`: an empty fragment is `createElement(React.Fragment, null)`, `<>   </>` is `"   "`, and `a <>b</> c` is `"a "`, a fragment, `" c"`.
 
 `lt-space-before-tag-name` (issue #31) was run through the real `@babel/core` 8.1.0 with `@babel/preset-react`, which produced `createElement("div", null, "a ", createElement("b", null, "x"), " c", createElement("i", null), createElement("u", null, "y"))`, the children in its `expected.txt`.
 

@@ -36,7 +36,7 @@ fn outou_tokens_absolute(
     line_index: &LineIndex,
     legend: &Legend,
 ) -> Vec<AbsoluteToken> {
-    outou_tokens::collect(file)
+    outou_tokens::collect(file, line_index.text())
         .into_iter()
         .filter_map(|named| {
             let type_index = legend.type_index(named.type_name)?;

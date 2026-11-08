@@ -214,6 +214,7 @@ fn token_normalized(text: &str) -> String {
 fn tag_name(tag: &ast::JsxTag) -> String {
     match tag {
         ast::JsxTag::Named { name, .. } => name.name.clone(),
+        ast::JsxTag::Fragment { .. } => "<>".to_string(),
         ast::JsxTag::Incomplete(_) => "<incomplete>".to_string(),
     }
 }

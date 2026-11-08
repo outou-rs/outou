@@ -162,6 +162,7 @@ fn check_tag(tag: &ast::JsxTag, len: u32, iteration: usize, source: &str) {
             assert_span(*span, len, iteration, source);
             assert_span(name.span, len, iteration, source);
         }
+        ast::JsxTag::Fragment { span } => assert_span(*span, len, iteration, source),
         ast::JsxTag::Incomplete(incomplete) => {
             assert_span(incomplete.span, len, iteration, source);
             if let Some(name) = &incomplete.name {

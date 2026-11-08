@@ -18,6 +18,7 @@ pub mod lexer;
 pub mod parser;
 pub mod render;
 pub mod reserved;
+pub mod roots;
 pub mod select;
 pub mod vocabulary;
 pub mod whitespace;

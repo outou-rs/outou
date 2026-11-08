@@ -1,6 +1,6 @@
 //! Reserved JSX syntax (grammar §10) must be diagnosed identically no
-//! matter how deep the construct is nested (M5): a fragment or a tag with
-//! explicit generic arguments used to be silently mishandled once nested
+//! matter how deep the construct is nested (M5): a tag with explicit
+//! generic arguments used to be silently mishandled once nested
 //! inside another element, instead of producing the same diagnostic (and
 //! only that diagnostic) it produces at the top level.
 
@@ -29,11 +29,6 @@ struct Case {
 
 fn cases() -> Vec<Case> {
     vec![
-        Case {
-            label: "fragment",
-            snippet: "<></>",
-            message: "fragments are not supported".to_string(),
-        },
         Case {
             label: "generic-arguments",
             snippet: "<List<T> />",

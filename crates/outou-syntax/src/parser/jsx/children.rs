@@ -136,7 +136,7 @@ impl<'s> Parser<'s> {
     /// (grammar §2.1), so this is a JSX-only classifier with no
     /// Rust-vs-JSX ambiguity to resolve — unlike the top-level entry point
     /// (`lexer::disambiguate::classify`), it only has to recognize the
-    /// reserved shapes that are still ambiguous *within* JSX itself
+    /// shapes that are still ambiguous *within* JSX itself
     /// (a fragment, and a tag name followed by explicit generic
     /// arguments, M5) before delegating to the ordinary named-element
     /// parser, which already handles every other reserved shape (dotted
@@ -147,7 +147,7 @@ impl<'s> Parser<'s> {
         // (grammar §4 rule 2) and as React accepts: `< span/>` is `<span/>`.
         let name_start = skip_trivia(self.bytes, lt_pos + 1);
         if self.bytes.get(name_start) == Some(&b'>') {
-            return self.recover_fragment(lt_pos);
+            return self.parse_fragment(lt_pos);
         }
         let name_end = scan_jsx_name(self.bytes, name_start);
         let after_name = next_significant(self.bytes, name_end);
@@ -194,7 +194,10 @@ impl<'s> Parser<'s> {
 
     /// Whether the `/` at `slash`, which has trivia between it and its `<`,
     /// begins a complete `/name>` (only whitespace around the name). Anything
-    /// else (`a < /b</p>`, `a < /b and c > d`) is a literal `<` in text.
+    /// else (`a < /b</p>`, `a < /b and c > d`) is a literal `<` in text. The
+    /// name is required here: the closing tag of a fragment, `</>` or `</ >`,
+    /// has its `/` right after the `<` and never reaches this check, so a
+    /// spaced `< />` in prose stays text.
     fn is_complete_closing(&self, slash: usize) -> bool {
         let name_start = skip_trivia(self.bytes, slash + 1);
         let name_end = scan_jsx_name(self.bytes, name_start);

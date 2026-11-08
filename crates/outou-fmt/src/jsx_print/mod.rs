@@ -124,18 +124,22 @@ fn tag_trivia_has_comment(element: &ast::JsxElement, source: &str) -> bool {
     };
     let open_gap = match &element.open {
         ast::JsxTag::Named { name, .. } => has_comment(element.span.start, name.span.start),
+        // `< /* c */ >`: the whole tag is trivia around nothing.
+        ast::JsxTag::Fragment { span } => has_comment(span.start, span.end),
         ast::JsxTag::Incomplete(_) => false,
     };
     let close_gap = match &element.close {
         Some(ast::JsxTag::Named { span, name }) => {
             has_comment(span.start, name.span.start) || has_comment(name.span.end, span.end)
         }
+        Some(ast::JsxTag::Fragment { span }) => has_comment(span.start, span.end),
         _ => false,
     };
     open_gap || close_gap
 }
 
-/// The element or component name of `element`'s opening tag.
+/// The element or component name of `element`'s opening tag; empty for a
+/// fragment, so that `<{name}>` and `</{name}>` print `<>` and `</>`.
 ///
 /// Returns [`FormatError::Internal`] for an incomplete tag rather than
 /// panicking; this should never actually be reached because
@@ -144,6 +148,7 @@ fn tag_trivia_has_comment(element: &ast::JsxElement, source: &str) -> bool {
 pub(crate) fn element_name(element: &ast::JsxElement) -> Result<&str, FormatError> {
     match &element.open {
         ast::JsxTag::Named { name, .. } => Ok(name.name.as_str()),
+        ast::JsxTag::Fragment { .. } => Ok(""),
         ast::JsxTag::Incomplete(_) => Err(FormatError::Internal(
             "cannot format a JSX element with an incomplete opening tag".to_string(),
         )),
@@ -176,5 +181,41 @@ mod tests {
         let element = only_element(source);
         let out = format_jsx_element(&element, 0, source, &Ctx::default()).unwrap();
         assert_eq!(out, "<div></div>");
+    }
+
+    #[test]
+    fn prints_a_fragment_with_its_own_tags() {
+        let source = "fn f() { <  >  <p>x</p></  > }";
+        let element = only_element_with_children(source);
+        let out = format_jsx_element(&element, 0, source, &Ctx::default()).unwrap();
+        assert_eq!(out, "<>  <p>x</p></>");
+    }
+
+    #[test]
+    fn keeps_an_empty_and_a_single_child_fragment() {
+        for (source, expected) in [
+            ("fn f() { <></> }", "<></>"),
+            ("fn f() { <><p/></> }", "<><p /></>"),
+        ] {
+            let parsed = outou_syntax::parse(source);
+            let element = parsed.file.jsx_elements()[0].clone();
+            let out = format_jsx_element(&element, 0, source, &Ctx::default()).unwrap();
+            assert_eq!(out, expected);
+        }
+    }
+
+    #[test]
+    fn a_comment_inside_a_fragment_tag_keeps_the_element_as_written() {
+        let source = "fn f() { < /* keep */ >x</ /* me */ > }";
+        let parsed = outou_syntax::parse(source);
+        let element = parsed.file.jsx_elements()[0].clone();
+        let out = format_jsx_element(&element, 0, source, &Ctx::default()).unwrap();
+        assert_eq!(out, "< /* keep */ >x</ /* me */ >");
+    }
+
+    fn only_element_with_children(source: &str) -> ast::JsxElement {
+        let parsed = outou_syntax::parse(source);
+        assert!(parsed.diagnostics.is_empty(), "{:?}", parsed.diagnostics);
+        parsed.file.jsx_elements()[0].clone()
     }
 }

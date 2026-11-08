@@ -123,12 +123,14 @@ pub fn reword_end_of_file_as_next_item(message: &str) -> String {
     }
 }
 
-// The five "not supported" messages below are pinned by the fixtures and
+// The four "not supported" messages below are pinned by the fixtures and
 // `docs/grammar.md`; changing the wording is a coordinated edit.
 
-/// `fragments are not supported`
-pub fn fragments_not_supported() -> String {
-    "fragments are not supported".to_string()
+/// `<key={k}>`: the tag is named `key` and is followed by `=`, which is how
+/// a keyed fragment would be mistyped. A fragment (`<>`) takes no
+/// attributes, so it has no `key` (ADR 0015).
+pub fn key_after_tag_name() -> String {
+    "unexpected `=` after the tag name `key`: a fragment `<>` takes no attributes, so it has no `key`; put the `key` on an element".to_string()
 }
 
 /// `dotted tag names are not supported`
@@ -215,7 +217,6 @@ mod wording_tests {
     #[test]
     fn unsupported_syntax_messages_are_neutral_and_name_no_phase() {
         let messages = [
-            (fragments_not_supported(), "fragments are not supported"),
             (
                 dotted_tag_name_not_supported(),
                 "dotted tag names are not supported",

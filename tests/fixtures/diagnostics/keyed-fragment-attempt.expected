@@ -1,0 +1,4 @@
+error: unexpected `=` after the tag name `key`: a fragment `<>` takes no attributes, so it has no `key`; put the `key` on an element
+ --> keyed-fragment-attempt.rsx:5:9
+error: closing tag `</>` does not match opening tag `<key>`
+ --> keyed-fragment-attempt.rsx:7:5

@@ -153,6 +153,29 @@ impl<'s> Parser<'s> {
                     self.push_diag_at(pos_span(pos), diag::spread_attribute_not_supported());
                     pos = end;
                 }
+                Some(b'=')
+                    if tag_name == "key"
+                        && attributes.is_empty()
+                        && pos == skip_ws(self.bytes, start) =>
+                {
+                    // `<key={k}>`: a keyed fragment attempt. A fragment is
+                    // `<>`, takes no attributes and has no `key` (ADR 0015),
+                    // so say that once and drop the value instead of
+                    // reporting it as a spread attribute.
+                    self.push_diag_at(pos_span(pos), diag::key_after_tag_name());
+                    errors.push(ast::ErrorNode {
+                        span: pos_span(pos),
+                        expected: None,
+                    });
+                    let (_, after, terminated) = self.parse_attribute_value("key", pos + 1);
+                    pos = after;
+                    if terminated && self.bytes.get(pos) == Some(&b'<') {
+                        return (attributes, errors, self.outcome_at_lt(pos, tag_name), pos);
+                    }
+                    if terminated {
+                        return (attributes, errors, TagOutcome::Terminated, pos);
+                    }
+                }
                 Some(b'.') => {
                     self.push_diag_at(pos_span(pos), diag::dotted_tag_name_not_supported());
                     pos += 1;

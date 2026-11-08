@@ -1,0 +1,2 @@
+error: closing tag `</>` has no matching opening tag
+ --> stray-fragment-closing-tag.rsx:5:5

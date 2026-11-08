@@ -31,11 +31,14 @@ use serde_json::Value;
 /// - an event attribute (`onClick`) -> `event` (a real standard LSP type,
 ///   not an Outou invention)
 /// - JSX text content -> `string`
+/// - the punctuation of a fragment, `<>` and `</>` (ADR 0015), which has
+///   no name to colour -> `operator`
 pub const COMPONENT_TYPE: &str = "class";
 pub const ELEMENT_TYPE: &str = "type";
 pub const ATTRIBUTE_TYPE: &str = "property";
 pub const EVENT_TYPE: &str = "event";
 pub const TEXT_TYPE: &str = "string";
+pub const FRAGMENT_PUNCTUATION_TYPE: &str = "operator";
 
 /// The standard LSP semantic token type names, in the LSP specification's
 /// own declared order (`SemanticTokenType`'s constants, 3.16.0 plus the
@@ -116,9 +119,10 @@ impl Legend {
         })
     }
 
-    /// Returns a new legend equal to `self` with any of Outou's five
-    /// overlay type names ([`COMPONENT_TYPE`], [`ELEMENT_TYPE`],
-    /// [`ATTRIBUTE_TYPE`], [`EVENT_TYPE`], [`TEXT_TYPE`]) that are not
+    /// Returns a new legend equal to `self` with any of Outou's overlay
+    /// type names ([`COMPONENT_TYPE`], [`ELEMENT_TYPE`],
+    /// [`ATTRIBUTE_TYPE`], [`EVENT_TYPE`], [`TEXT_TYPE`],
+    /// [`FRAGMENT_PUNCTUATION_TYPE`]) that are not
     /// already present **appended** at the end (issue #14 review,
     /// BLOCKING-4): rust-analyzer 1.98.1's real legend does not include
     /// `class` or `event`, contrary to this module's own former
@@ -136,6 +140,7 @@ impl Legend {
             ATTRIBUTE_TYPE,
             EVENT_TYPE,
             TEXT_TYPE,
+            FRAGMENT_PUNCTUATION_TYPE,
         ] {
             if !token_types.iter().any(|t| t == name) {
                 token_types.push(name.to_string());
@@ -197,6 +202,7 @@ mod tests {
             ATTRIBUTE_TYPE,
             EVENT_TYPE,
             TEXT_TYPE,
+            FRAGMENT_PUNCTUATION_TYPE,
         ] {
             assert!(
                 legend.type_index(name).is_some(),

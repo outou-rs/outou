@@ -11,7 +11,9 @@
 use outou_sourcemap::Span;
 use outou_syntax::ast::{self, JsxTag};
 
-use super::legend::{ATTRIBUTE_TYPE, COMPONENT_TYPE, ELEMENT_TYPE, EVENT_TYPE, TEXT_TYPE};
+use super::legend::{
+    ATTRIBUTE_TYPE, COMPONENT_TYPE, ELEMENT_TYPE, EVENT_TYPE, FRAGMENT_PUNCTUATION_TYPE, TEXT_TYPE,
+};
 
 /// One span this module classifies, named by the legend type it belongs
 /// to (a `&'static str`, looked up by [`super::legend::Legend::type_index`]
@@ -24,22 +26,24 @@ pub struct NamedToken {
 }
 
 /// Every Outou-native token in `file`.
-pub fn collect(file: &ast::File) -> Vec<NamedToken> {
+pub fn collect(file: &ast::File, source: &str) -> Vec<NamedToken> {
     let mut out = Vec::new();
     for element in file.jsx_elements() {
-        collect_element_tokens(element, &mut out);
+        collect_element_tokens(element, source, &mut out);
     }
     out
 }
 
-fn collect_element_tokens(element: &ast::JsxElement, out: &mut Vec<NamedToken>) {
+fn collect_element_tokens(element: &ast::JsxElement, source: &str, out: &mut Vec<NamedToken>) {
     if let Some(token) = tag_name_token(&element.open) {
         out.push(token);
     }
+    push_fragment_punctuation(&element.open, source, out);
     if let Some(close) = &element.close {
         if let Some(token) = tag_name_token(close) {
             out.push(token);
         }
+        push_fragment_punctuation(close, source, out);
     }
     for attribute in &element.attributes {
         out.push(attribute_name_token(&attribute.name));
@@ -58,6 +62,42 @@ fn collect_element_tokens(element: &ast::JsxElement, out: &mut Vec<NamedToken>) 
         // `File::jsx_elements()`'s own traversal (it descends into both),
         // so nothing further is collected for them here.
     }
+}
+
+/// `<>` and `</>` have no name, so their punctuation is what gets a token.
+/// A plain tag is `<>` or `</>` (two or three bytes) and is one token; a
+/// spaced one (`< >`, `<!-- -->`-free trivia between) is its first and last
+/// byte, so trivia inside it, a comment for one, keeps its own colour.
+fn push_fragment_punctuation(tag: &JsxTag, source: &str, out: &mut Vec<NamedToken>) {
+    let JsxTag::Fragment { span } = tag else {
+        return;
+    };
+    let token = |span| NamedToken {
+        span,
+        type_name: FRAGMENT_PUNCTUATION_TYPE,
+        modifiers: 0,
+    };
+    if span.end - span.start <= 3 {
+        out.push(token(*span));
+        return;
+    }
+    out.push(token(Span::new(span.start, span.start + 1)));
+    // The `/` of a closing tag is the first `/` outside trivia, which is
+    // the first `/` after the `<` unless a comment sits in between.
+    if let Some(slash) = closing_slash(source, *span) {
+        out.push(token(Span::new(slash, slash + 1)));
+    }
+    out.push(token(Span::new(span.end - 1, span.end)));
+}
+
+/// The offset of the `/` of the closing tag `span` (`</>`, `< / >`), or
+/// `None` for an opening tag. Trivia between `<` and `/` is skipped the way
+/// the parser skips it.
+fn closing_slash(source: &str, span: Span) -> Option<u32> {
+    let bytes = source.as_bytes();
+    let from = span.start as usize + 1;
+    let at = outou_syntax::lexer::rust_token::next_significant(bytes, from).start;
+    (at < span.end as usize && bytes.get(at) == Some(&b'/')).then_some(at as u32)
 }
 
 fn tag_name_token(tag: &JsxTag) -> Option<NamedToken> {
@@ -106,14 +146,57 @@ fn is_event_attribute(name: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn tokens_of(source: &str) -> Vec<NamedToken> {
+        collect(&parse(source), source)
+    }
+
     fn parse(source: &str) -> ast::File {
         crate::documents::parse_rsx(source).file
     }
 
     #[test]
+    fn tokens_the_punctuation_of_a_fragment_and_nothing_else_of_it() {
+        let source = "fn f() { <><p>x</p></> }";
+        let tokens = collect(&parse(source), source);
+        let punctuation: Vec<&str> = tokens
+            .iter()
+            .filter(|t| t.type_name == FRAGMENT_PUNCTUATION_TYPE)
+            .map(|t| &source[t.span.start as usize..t.span.end as usize])
+            .collect();
+        assert_eq!(punctuation, ["<>", "</>"], "{tokens:#?}");
+        // The `<p>` inside is tokened as ever.
+        assert_eq!(
+            tokens
+                .iter()
+                .filter(|t| t.type_name == ELEMENT_TYPE)
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn a_spaced_fragment_tag_is_tokened_byte_by_byte_around_its_trivia() {
+        let source = "fn f() { < /* c */ >x</ /* c */ > }";
+        let tokens = collect(&parse(source), source);
+        let punctuation: Vec<&str> = tokens
+            .iter()
+            .filter(|t| t.type_name == FRAGMENT_PUNCTUATION_TYPE)
+            .map(|t| &source[t.span.start as usize..t.span.end as usize])
+            .collect();
+        assert_eq!(punctuation, ["<", ">", "<", "/", ">"], "{tokens:#?}");
+        let source = "fn f() { <>x</ > }";
+        let tokens = collect(&parse(source), source);
+        let punctuation: Vec<&str> = tokens
+            .iter()
+            .filter(|t| t.type_name == FRAGMENT_PUNCTUATION_TYPE)
+            .map(|t| &source[t.span.start as usize..t.span.end as usize])
+            .collect();
+        assert_eq!(punctuation, ["<>", "<", "/", ">"], "{tokens:#?}");
+    }
+
+    #[test]
     fn tokens_a_component_name_on_both_the_opening_and_closing_tag() {
-        let file = parse("fn f() { <Greeting>hi</Greeting> }");
-        let tokens = collect(&file);
+        let tokens = tokens_of("fn f() { <Greeting>hi</Greeting> }");
         let component_tokens: Vec<_> = tokens
             .iter()
             .filter(|t| t.type_name == COMPONENT_TYPE)
@@ -123,8 +206,7 @@ mod tests {
 
     #[test]
     fn tokens_an_html_element_name_as_the_element_type() {
-        let file = parse("fn f() { <div>hi</div> }");
-        let tokens = collect(&file);
+        let tokens = tokens_of("fn f() { <div>hi</div> }");
         assert_eq!(
             tokens
                 .iter()
@@ -136,8 +218,7 @@ mod tests {
 
     #[test]
     fn tokens_a_plain_attribute_as_attribute_and_an_on_attribute_as_event() {
-        let file = parse(r#"fn f() { <button onClick={handler} class="x"></button> }"#);
-        let tokens = collect(&file);
+        let tokens = tokens_of(r#"fn f() { <button onClick={handler} class="x"></button> }"#);
         assert_eq!(
             tokens.iter().filter(|t| t.type_name == EVENT_TYPE).count(),
             1
@@ -153,8 +234,7 @@ mod tests {
 
     #[test]
     fn tokens_a_raw_on_attribute_as_event() {
-        let file = parse(r#"fn f() { <button r#onclick={handler} r#class="x"></button> }"#);
-        let tokens = collect(&file);
+        let tokens = tokens_of(r#"fn f() { <button r#onclick={handler} r#class="x"></button> }"#);
         assert_eq!(
             tokens.iter().filter(|t| t.type_name == EVENT_TYPE).count(),
             1,
@@ -172,8 +252,7 @@ mod tests {
 
     #[test]
     fn tokens_non_blank_jsx_text() {
-        let file = parse("fn f() { <p>Hello</p> }");
-        let tokens = collect(&file);
+        let tokens = tokens_of("fn f() { <p>Hello</p> }");
         assert_eq!(
             tokens.iter().filter(|t| t.type_name == TEXT_TYPE).count(),
             1
@@ -182,8 +261,7 @@ mod tests {
 
     #[test]
     fn does_not_token_blank_whitespace_only_text() {
-        let file = parse("fn f() { <div>\n    <span>x</span>\n</div> }");
-        let tokens = collect(&file);
+        let tokens = tokens_of("fn f() { <div>\n    <span>x</span>\n</div> }");
         // Only "x" is non-blank text; the whitespace between the elements
         // is normalized away by the parser or is blank and skipped here.
         assert_eq!(
@@ -194,8 +272,8 @@ mod tests {
 
     #[test]
     fn tokens_a_nested_component_reached_through_an_island() {
-        let file = parse("fn f() { <div>{ if true { <Greeting /> } else { <div /> } }</div> }");
-        let tokens = collect(&file);
+        let tokens =
+            tokens_of("fn f() { <div>{ if true { <Greeting /> } else { <div /> } }</div> }");
         assert_eq!(
             tokens
                 .iter()

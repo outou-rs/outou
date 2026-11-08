@@ -112,7 +112,8 @@ pub enum Expr {
     Error(ErrorNode),
 }
 
-/// A JSX element such as `<UserCard user={user} />` or `<h1>Hi</h1>`.
+/// A JSX element such as `<UserCard user={user} />` or `<h1>Hi</h1>`, or a
+/// fragment `<>...</>` (`open` is then [`JsxTag::Fragment`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JsxElement {
     /// Whole element span.
@@ -144,6 +145,14 @@ pub enum JsxTag {
         span: Span,
         /// Element or component name.
         name: Ident,
+    },
+    /// `<>` or `</>`: the tag of a fragment (grammar §5, ADR 0015). It has
+    /// no name and takes no attributes; the element it opens has an empty
+    /// `attributes` list.
+    Fragment {
+        /// Span of the whole tag, `<>` or `</>` (trivia inside a spaced
+        /// `< >` included).
+        span: Span,
     },
     /// A tag that ended before its name or `>` was seen.
     Incomplete(IncompleteTag),
@@ -293,6 +302,18 @@ pub struct IncompleteTag {
     pub missing: MissingToken,
 }
 
+impl IncompleteTag {
+    /// The description of a closing tag that was cut short by a `<` before
+    /// its `>` (`</div <p/>`).
+    pub const MISSING_TAG_END: &'static str = "`>`";
+
+    /// Whether this is a closing tag cut short by a `<`: it has no name and
+    /// is missing its `>`. The tag's end is then the `<` that interrupted it.
+    pub fn is_interrupted_by_lt(&self) -> bool {
+        self.name.is_none() && self.missing.description == Self::MISSING_TAG_END
+    }
+}
+
 impl File {
     /// Every [`JsxElement`] anywhere in this file, in a depth-first,
     /// source-order-ish traversal (top-level items in order, then each
@@ -308,45 +329,73 @@ impl File {
     pub fn jsx_elements(&self) -> Vec<&JsxElement> {
         let mut out = Vec::new();
         for item in &self.items {
-            collect_in_item(item, &mut out);
+            collect_in_item(item, Walk::AllElements, &mut out);
         }
         out
     }
 }
 
-fn collect_in_item<'a>(item: &'a Item, out: &mut Vec<&'a JsxElement>) {
+impl File {
+    /// The JSX expressions of this file: every element written directly in
+    /// Rust (a statement, a tail, a `{ … }` island part), each of which is
+    /// lowered as one call. The elements nested as children are not
+    /// included; they belong to the call of their ancestor.
+    pub fn jsx_calls(&self) -> Vec<&JsxElement> {
+        let mut out = Vec::new();
+        for item in &self.items {
+            collect_in_item(item, Walk::Calls, &mut out);
+        }
+        out
+    }
+}
+
+/// Which elements a walk of the tree collects.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Walk {
+    /// Every element, nested ones included ([`File::jsx_elements`]).
+    AllElements,
+    /// Only those written directly in Rust ([`File::jsx_calls`]).
+    Calls,
+}
+
+fn collect_in_item<'a>(item: &'a Item, walk: Walk, out: &mut Vec<&'a JsxElement>) {
     match item {
         Item::Function(f) => {
             for expr in f.body.statements.iter().chain(f.body.tail.as_deref()) {
-                collect_in_expr(expr, out);
+                collect_in_expr(expr, walk, out);
             }
         }
         Item::Module(m) => {
             for inner in m.items.iter().flatten() {
-                collect_in_item(inner, out);
+                collect_in_item(inner, walk, out);
             }
         }
         Item::Rust(r) => {
             for part in &r.parts {
-                collect_in_expr(part, out);
+                collect_in_expr(part, walk, out);
             }
         }
         Item::Error(_) => {}
     }
 }
 
-fn collect_in_expr<'a>(expr: &'a Expr, out: &mut Vec<&'a JsxElement>) {
+fn collect_in_expr<'a>(expr: &'a Expr, walk: Walk, out: &mut Vec<&'a JsxElement>) {
     if let Expr::Jsx(element) = expr {
-        collect_in_element(element, out);
+        if walk == Walk::Calls {
+            out.push(element);
+        }
+        collect_in_element(element, walk, out);
     }
 }
 
-fn collect_in_element<'a>(element: &'a JsxElement, out: &mut Vec<&'a JsxElement>) {
-    out.push(element);
+fn collect_in_element<'a>(element: &'a JsxElement, walk: Walk, out: &mut Vec<&'a JsxElement>) {
+    if walk == Walk::AllElements {
+        out.push(element);
+    }
     for attr in &element.attributes {
         if let Some(JsxAttributeValue::Expression(island)) = &attr.value {
             for part in &island.parts {
-                collect_in_expr(part, out);
+                collect_in_expr(part, walk, out);
             }
         }
     }
@@ -354,10 +403,10 @@ fn collect_in_element<'a>(element: &'a JsxElement, out: &mut Vec<&'a JsxElement>
         match child {
             JsxChild::Expression(island) => {
                 for part in &island.parts {
-                    collect_in_expr(part, out);
+                    collect_in_expr(part, walk, out);
                 }
             }
-            JsxChild::Element(nested) => collect_in_element(nested, out),
+            JsxChild::Element(nested) => collect_in_element(nested, walk, out),
             JsxChild::Text(_) | JsxChild::Error(_) => {}
         }
     }

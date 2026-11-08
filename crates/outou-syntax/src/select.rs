@@ -9,7 +9,8 @@
 //! finds those options once, for codegen and for diagnostics alike.
 //!
 //! "Lexically inside" means written in the select's children: directly, in
-//! another lowercase element (`<optgroup>`), or in a `{ … }` child island, at
+//! another lowercase element (`<optgroup>`), in a fragment (`<>…</>`), or in a
+//! `{ … }` child island, at
 //! any depth of `.map(|p| <option …>)`, `if` or `match`. It does not mean an
 //! option reached through a variable, returned by a function, or rendered by
 //! a component (`<Choice />`): the source does not show it. An option inside
@@ -53,7 +54,7 @@ impl SelectScan {
 pub fn tag_name(element: &JsxElement) -> Option<&str> {
     match &element.open {
         JsxTag::Named { name, .. } => Some(&name.name),
-        JsxTag::Incomplete(_) => None,
+        JsxTag::Fragment { .. } | JsxTag::Incomplete(_) => None,
     }
 }
 
@@ -221,8 +222,15 @@ impl Walk {
     }
 
     fn element(&mut self, element: &JsxElement, select: u32, found: &mut Found) {
-        let JsxTag::Named { name, .. } = &element.open else {
-            return;
+        let name = match &element.open {
+            JsxTag::Named { name, .. } => name,
+            // A fragment adds no node: its children are the select's
+            // children (ADR 0015).
+            JsxTag::Fragment { .. } => {
+                self.children(&element.children, select, found);
+                return;
+            }
+            JsxTag::Incomplete(_) => return,
         };
         match name.name.as_str() {
             OPTION => self.option(element, select, found),
@@ -448,6 +456,36 @@ mod tests {
     #[test]
     fn a_select_with_value_and_no_options_at_all_is_warned_once() {
         let source = "fn f() { <select value={v}></select> }";
+        let (_, diagnostics, _) = scan_source(source);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0]
+            .message
+            .starts_with("no `<option>` is written"));
+    }
+
+    #[test]
+    fn options_inside_a_fragment_belong_to_the_enclosing_select() {
+        let source = "fn f() { <select value={v}><><option value=\"a\"/><><option value=\"b\"/></></>{xs.map(|x| <><option value={x}/></>)}</select> }";
+        let (scan, diagnostics, parsed) = scan_source(source);
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        assert_eq!(scan.select_of_option.len(), 3);
+        let select = parsed.file.jsx_elements()[0].span.start;
+        assert!(scan.select_of_option.values().all(|s| *s == select));
+    }
+
+    #[test]
+    fn a_fragment_does_not_hide_the_warnings_inside_it() {
+        let source = "fn f() { <select value={v}><><Choices /><option>A</option></></select> }";
+        let (_, diagnostics, _) = scan_source(source);
+        let messages = messages(&diagnostics);
+        assert_eq!(messages.len(), 2, "{messages:?}");
+        assert!(messages[0].starts_with("`<Choices>` is inside"));
+        assert!(messages[1].contains("has no `value`"));
+    }
+
+    #[test]
+    fn a_select_whose_only_content_is_an_empty_fragment_has_no_options() {
+        let source = "fn f() { <select value={v}><></></select> }";
         let (_, diagnostics, _) = scan_source(source);
         assert_eq!(diagnostics.len(), 1);
         assert!(diagnostics[0]
