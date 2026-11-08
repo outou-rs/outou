@@ -162,6 +162,23 @@ jobs:
       # job does not apply to it.
       - run: cargo run -p outou-cli -- package --check --manifest-dir tests/fixtures/workspace/ui-kit
 
+  examples-formatted:
+    name: examples are formatted with outou fmt (issue #13)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # `outou fmt` runs `rustfmt` on the Rust around the JSX, so the
+      # component is required; `cargo fmt --all -- --check` in the `fmt`
+      # job never looks at `.rsx` files.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      # `--check` writes nothing and exits non-zero when any file would
+      # change. Both examples are their own Cargo workspaces, so name
+      # their `src` directories explicitly (`board-core` is plain Rust).
+      - run: cargo run -p outou-cli -- fmt --check examples/phase0-app/src examples/dogfood-board/app/src
+
   cargo-matrix:
     name: cargo build/check/test/clippy/package/publish matrix (issue #10)
     runs-on: ubuntu-latest
