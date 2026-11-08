@@ -78,6 +78,25 @@ pub enum LoadOutcome {
 }
 
 impl Workspace {
+    /// The `#[component]` function called `name`, with the URI and document
+    /// that declare it. The first one wins, documents taken in URI order so
+    /// the answer is deterministic (a duplicate name is a build error
+    /// anyway). Reads the components every document derived when it was
+    /// built (#31 L15): nothing is parsed here.
+    pub(crate) fn find_component(
+        &self,
+        name: &str,
+    ) -> Option<(&str, &RsxDocument, &super::units::ComponentInfo)> {
+        let mut docs: Vec<(&String, &RsxDocument)> = self.rsx.iter().collect();
+        docs.sort_unstable_by_key(|(uri, _)| *uri);
+        docs.into_iter().find_map(|(uri, doc)| {
+            doc.components()
+                .iter()
+                .find(|component| component.name == name)
+                .map(|component| (uri.as_str(), doc, component))
+        })
+    }
+
     /// Resolves `manifest_dir` and, unless the crate has no `.rsx` root
     /// (degraded mode), generates every unit in [`Mode::Recovery`] and
     /// builds the initial [`Registry`].

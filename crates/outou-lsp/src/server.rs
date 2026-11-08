@@ -176,6 +176,16 @@ fn apply_client_capabilities(state: &mut State, params: &InitializeParams) {
         .pointer("/workspace/didChangeWatchedFiles/dynamicRegistration")
         .and_then(Value::as_bool)
         .unwrap_or(false);
+    state.client_prefers_markdown_hover = capabilities
+        .pointer("/textDocument/hover/contentFormat")
+        .and_then(Value::as_array)
+        .and_then(|formats| {
+            formats
+                .iter()
+                .filter_map(Value::as_str)
+                .find(|format| matches!(*format, "markdown" | "plaintext"))
+        })
+        == Some("markdown");
 }
 
 /// Whether `value` contains a `"dynamicRegistration": true` anywhere,
@@ -826,5 +836,31 @@ mod tests {
         apply_client_capabilities(&mut state, &params);
         assert!(state.client_supports_configuration);
         assert!(state.client_supports_work_done_progress);
+    }
+
+    #[test]
+    fn apply_client_capabilities_follows_the_editors_preferred_hover_format() {
+        let prefers = |formats: Value| {
+            let mut state = crate::dispatch::State::new();
+            let params: InitializeParams = serde_json::from_value(json!({
+                "capabilities": { "textDocument": { "hover": { "contentFormat": formats } } }
+            }))
+            .unwrap();
+            apply_client_capabilities(&mut state, &params);
+            state.client_prefers_markdown_hover
+        };
+        assert!(prefers(json!(["markdown", "plaintext"])));
+        assert!(!prefers(json!(["plaintext", "markdown"])));
+        assert!(!prefers(json!(["plaintext"])));
+        assert!(!prefers(json!([])));
+
+        let mut state = crate::dispatch::State::new();
+        let params: InitializeParams =
+            serde_json::from_value(json!({ "capabilities": {} })).unwrap();
+        apply_client_capabilities(&mut state, &params);
+        assert!(
+            !state.client_prefers_markdown_hover,
+            "plain text by default"
+        );
     }
 }

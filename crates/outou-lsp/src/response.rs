@@ -134,6 +134,7 @@ fn sanitize_hover_contents(contents: &mut Value, component_names: &[String]) -> 
 fn sanitize_hover_text(text: &mut String, component_names: &[String]) -> bool {
     let rewritten = text
         .replace("::outou::__private::", "")
+        .replace("dioxus_core::innerlude::", "")
         .replace("dioxus_core::", "")
         .replace("dioxus_elements::", "")
         .replace("dioxus_signals::", "")
@@ -142,7 +143,11 @@ fn sanitize_hover_text(text: &mut String, component_names: &[String]) -> bool {
     let kept: Vec<&str> = rewritten
         .lines()
         .filter(|line| {
-            !translate::contains_backend_marker(line)
+            // `dioxus_core::innerlude` is the module line of a hover on
+            // `Element`; once its crate prefix is stripped, a bare
+            // `innerlude` is all that is left of it.
+            line.trim() != "innerlude"
+                && !translate::contains_backend_marker(line)
                 && !translate::contains_component_props_marker(line, component_names)
         })
         .collect();
@@ -179,17 +184,25 @@ fn is_layout_line(line: &str) -> bool {
 /// a `Location[]`) in place: every generated location this registry
 /// produced is mapped back to its `.rsx` file (ADR 0007's reverse-mapping
 /// rule); anything else — a plain `.rs` module, a dependency crate — is
-/// left untouched. An entry whose specific span has no source
-/// (synthesized code) is dropped from the list rather than shown pointing
-/// at generated Rust.
+/// left untouched, except that a source file of the backend's own crates
+/// ([`translate::is_backend_source_uri`]) is dropped. An entry whose
+/// specific span has no source (synthesized code) is dropped from the list
+/// rather than shown pointing at generated Rust.
 pub fn map_definition_response(workspace: &Workspace, value: &mut Value) {
     match value {
         Value::Array(items) => {
+            let had_locations = !items.is_empty();
             let mapped: Vec<Value> = items
                 .drain(..)
                 .filter_map(|item| map_one_location(workspace, item))
                 .collect();
-            *items = mapped;
+            if mapped.is_empty() && had_locations {
+                // Everything was the backend's or unmappable: nothing to
+                // show, which is `null` as for a lone location.
+                *value = Value::Null;
+            } else {
+                *items = mapped;
+            }
         }
         Value::Object(_) => {
             *value = map_one_location(workspace, value.take()).unwrap_or(Value::Null);
@@ -200,6 +213,10 @@ pub fn map_definition_response(workspace: &Workspace, value: &mut Value) {
 
 fn map_one_location(workspace: &Workspace, mut item: Value) -> Option<Value> {
     let uri: lsp_types::Uri = item.get("uri")?.as_str()?.parse().ok()?;
+    // The backend's own sources are never a place to jump to (row 62).
+    if translate::is_backend_source_uri(uri.as_str()) {
+        return None;
+    }
     let range: lsp_types::Range = serde_json::from_value(item.get("range")?.clone()).ok()?;
 
     match mapping::generated_location_to_source(workspace, &uri, range) {
@@ -669,6 +686,17 @@ mod tests {
             "label": "unwrap",
             "labelDetails": { "description": "core::option" },
         })));
+    }
+
+    #[test]
+    fn sanitize_hover_text_drops_the_innerlude_module_line_of_an_element_hover() {
+        let mut text =
+            "dioxus_core::innerlude\n\npub type Element = Result<VNode, RenderError>".to_string();
+        let _ = sanitize_hover_text(&mut text, &[]);
+        assert!(!text.contains("innerlude"), "{text}");
+        let mut text = "fn f() -> dioxus_core::innerlude::Element".to_string();
+        assert!(sanitize_hover_text(&mut text, &[]));
+        assert_eq!(text, "fn f() -> Element");
     }
 
     #[test]

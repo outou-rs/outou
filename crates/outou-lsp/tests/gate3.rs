@@ -79,6 +79,12 @@ const PROBES: &[&str] = &[
     "rename-keyword-prop",
     "rename-prop-to-keyword",
     "references-keyword-prop",
+    "hover-attr-prop",
+    "definition-attr-prop",
+    "hover-attr-keyword-prop",
+    "hover-attr-element",
+    "definition-attr-element",
+    "references-attr-element",
 ];
 
 /// Substrings that must never appear anywhere in a payload sent to the
@@ -1040,6 +1046,93 @@ fn check_probe(
                 return Err(format!(
                     "expected references in main.rsx (the attribute) and components.rsx (the parameter and its uses), got {in_main} and {in_components}: {refs:#?}"
                 ));
+            }
+            Ok(())
+        }
+        "hover-attr-prop" | "hover-attr-keyword-prop" => {
+            // Ledger row 62: the prop is described from the component's own
+            // parameter in `.rsx`, not by the backend's props builder.
+            // `assert_no_leakage` already rejected backend vocabulary.
+            let value = result
+                .pointer("/hover/contents/value")
+                .and_then(|v| v.as_str())
+                .ok_or("no hover contents at the attribute name")?;
+            let expected = if probe == "hover-attr-prop" {
+                "label: String"
+            } else {
+                "type: String"
+            };
+            if value != expected {
+                return Err(format!("hover was {value:?}, expected {expected:?}"));
+            }
+            if value.contains("r#") || value.contains("__") {
+                return Err(format!("hover shows a backend spelling: {value:?}"));
+            }
+            let range = result.pointer("/hover/range").ok_or("no hover range")?;
+            let needle = if probe == "hover-attr-prop" {
+                "label=\"Name\""
+            } else {
+                "type=\"text\""
+            };
+            let (line, start) = position_of(main_rsx_text, needle, 0);
+            let end = start + needle.find('=').unwrap_or(0) as i64;
+            require_range_matches(range, line, start, line, end)
+        }
+        "definition-attr-prop" => {
+            // Lands on the parameter in `components.rsx`, and nowhere else
+            // (no registry location rides along).
+            let locations = result
+                .pointer("/definition")
+                .and_then(|v| v.as_array())
+                .ok_or("no definition result")?;
+            if locations.len() != 1 {
+                return Err(format!("expected exactly one location: {locations:#?}"));
+            }
+            let uri = locations[0]
+                .get("uri")
+                .and_then(|v| v.as_str())
+                .ok_or("no uri")?;
+            if !uri.ends_with("components.rsx") {
+                return Err(format!("definition did not land in components.rsx: {uri}"));
+            }
+            let (line, start) = position_of(components_rsx_text, "label: String", 0);
+            require_range_matches(
+                &locations[0]["range"],
+                line,
+                start,
+                line,
+                start + "label".len() as i64,
+            )
+        }
+        "hover-attr-element" | "definition-attr-element" => {
+            // An HTML attribute has no Outou-owned text: exactly `null`.
+            let key = if probe == "hover-attr-element" {
+                "hover"
+            } else {
+                "definition"
+            };
+            let answer = result.get(key).cloned().unwrap_or(serde_json::Value::Null);
+            if !answer.is_null() {
+                return Err(format!(
+                    "{key} at an element attribute must be null: {answer}"
+                ));
+            }
+            Ok(())
+        }
+        "references-attr-element" => {
+            // Rust-analyzer reports the backend's own constant as one of the
+            // references; it must not reach the editor. Every location left
+            // is a `.rsx` file of this crate.
+            let refs = result
+                .pointer("/references")
+                .and_then(|v| v.as_array())
+                .ok_or("no references result")?;
+            if let Some(other) = refs.iter().find(|r| {
+                !r.get("uri")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|u| u.ends_with(".rsx"))
+            }) {
+                return Err(format!("a reference outside the .rsx files: {other}"));
             }
             Ok(())
         }

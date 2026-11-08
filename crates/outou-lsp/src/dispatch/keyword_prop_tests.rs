@@ -33,17 +33,17 @@ const PROP_DECLARED_AS_TYPE: &str = "#[component]\nfn Field(r#type: String) -> E
 /// The same shape with the prop named `kind`, for renaming it to `type`.
 const PROP_DECLARED_AS_KIND: &str = "#[component]\nfn Field(kind: String) -> Element {\n    let _ = &kind;\n    <input />\n}\nfn App() -> Element {\n    <div><Field kind=\"text\" /><Field kind=\"b\" /></div>\n}\n";
 
-struct Fixture {
-    state: State,
-    rsx_uri: lsp_types::Uri,
+pub(super) struct Fixture {
+    pub(super) state: State,
+    pub(super) rsx_uri: lsp_types::Uri,
     generated_uri: lsp_types::Uri,
-    source: &'static str,
+    pub(super) source: &'static str,
     generated: String,
-    log: std::path::PathBuf,
+    pub(super) log: std::path::PathBuf,
 }
 
 /// `name` keeps each test's mock rust-analyzer in its own temp dir.
-fn fixture(name: &str, source: &'static str) -> Fixture {
+pub(super) fn fixture(name: &str, source: &'static str) -> Fixture {
     let rsx_uri = file_uri(Path::new("/app/src/main.rsx"));
     let generated_uri = file_uri(Path::new("/app/src/.generated/main.rs"));
     let parsed = crate::documents::parse_rsx(source);
@@ -91,7 +91,7 @@ fn fixture(name: &str, source: &'static str) -> Fixture {
 }
 
 impl Fixture {
-    fn rsx_position(&self, offset: usize) -> Value {
+    pub(super) fn rsx_position(&self, offset: usize) -> Value {
         let doc =
             &self.state.workspace.as_ref().unwrap().rsx[uri::to_outou(&self.rsx_uri).as_str()];
         let position = doc.line_index.offset_to_position(offset as u32);
@@ -179,7 +179,7 @@ impl Fixture {
     }
 }
 
-fn answer(
+pub(super) fn answer(
     fixture: &mut Fixture,
     connection: &Connection,
     client: &Connection,
@@ -198,7 +198,7 @@ fn answer(
 }
 
 /// The `.rsx` text a range of `edits`/`locations` covers.
-fn text_at<'a>(source: &'a str, range: &Value) -> &'a str {
+pub(super) fn text_at<'a>(source: &'a str, range: &Value) -> &'a str {
     let range: lsp_types::Range = serde_json::from_value(range.clone()).unwrap();
     let index = outou_sourcemap::LineIndex::new(source);
     let span = index.range_to_span(PositionRange::new(

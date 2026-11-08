@@ -10,6 +10,7 @@ use lsp_server::{Connection, Message, Request, RequestId, Response, ResponseErro
 use serde_json::{json, Value};
 
 use super::{Pending, PendingKind, State};
+use crate::attribute_info;
 use crate::complete;
 use crate::documents::{RsxDocument, Workspace};
 use crate::mapping;
@@ -19,9 +20,7 @@ pub(crate) fn dispatch_client_request(state: &mut State, connection: &Connection
     match req.method.as_str() {
         "textDocument/hover" => dispatch_hover_request(state, connection, req),
         "textDocument/completion" => dispatch_completion_request(state, connection, req),
-        "textDocument/definition" => {
-            forward_position_request(state, connection, req, |_, _, _| PendingKind::Definition)
-        }
+        "textDocument/definition" => dispatch_definition_request(state, connection, req),
         "textDocument/prepareRename" => dispatch_prepare_rename_request(state, connection, req),
         "textDocument/rename" => dispatch_rename_request(state, connection, req),
         "textDocument/references" => {
@@ -205,15 +204,22 @@ fn full_document_edit(
 /// completion (issue #9 Gate 3 review, H2): a tag-name position (element
 /// or component, opening or closing) is answered locally with `null`,
 /// never forwarded — see `crate::complete::is_tag_name_position`'s own
-/// doc comment for why.
+/// doc comment for why. So is an attribute name or the text of an attribute
+/// value (`crate::attribute_info`, ledger row 62): the prop in Outou's
+/// terms, or `null`.
 fn dispatch_hover_request(state: &mut State, connection: &Connection, req: Request) {
     if let Some(workspace) = &state.workspace {
         if let Some((rsx_uri, position)) = extract_position_params(&req.params) {
             let rsx_uri_string = uri::to_outou(&rsx_uri).as_str().to_string();
             if complete::is_tag_name_position(workspace, &rsx_uri_string, position) {
-                let _ = connection
-                    .sender
-                    .send(Message::Response(Response::new_ok(req.id, Value::Null)));
+                respond_null(connection, req.id);
+                return;
+            }
+            let markdown = state.client_prefers_markdown_hover;
+            if let Some(answer) =
+                attribute_info::local_hover(workspace, &rsx_uri_string, position, markdown)
+            {
+                respond(connection, req.id, answer);
                 return;
             }
         }
@@ -221,6 +227,26 @@ fn dispatch_hover_request(state: &mut State, connection: &Connection, req: Reque
     forward_position_request(state, connection, req, |uri, _pos, _rsx_pos| {
         PendingKind::Hover { generated_uri: uri }
     });
+}
+
+/// `textDocument/definition` at an attribute name or at the text of an
+/// attribute value is answered locally (`crate::attribute_info`, ledger row
+/// 62): the prop's parameter in the `.rsx` file, or `null`. rust-analyzer's
+/// answer there was the backend's own source under the cargo registry. Every
+/// other position is forwarded.
+fn dispatch_definition_request(state: &mut State, connection: &Connection, req: Request) {
+    if let Some(workspace) = &state.workspace {
+        if let Some((rsx_uri, position)) = extract_position_params(&req.params) {
+            let rsx_uri_string = uri::to_outou(&rsx_uri).as_str().to_string();
+            if let Some(answer) =
+                attribute_info::local_definition(workspace, &rsx_uri_string, position)
+            {
+                respond(connection, req.id, answer);
+                return;
+            }
+        }
+    }
+    forward_position_request(state, connection, req, |_, _, _| PendingKind::Definition);
 }
 
 fn extract_position_params(params: &Value) -> Option<(lsp_types::Uri, lsp_types::Position)> {
@@ -551,9 +577,13 @@ pub(crate) fn fail_all_pending(state: &mut State, connection: &Connection) {
 }
 
 fn respond_null(connection: &Connection, id: RequestId) {
+    respond(connection, id, Value::Null);
+}
+
+fn respond(connection: &Connection, id: RequestId, result: Value) {
     let _ = connection
         .sender
-        .send(Message::Response(Response::new_ok(id, Value::Null)));
+        .send(Message::Response(Response::new_ok(id, result)));
 }
 
 /// Rewrites a client-issued `$/cancelRequest`'s `id` through

@@ -29,7 +29,8 @@ pub struct RsxDocument {
     /// The `outou_syntax::parse` diagnostics for this text.
     pub diagnostics: Vec<SyntaxDiagnostic>,
     /// The `#[component]` functions this text declares, with their
-    /// parameter names (what tag-name and attribute-name completion offer).
+    /// parameters (what tag-name and attribute-name completion offer, and what
+    /// hover and definition at a prop name describe).
     /// Derived in [`Self::new`] from the same parse as [`Self::diagnostics`],
     /// together with [`Self::line_index`]: a document is never edited in
     /// place (an edit constructs a new one), so none of these can go stale
@@ -44,8 +45,8 @@ pub struct RsxDocument {
 pub(crate) struct ComponentInfo {
     /// The function's name (the tag name that renders it).
     pub name: String,
-    /// Its parameter names, raw-identifier prefixes stripped.
-    pub params: Vec<String>,
+    /// Its parameters, i.e. its props, in declaration order.
+    pub params: Vec<crate::params::ParamInfo>,
 }
 
 #[cfg(test)]
@@ -78,7 +79,10 @@ impl RsxDocument {
             .into_iter()
             .map(|function| ComponentInfo {
                 name: function.name.name.clone(),
-                params: crate::complete::function_params(&function.signature.text),
+                params: crate::params::parse_params(
+                    &function.signature.text,
+                    function.signature.span.start,
+                ),
             })
             .collect();
         Self {

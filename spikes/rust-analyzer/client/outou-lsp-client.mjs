@@ -86,6 +86,12 @@ const PROBES = [
   "rename-keyword-prop",
   "rename-prop-to-keyword",
   "references-keyword-prop",
+  "hover-attr-prop",
+  "definition-attr-prop",
+  "hover-attr-keyword-prop",
+  "hover-attr-element",
+  "definition-attr-element",
+  "references-attr-element",
 ];
 
 function usage() {
@@ -907,6 +913,44 @@ async function runProbe(probe) {
         },
         (value) => Array.isArray(value) && value.length > 0,
       );
+      break;
+    }
+    // Ledger row 62: hover and definition at a JSX attribute name are
+    // answered by `outou-lsp` itself, never by rust-analyzer, so none of
+    // these waits for it to index (`() => true`). `references-attr-element`
+    // does reach rust-analyzer and waits for a non-empty answer.
+    case "hover-attr-prop":
+    case "definition-attr-prop":
+    case "hover-attr-keyword-prop":
+    case "hover-attr-element":
+    case "definition-attr-element":
+    case "references-attr-element": {
+      const [needle, offset] = {
+        "hover-attr-prop": ["<Field label", 8],
+        "definition-attr-prop": ["<Field label", 8],
+        "hover-attr-keyword-prop": ['type="text"', 1],
+        "hover-attr-element": ['<main class="app"', 8],
+        "definition-attr-element": ['<main class="app"', 8],
+        "references-attr-element": ['<main class="app"', 8],
+      }[probe];
+      const pos = positionOf(originalText, needle);
+      const params = {
+        textDocument: { uri: mainUri },
+        position: { line: pos.line, character: pos.character + offset },
+      };
+      if (probe.startsWith("hover")) {
+        await requestUntilReady("hover", "textDocument/hover", params, () => true);
+      } else if (probe.startsWith("definition")) {
+        await requestUntilReady("definition", "textDocument/definition", params, () => true);
+      } else {
+        params.context = { includeDeclaration: true };
+        await requestUntilReady(
+          "references",
+          "textDocument/references",
+          params,
+          (value) => Array.isArray(value) && value.length > 0,
+        );
+      }
       break;
     }
     default:

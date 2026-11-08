@@ -6,6 +6,7 @@
 //! `outou_codegen` pipeline as `cargo build` (via `outou_cli::build`), in
 //! recovery mode.
 
+mod attribute_info;
 mod complete;
 mod diagnostics;
 mod dispatch;
@@ -13,6 +14,7 @@ mod documents;
 mod editor_uris;
 mod html_attrs;
 mod mapping;
+mod params;
 mod plan;
 mod ra;
 mod references;

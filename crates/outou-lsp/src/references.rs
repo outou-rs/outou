@@ -45,6 +45,10 @@ pub fn translate_references_response(workspace: &Workspace, value: &mut Value) {
         else {
             continue;
         };
+        // The backend's own sources are never a reference to show (row 62).
+        if crate::translate::is_backend_source_uri(uri.as_str()) {
+            continue;
+        }
         let Some(range) = item
             .get("range")
             .and_then(|r| serde_json::from_value::<lsp_types::Range>(r.clone()).ok())

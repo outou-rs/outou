@@ -20,6 +20,8 @@ use crate::documents::{self, Workspace};
 use crate::ra::RaClient;
 
 #[cfg(test)]
+mod attribute_info_tests;
+#[cfg(test)]
 mod completion_cache_tests;
 #[cfg(test)]
 mod keyword_prop_tests;
@@ -164,6 +166,11 @@ pub(crate) struct State {
     /// `workspace.didChangeWatchedFiles.dynamicRegistration`: only then can
     /// the server ask it to watch files (`watched_files::register_watchers`).
     pub(crate) client_supports_watched_files_registration: bool,
+    /// Whether the editor prefers Markdown for the hover text this server
+    /// writes itself (`crate::attribute_info`): the first of `markdown` and
+    /// `plaintext` in `textDocument.hover.contentFormat`. Plain text when the
+    /// editor says nothing.
+    pub(crate) client_prefers_markdown_hover: bool,
     /// The non-`ok` rust-analyzer health already announced to the editor
     /// (`crate::status`); `None` until one is, and again after `ok`.
     pub(crate) notified_health: Option<crate::status::Health>,
@@ -206,6 +213,7 @@ impl State {
             client_supports_work_done_progress: false,
             client_supports_dynamic_registration: false,
             client_supports_watched_files_registration: false,
+            client_prefers_markdown_hover: false,
             notified_health: None,
             progress_tokens: crate::status::ProgressTokens::default(),
             epoch: 0,

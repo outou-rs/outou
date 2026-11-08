@@ -114,10 +114,13 @@ After that:
   is answered `null` **locally** too (issue #9 Gate 3 review, H2) —
   neither an HTML element's nor a user component's generated occurrence
   has anything useful to show once sanitized, and the closing tag's own
-  occurrence has the same reverse-mapping ambiguity as completion's. Every
-  other hover, and every `textDocument/definition`, maps the position to
-  the generated file, forwards the request, and maps the response back,
-  sanitizing it on the way (see "What gets sanitized" below).
+  occurrence has the same reverse-mapping ambiguity as completion's. A JSX
+  **attribute name**, and the text of an attribute value, is answered
+  locally too, for both hover and definition (ledger rows 62 and 64,
+  `crate::attribute_info`); see "Hover and definition at an attribute"
+  below. Every other hover, and every other `textDocument/definition`, maps
+  the position to the generated file, forwards the request, and maps the
+  response back, sanitizing it on the way (see "What gets sanitized" below).
 - `textDocument/publishDiagnostics` from rust-analyzer is mapped back,
   merged with Outou's own syntax diagnostics, and translated out of
   backend vocabulary; an unmapped diagnostic (synthesized code, no direct
@@ -256,6 +259,8 @@ since it is read-only. See
 | `src/dispatch/responses.rs` | Everything coming back from rust-analyzer: its responses (mapped back), its own requests to the editor, its notifications. |
 | `src/dispatch/notifications.rs` | `.rsx` `didOpen`/`didChange`/`didSave`/`didClose` handling, single-unit regeneration and crate-wide re-planning. |
 | `src/dispatch/watched_files.rs` | `workspace/didChangeWatchedFiles`: registers `**/*.rsx` and `**/Cargo.toml` watchers when the client supports dynamic registration; closed `.rsx` files changed, created or deleted outside the editor are re-read (open buffers win), a manifest change or a created/deleted file re-plans. |
+| `src/attribute_info.rs` | Hover and definition at a JSX attribute name or attribute-value text, answered locally (ledger row 64). |
+| `src/params.rs` | A component's parameters (name, type, doc comment, span) read from its signature text. |
 | `src/complete.rs` | Outou-native tag-name/attribute-name completion (and the hover-side tag-name classifier), answered without ever asking rust-analyzer. |
 | `src/ra.rs` | Spawns rust-analyzer and speaks JSON-RPC to it (reuses `lsp_server::Message`'s own framing for that side too); bounded waits for its `initialize`/`shutdown` responses. |
 | `src/documents/mod.rs` | Re-exports; module doc for the split below. |
@@ -265,7 +270,7 @@ since it is read-only. See
 | `src/mapping.rs` | Position/range translation between `.rsx` and generated Rust; refuses to translate a transformed (non-exact-length) mapping rather than guess. |
 | `src/response.rs` | Rewrites and sanitizes hover/definition/completion response payloads through `mapping.rs`. |
 | `src/diagnostics.rs` | Merges Outou syntax diagnostics with mapped rust-analyzer/flycheck diagnostics and the failed re-plan's error (`documents/plan_error.rs`); never drops or downgrades an unmapped `ERROR`. |
-| `src/translate.rs` | Backend-vocabulary translation table and marker list, shared by diagnostics, completion and hover (`docs/backend-leakage.md` rows 24-26). |
+| `src/translate.rs` | Backend-vocabulary translation table and marker list, shared by diagnostics, completion and hover (`docs/backend-leakage.md` rows 24-26), and the backend-source location test for definition and references (row 64). |
 | `src/uri.rs` | Conversions between `outou_sourcemap::Uri` and `lsp_types::Uri`, and `normalize_file_uri` (the one spelling every internal key uses). |
 | `src/editor_uris.rs` | Normalizes `.rsx` URIs from the editor on the way in (tracking the set of spellings a document is open under) and restores the editor's spelling on the way out (diagnostics, definition, references, rename); the identity when the editor already uses real paths. |
 | `src/semantic_tokens/mod.rs` | `textDocument/semanticTokens/full` orchestration: decode, map, merge, re-encode. |
@@ -305,9 +310,7 @@ Semantic tokens/rename/references (issue #14 review):
   one (`type` to `kind`) replaces `type` or `r#type` with `kind`. Position
   forwarding and diagnostic ranges at such an attribute follow the same
   translation; semantic tokens at it now map too. Hover and definition at
-  an attribute name show the same content as at any attribute name, which
-  is a separate, older leak (ledger row 62, `TODO(alpha) (#31)`), not made
-  better or worse by this. Completion inside a keyword name does not use
+  an attribute name are answered locally (ledger row 64, below). Completion inside a keyword name does not use
   the exception: every attribute-name position, with or without a value,
   is answered locally by `crate::complete`. Left: a hyphenated attribute (`data-id`, lowered to the
   string key `"data-id"`) stays unmapped; renaming `type` on an HTML element
@@ -315,6 +318,47 @@ Semantic tokens/rename/references (issue #14 review):
   non-local definition; rust-analyzer reports no uses of a prop inside an
   `rsx!` body for any prop name, so those are not renamed. Checked against
   real rust-analyzer (`tests/gate3.rs`), not yet in a real editor.
+- **Hover and definition at an attribute** (ledger rows 62 and 64) are
+  answered by `crate::attribute_info` and never forwarded: rust-analyzer
+  saw the backend's props builder and HTML constants there and answered
+  `__label = (String,)`, `pub const r#type: AttributeDescription` and a
+  definition inside the cargo registry's `dioxus-*` sources.
+
+  | Position | Hover | Definition |
+  |---|---|---|
+  | A prop of a component declared in an `.rsx` file | `name: Type` as the parameter is written (`type`, never `r#type`), then its doc comment | The parameter, in its `.rsx` file |
+  | `key`, on a component or an element | Outou's own sentence about keys | `null` |
+  | Any other attribute of an element (`class`, `type`, `onclick`, `data-id`) | `null` | `null` |
+  | A prop no `.rsx` component declares (a typo, or a component written in a `.rs` file or another crate) | `null` | `null` |
+  | The text of an attribute value (`label="Name"`) | `null` | `null` |
+
+  Element attributes have no Outou-owned description: what `class` or
+  `onclick` mean belongs to the web platform, and the only text available
+  was the backend's copy (`TODO(alpha) (#31)`: link the platform's
+  documentation). `key` is Outou's own (grammar §5.1). The cursor touching
+  the end of a name counts as on it, so the `=` answers for the name before
+  it. The hover is Markdown when the editor lists `markdown` before
+  `plaintext` in `textDocument.hover.contentFormat`, plain text otherwise.
+  The prop's type and doc comment come from `RsxDocument::components()`
+  (`crate::params` reads the parameter list: generics, `Fn(..) -> T`
+  bounds, `///` and `/** */` docs, `#[..]` attributes); nothing is parsed
+  per request except the open document. A value that is a Rust expression
+  (`tags={tags}`) is still forwarded.
+
+  Whatever is forwarded and answered with a location in a backend crate
+  under the cargo registry, a git checkout or a `cargo vendor` directory
+  (`dioxus*`, `typed-builder*` and the rest of Dioxus's own dependency
+  closure, `translate::BACKEND_CRATES`; a `[patch]` checkout elsewhere is not
+  recognised) loses that location, for definition
+  and for references. That removed the same leak at a tag name, at a value
+  expression, and from references at an attribute. Checked against real
+  rust-analyzer (`tests/gate3.rs` probes `hover-attr-*`,
+  `definition-attr-*`, `references-attr-element`), not yet in a real
+  editor. Not changed: rename at an element attribute still ends in
+  rust-analyzer's refusal, ``Cannot rename a non-local definition``;
+  `typeDefinition`, `implementation`, `documentHighlight` and
+  `signatureHelp` are not advertised, and a client that sends them anyway
+  gets rust-analyzer's "file not found" error for the `.rsx` path.
 - **`prepareRename` on a closing tag's own name answers with the closing
   tag's range.** The request's `.rsx` cursor picks, among the sources of the
   generated name (`crate::rename::translate_prepare_rename_response`), the

@@ -312,7 +312,7 @@ pub fn tag_name_at_position(
     None
 }
 
-fn touches(span: outou_sourcemap::Span, offset: u32) -> bool {
+pub(crate) fn touches(span: outou_sourcemap::Span, offset: u32) -> bool {
     span.contains(outou_sourcemap::Span::new(offset, offset))
 }
 
@@ -487,7 +487,7 @@ fn prefix_before_cursor(name: &ast::Ident, cursor: u32) -> String {
     name.name.get(..len).unwrap_or(&name.name).to_string()
 }
 
-fn tag_name(tag: &ast::JsxTag) -> Option<String> {
+pub(crate) fn tag_name(tag: &ast::JsxTag) -> Option<String> {
     match tag {
         ast::JsxTag::Named { name, .. } => Some(name.name.clone()),
         ast::JsxTag::Fragment { .. } => None,
@@ -796,7 +796,7 @@ fn tag_name_items(workspace: &Workspace, partial: &str, range: lsp_types::Range)
 
 /// Whether `tag_name` names a component (grammar §5: an uppercase initial
 /// is a component reference, any other name an intrinsic element).
-fn is_component_tag(tag_name: &str) -> bool {
+pub(crate) fn is_component_tag(tag_name: &str) -> bool {
     tag_name.chars().next().is_some_and(char::is_uppercase)
 }
 
@@ -820,19 +820,12 @@ fn attr_name_items(
             .map(|name| completion_item(name, CompletionKind::Field, range))
             .collect();
     }
-    // The first component of this name wins, documents taken in URI order so
-    // the answer is deterministic (a duplicate name is a build error anyway).
-    let mut docs: Vec<(&String, &crate::documents::RsxDocument)> = workspace.rsx.iter().collect();
-    docs.sort_unstable_by_key(|(uri, _)| *uri);
-    let component = docs
-        .into_iter()
-        .flat_map(|(_, doc)| doc.components())
-        .find(|component| component.name == tag_name);
+    let component = workspace.find_component(tag_name);
     component
         .into_iter()
-        .flat_map(|component| &component.params)
-        .filter(|param| offered(param))
-        .map(|param| completion_item(param, CompletionKind::Field, range))
+        .flat_map(|(_, _, component)| &component.params)
+        .filter(|param| offered(&param.name))
+        .map(|param| completion_item(&param.name, CompletionKind::Field, range))
         .collect()
 }
 
@@ -862,71 +855,6 @@ fn completion_item(label: &str, kind: CompletionKind, range: lsp_types::Range) -
     })
 }
 
-/// Extracts parameter names from a `#[component]` function's signature
-/// text (`ast::Function::signature`, verbatim from `fn` to the opening
-/// `{`), stripping the raw-identifier prefix (`r#type` -> `type`) per
-/// grammar §5 / `docs/backend-leakage.md` row 17.
-pub(crate) fn function_params(signature: &str) -> Vec<String> {
-    let Some(open) = signature.find('(') else {
-        return Vec::new();
-    };
-    let bytes = signature.as_bytes();
-    let mut depth = 0i32;
-    let mut close = None;
-    for (i, &b) in bytes.iter().enumerate().skip(open) {
-        match b {
-            b'(' => depth += 1,
-            b')' => {
-                depth -= 1;
-                if depth == 0 {
-                    close = Some(i);
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
-    let Some(close) = close else {
-        return Vec::new();
-    };
-    split_top_level_commas(&signature[open + 1..close])
-        .into_iter()
-        .filter_map(param_name)
-        .collect()
-}
-
-fn split_top_level_commas(s: &str) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut depth = 0i32;
-    let mut start = 0;
-    for (i, c) in s.char_indices() {
-        match c {
-            '<' | '(' | '[' => depth += 1,
-            '>' | ')' | ']' => depth -= 1,
-            ',' if depth == 0 => {
-                parts.push(&s[start..i]);
-                start = i + c.len_utf8();
-            }
-            _ => {}
-        }
-    }
-    if start < s.len() {
-        parts.push(&s[start..]);
-    }
-    parts
-}
-
-fn param_name(param: &str) -> Option<String> {
-    let param = param.trim();
-    if param.is_empty() || param == "self" || param == "&self" || param == "&mut self" {
-        return None;
-    }
-    let name = param.split(':').next()?.trim();
-    let name = name.strip_prefix("mut ").unwrap_or(name).trim();
-    let name = name.strip_prefix("r#").unwrap_or(name);
-    (!name.is_empty()).then(|| name.to_string())
-}
-
 #[cfg(test)]
 mod attr_tests;
 #[cfg(test)]
@@ -937,30 +865,6 @@ mod fragment_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn function_params_extracts_plain_parameter_names() {
-        assert_eq!(
-            function_params("fn UserCard(user: User) -> Element"),
-            vec!["user"]
-        );
-    }
-
-    #[test]
-    fn function_params_strips_the_raw_identifier_prefix() {
-        assert_eq!(
-            function_params("fn Field(label: String, r#type: String) -> Element"),
-            vec!["label", "type"]
-        );
-    }
-
-    #[test]
-    fn function_params_handles_generic_parameter_types() {
-        assert_eq!(
-            function_params("fn TagList(tags: Vec<String>) -> Element"),
-            vec!["tags"]
-        );
-    }
 
     #[test]
     fn classify_finds_a_partial_component_tag_name() {

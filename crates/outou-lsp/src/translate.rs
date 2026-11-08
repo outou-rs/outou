@@ -46,6 +46,85 @@ pub fn contains_component_props_marker(text: &str, component_names: &[String]) -
         .any(|name| text.contains(&format!("{name}Props")))
 }
 
+/// Crates that belong to the backend and its builder, by exact crate name
+/// (every crate whose name starts with `dioxus` is covered separately, see
+/// [`is_backend_crate`]).
+///
+/// The list is the part of `dioxus`'s dependency closure that exists for
+/// Dioxus and that a user would not depend on or want to jump into:
+/// `generational-box` (its signals' storage), `sledgehammer_*` (its DOM
+/// interpreter), `warnings` (its memo helper), `subsecond*` (hot patching),
+/// `manganis*` and `lazy-js-bundle` (its assets), `longest-increasing-
+/// subsequence` (its diffing) and `typed-builder*` (the props builder).
+/// `const_format*` is here because the interpreter's generated code reaches
+/// it. General-purpose crates that a user may legitimately depend on and
+/// jump into (`slab`, `slotmap`, `serde`, `tracing`, `futures-*`,
+/// `keyboard-types`, `konst`, ...) are deliberately left out: dropping a
+/// real definition is worse than showing a dependency.
+///
+/// To regenerate when the Dioxus version changes: run
+/// `cargo tree -p dioxus --prefix none -e normal --all-features | sort -u`
+/// in a workspace that depends on `outou` (for instance
+/// `examples/dogfood-board`), and add every crate that is specific to
+/// Dioxus. No test compares it with `cargo metadata`: that would tie the unit
+/// tests to an example workspace's lockfile and a populated cargo registry.
+const BACKEND_CRATES: &[&str] = &[
+    "const_format",
+    "const_format_proc_macros",
+    "generational-box",
+    "lazy-js-bundle",
+    "longest-increasing-subsequence",
+    "manganis",
+    "manganis-core",
+    "manganis-macro",
+    "sledgehammer_bindgen",
+    "sledgehammer_bindgen_macro",
+    "sledgehammer_utils",
+    "subsecond",
+    "subsecond-types",
+    "typed-builder",
+    "typed-builder-macro",
+    "warnings",
+    "warnings-macro",
+];
+
+/// Whether `name` (a crate name, or a crate name with a version or a hash
+/// after its last `-`) is one of the backend's crates.
+fn is_backend_crate(dir: &str) -> bool {
+    let without_suffix = dir.rsplit_once('-').map(|(name, _)| name);
+    [Some(dir), without_suffix]
+        .into_iter()
+        .flatten()
+        .any(|name| name.starts_with("dioxus") || BACKEND_CRATES.contains(&name))
+}
+
+/// Whether `uri` is a source file of the backend's own crates in the cargo
+/// registry, a git checkout or a `cargo vendor` directory, e.g.
+/// `.../registry/src/index.crates.io-xxx/dioxus-html-0.7.10/src/elements.rs`.
+///
+/// rust-analyzer answers definition and references with the file it
+/// expanded a name from, and for a name that only exists in the expansion
+/// (an attribute, a component call) that file is the backend's. A user
+/// crate never lists the backend (ADR 0010), so such a location can only be
+/// a leak and is dropped (`docs/backend-leakage.md` row 62). Only these
+/// three layouts count: a workspace directory that happens to be called
+/// `dioxus-playground` is not touched, nor is a `[patch]` checkout of the
+/// backend at an arbitrary path (a known gap, ledger row 64).
+pub fn is_backend_source_uri(uri: &str) -> bool {
+    let crate_dir = if let Some((_, rest)) = uri.split_once("/registry/src/") {
+        // `<registry index directory>/<crate directory>/...`
+        rest.split('/').nth(1)
+    } else if let Some((_, rest)) = uri.split_once("/git/checkouts/") {
+        rest.split('/').next()
+    } else if let Some((_, rest)) = uri.rsplit_once("/vendor/") {
+        // `cargo vendor`: `vendor/<crate>/...`
+        rest.split('/').next()
+    } else {
+        None
+    };
+    crate_dir.is_some_and(is_backend_crate)
+}
+
 /// Applies [`translate_message`] to one diagnostic, preserving its
 /// `range`, `severity` and `code` (the architecture note: "Every mapped
 /// diagnostic must keep its severity and code").
@@ -124,6 +203,87 @@ mod tests {
         };
         let translated = translate_diagnostic(diagnostic);
         assert!(translated.data.is_none());
+    }
+
+    #[test]
+    fn is_backend_source_uri_matches_the_rest_of_the_backend_closure_and_the_vendor_layout() {
+        let registry = "file:///Users/me/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f";
+        for krate in [
+            "generational-box-0.7.3",
+            "sledgehammer_bindgen-0.6.0",
+            "sledgehammer_utils-0.3.1",
+            "const_format-0.2.34",
+            "warnings-0.2.1",
+            "manganis-0.7.10",
+            "lazy-js-bundle-0.7.0",
+        ] {
+            assert!(
+                is_backend_source_uri(&format!("{registry}/{krate}/src/lib.rs")),
+                "{krate}"
+            );
+        }
+        for krate in [
+            "slab-0.4.9",
+            "slotmap-1.0.7",
+            "konst-0.3.16",
+            "warnings_ext-1.0.0",
+        ] {
+            assert!(
+                !is_backend_source_uri(&format!("{registry}/{krate}/src/lib.rs")),
+                "{krate}"
+            );
+        }
+        assert!(is_backend_source_uri(
+            "file:///home/me/app/vendor/dioxus-core/src/lib.rs"
+        ));
+        assert!(is_backend_source_uri(
+            "file:///home/me/app/vendor/generational-box/src/lib.rs"
+        ));
+        assert!(!is_backend_source_uri(
+            "file:///home/me/app/vendor/slab/src/lib.rs"
+        ));
+        // A `[patch]` checkout at an arbitrary path is a known gap.
+        assert!(!is_backend_source_uri(
+            "file:///home/me/src/dioxus/packages/core/src/lib.rs"
+        ));
+    }
+
+    #[test]
+    fn is_backend_source_uri_handles_a_windows_style_file_uri() {
+        assert!(is_backend_source_uri(
+            "file:///c%3A/Users/x/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/dioxus-html-0.7.10/src/elements.rs"
+        ));
+        assert!(!is_backend_source_uri(
+            "file:///c%3A/Users/x/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.200/src/lib.rs"
+        ));
+    }
+
+    #[test]
+    fn is_backend_source_uri_matches_only_backend_crates_in_a_registry_or_checkout() {
+        let registry = "file:///Users/me/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f";
+        assert!(is_backend_source_uri(&format!(
+            "{registry}/dioxus-core-macro-0.7.10/src/lib.rs"
+        )));
+        assert!(is_backend_source_uri(&format!(
+            "{registry}/dioxus-html-0.7.10/src/elements.rs"
+        )));
+        assert!(is_backend_source_uri(&format!(
+            "{registry}/typed-builder-0.20.0/src/lib.rs"
+        )));
+        assert!(is_backend_source_uri(
+            "file:///opt/cargo/git/checkouts/dioxus-ab12cd/f00/packages/html/src/lib.rs"
+        ));
+        // Other dependencies are the user's own business.
+        assert!(!is_backend_source_uri(&format!(
+            "{registry}/serde-1.0.200/src/lib.rs"
+        )));
+        // A workspace that merely has the name in its path is not a registry.
+        assert!(!is_backend_source_uri(
+            "file:///home/me/dioxus-playground/app/src/main.rsx"
+        ));
+        assert!(!is_backend_source_uri(
+            "file:///home/me/registry/src/dioxus-notes/src/main.rsx"
+        ));
     }
 
     /// H3: the bare shape-based heuristic still flags a `…Props`-suffixed
