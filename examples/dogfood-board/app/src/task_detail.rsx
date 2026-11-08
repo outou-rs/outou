@@ -52,7 +52,12 @@ pub fn TaskDetail(id: u32) -> Element {
                         }
                     >
                         {
-                            Status::ALL.into_iter().map(|status| <option key={status.label()} value={status.label()}>{status.label()}</option>)
+                            Status::ALL.into_iter().map(|status| <option
+                                key={status.label()}
+                                value={status.label()}
+                            >
+                                {status.label()}
+                            </option>)
                         }
                     </select>
                 </label>

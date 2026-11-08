@@ -32,7 +32,10 @@ fn App() -> Element {
                         Panel::Empty => <p class="hint">Select a task, or create a new one.</p>,
                         Panel::Detail(id) => <TaskDetail id={id} />,
                         Panel::New => <TaskForm key="new" editing={None} />,
-                        Panel::Edit(id) => <TaskForm key={format!("edit-{id}")} editing={Some(id)} />,
+                        Panel::Edit(id) => <TaskForm
+                            key={format!("edit-{id}")}
+                            editing={Some(id)}
+                        />,
                     }
                 }
             </section>

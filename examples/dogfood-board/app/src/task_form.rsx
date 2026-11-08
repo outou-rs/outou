@@ -99,7 +99,12 @@ pub fn TaskForm(editing: Option<u32>) -> Element {
                 }
             >
                 {
-                    Priority::ALL.into_iter().map(|priority| <option key={priority.label()} value={priority.label()}>{priority.label()}</option>)
+                    Priority::ALL.into_iter().map(|priority| <option
+                        key={priority.label()}
+                        value={priority.label()}
+                    >
+                        {priority.label()}
+                    </option>)
                 }
             </select>
         </label>

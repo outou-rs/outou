@@ -1,6 +1,7 @@
-//! Renders a JSX element's children, either all on one line (when there
-//! is at most one child and it fits) or with each non-text child on its
-//! own line.
+//! Renders a JSX element's children, either all on one line (when the
+//! opening tag is single-line, every child renders on a single line, and
+//! the whole element fits within the line width) or with each non-text
+//! child on its own line.
 //!
 //! **Why a `Text` child is never given extra surrounding whitespace.**
 //! [`ast::JsxText::span`] always covers the *entire* maximal run of text

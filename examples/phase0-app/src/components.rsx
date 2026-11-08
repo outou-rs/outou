@@ -29,9 +29,7 @@ pub fn initial(user: &User) -> Option<char> {
 
 #[component]
 pub fn UserCard(user: User) -> Element {
-    <div class="user-card">
-        {user.name}
-    </div>
+    <div class="user-card">{user.name}</div>
 }
 
 /// A labeled form field. `type` is a JSX attribute name that happens to
@@ -42,10 +40,7 @@ pub fn UserCard(user: User) -> Element {
 /// representable via `r#type`).
 #[component]
 pub fn Field(label: String, r#type: String) -> Element {
-    <div class="field">
-        <label for="id">{label}</label>
-        <input id="id" type={r#type.clone()} />
-    </div>
+    <div class="field"><label for="id">{label}</label><input id="id" type={r#type.clone()} /></div>
 }
 
 /// A second card, added as a Gate 3 regression fixture (issue #9 review,
@@ -61,9 +56,7 @@ pub struct MyProps {
 
 #[component]
 pub fn Card2(config: MyProps) -> Element {
-    <div class="card2">
-        {config.title}
-    </div>
+    <div class="card2">{config.title}</div>
 }
 
 #[cfg(test)]

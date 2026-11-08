@@ -31,7 +31,9 @@ fn App() -> Element {
 }
 
 fn load_user() -> Option<components::User> {
-    Some(components::User { name: "Outou".to_string() })
+    Some(components::User {
+        name: "Outou".to_string(),
+    })
 }
 
 fn main() {

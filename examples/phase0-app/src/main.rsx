@@ -11,9 +11,7 @@ fn Greeting(name: String) -> Element {
 
 #[component]
 fn TagList(tags: Vec<String>) -> Element {
-    <ul class="tags">
-        {tags.iter().map(|tag| <li key={tag.clone()}>{tag.clone()}</li>)}
-    </ul>
+    <ul class="tags">{tags.iter().map(|tag| <li key={tag.clone()}>{tag.clone()}</li>)}</ul>
 }
 
 #[component]
@@ -23,7 +21,6 @@ fn App() -> Element {
 
     <main class="app">
         <Greeting name="Outou"></Greeting>
-
         {
             if user.is_some() {
                 <UserCard user={user.unwrap()} />
@@ -31,17 +28,15 @@ fn App() -> Element {
                 <p>No user</p>
             }
         }
-
         <TagList tags={tags} />
-
-        <form>
-            <Field label="Name" type="text" />
-        </form>
+        <form><Field label="Name" type="text" /></form>
     </main>
 }
 
 fn load_user() -> Option<components::User> {
-    Some(components::User { name: "Outou".to_string() })
+    Some(components::User {
+        name: "Outou".to_string(),
+    })
 }
 
 fn main() {
