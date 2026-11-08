@@ -44,7 +44,8 @@ pub fn try_skip_opaque_region(
 }
 
 /// `#[ ... ]` or `#![ ... ]`, including `#[doc = "..."]` and
-/// `#[react_import(...)]` (grammar §1, §3). `pub(crate)` because
+/// `#[react_import(...)]` (grammar §1, §3; reserved, payload unread, and
+/// rejected by rustc today since codegen passes it through). `pub(crate)` because
 /// `crate::parser::item` also needs to recognize a *leading* attribute on
 /// its own (to collect it before deciding whether the item it precedes is
 /// a `fn`, a `mod`, or plain Rust), separately from the full opaque-region

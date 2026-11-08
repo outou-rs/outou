@@ -10,7 +10,7 @@ Earlier drafts had additional syntax: React-style `import` statements, JSX in ma
 
 The only extension to Rust's grammar is the JSX expression. Specifically:
 
-- React imports are an attribute, `#[react_import(...)]`, not syntax.
+- React imports are an attribute, `#[react_import(...)]`, not syntax. (Note 2026-11-08: the payload is still deferred and the attribute is not accepted by the compiler yet; see `docs/grammar.md` §1.)
 - Inside macro token trees and attribute bodies JSX is not recognized.
 - `<div />.into()` is not allowed; write `(<div />).into()`.
 - `<List<T> />` is not supported; generics are inferred.

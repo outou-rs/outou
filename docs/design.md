@@ -87,4 +87,4 @@ fn App() -> Element {
 
 ## Future
 
-React interop remains an important goal for a 1.0 but is not started until the front end, the tooling and the runtime decision are settled, in that order.
+React interop remains an important goal for a 1.0 but is not started until the front end, the tooling and the runtime decision are settled, in that order. The payload of `#[react_import(...)]` is deferred to this phase; until then the name is reserved and the attribute must not be written (`docs/grammar.md` §1).
