@@ -7,6 +7,8 @@
 //! and `Auto` (rustfmt's default) keeps the style of the first line ending
 //! in the input, as `rustfmt` itself does. A file with mixed endings is thus
 //! made uniform. A lone `\r` is not a line ending and is left as it is.
+//! Inside a JSX children gap, which the printer rebuilds, a lone `\r` does
+//! count as a line break (`docs/grammar.md` §8).
 //!
 //! Rust's lexer reads `\r\n` inside a string literal as `\n`, so a
 //! multi-line literal means the same before and after normalisation.

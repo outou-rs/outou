@@ -21,6 +21,7 @@ fn App() -> Element {
 
     <main class="app">
         <Greeting name="Outou"></Greeting>
+
         {
             if user.is_some() {
                 <UserCard user={user.unwrap()} />
@@ -28,7 +29,9 @@ fn App() -> Element {
                 <p>No user</p>
             }
         }
+
         <TagList tags={tags} />
+
         <form><Field label="Name" type="text" /></form>
     </main>
 }

@@ -322,6 +322,20 @@ fn crlf_input_is_formatted_like_its_lf_twin_and_stays_crlf() {
 }
 
 #[test]
+fn a_blank_line_between_children_survives_crlf_as_one_crlf_blank_line() {
+    let dir = project("crlf-blank-line");
+    let source = "use outou::prelude::*;\r\n\r\n#[component]\r\nfn F() -> Element {\r\n<ul>\r\n<li>a</li>\r\n\r\n\r\n<li>b</li>\r\n</ul>\r\n}\r\n";
+    let out = format_in(&dir, source).unwrap();
+    assert!(is_pure_crlf(&out), "{out:?}");
+    assert!(
+        out.contains("<li>a</li>\r\n\r\n        <li>b</li>"),
+        "{out:?}"
+    );
+    assert_eq!(format_in(&dir, &out).unwrap(), out, "idempotent");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn newline_style_unix_turns_crlf_input_into_lf() {
     let dir = project("crlf-unix");
     write(&dir.join("rustfmt.toml"), "newline_style = \"Unix\"\n");

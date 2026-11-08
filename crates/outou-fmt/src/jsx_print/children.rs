@@ -1,7 +1,24 @@
 //! Renders a JSX element's children, either all on one line (when the
-//! opening tag is single-line, every child renders on a single line, and
-//! the whole element fits within the line width) or with each non-text
-//! child on its own line.
+//! opening tag is single-line, every child renders on a single line, no
+//! blank line has to be kept, and the whole element fits within the line
+//! width) or with each non-text child on its own line.
+//!
+//! **Blank lines follow Prettier.** A blank line between two non-text
+//! children (elements and expression islands) is kept, and two or more
+//! collapse into one, but only when the element has no text child at all:
+//! Prettier drops every such blank line as soon as the element has
+//! meaningful text among its children, because there the line breaks are
+//! the text's own word separators. A blank line before the first child or
+//! after the last one is dropped. Outou's one-line form is never chosen
+//! while a blank line is kept. (Prettier has no such form for an element
+//! with an element child or two expression children: it breaks those
+//! regardless of blank lines.) Whitespace-only gaps that hold a blank line
+//! are insignificant JSX whitespace (`docs/grammar.md` §8: a multi-line
+//! whitespace-only run normalizes away), so keeping or dropping them never
+//! changes the parsed tree or the generated Rust. An explicit `{" "}`
+//! island counts as text for this rule, exactly as it does in Prettier.
+//! `crates/outou-fmt/tests/golden/README.md` records the observed Prettier
+//! behaviour and the goldens that pin it.
 //!
 //! **Why a `Text` child is never given extra surrounding whitespace.**
 //! [`ast::JsxText::span`] always covers the *entire* maximal run of text
@@ -54,6 +71,8 @@ pub(super) fn verbatim_if_unmodeled_content(
     None
 }
 
+// The parser guarantees a gap holds only U+0020, tab and line breaks; any
+// other whitespace is a `Text` child (`docs/grammar.md` §8).
 fn is_whitespace_gap(source: &str, start: u32, end: u32) -> bool {
     if start >= end {
         return true;
@@ -90,18 +109,79 @@ fn child_outer_span(child: &ast::JsxChild) -> Span {
     }
 }
 
+/// Whether `element` keeps a blank line before each of its children, by
+/// child index. Entry `i` is `true` only if the element has no text child
+/// (an explicit `{" "}` island counts as one), children `i - 1` and `i` are
+/// both non-text, and the whitespace between them spans at least two line
+/// breaks (a blank line, possibly with spaces or tabs on it).
+fn blank_lines_before_children(element: &ast::JsxElement, source: &str) -> Vec<bool> {
+    let mut flags = vec![false; element.children.len()];
+    if element
+        .children
+        .iter()
+        .any(|child| is_text_like(child, source))
+    {
+        return flags;
+    }
+    for (index, pair) in element.children.windows(2).enumerate() {
+        let previous_end = child_outer_span(&pair[0]).end;
+        let next_start = child_outer_span(&pair[1]).start;
+        if previous_end < next_start
+            && line_breaks(&source[previous_end as usize..next_start as usize]) >= 2
+        {
+            flags[index + 1] = true;
+        }
+    }
+    flags
+}
+
+/// A text child, or an island holding only the string literal `" "` (JSX
+/// whitespace written explicitly), which Prettier treats as text.
+fn is_text_like(child: &ast::JsxChild, source: &str) -> bool {
+    match child {
+        ast::JsxChild::Text(_) => true,
+        ast::JsxChild::Expression(island) => {
+            source[island.span.start as usize..island.span.end as usize].trim() == "\" \""
+        }
+        ast::JsxChild::Element(_) | ast::JsxChild::Error(_) => false,
+    }
+}
+
+/// Line breaks in `gap`, counting `\n`, `\r\n` and a lone `\r` once each.
+fn line_breaks(gap: &str) -> usize {
+    let mut count = 0;
+    let mut chars = gap.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\n' => count += 1,
+            '\r' => {
+                count += 1;
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+            }
+            _ => {}
+        }
+    }
+    count
+}
+
 /// Attempts to render every one of `element`'s children as a single
 /// inline string with no added whitespace between them (safe exactly
 /// because [`ast::JsxElement::children`] already omits any gap that
 /// normalized away to nothing — see the module doc). `None` means some
 /// child could not be rendered on one line, and the caller must fall
-/// back to [`format_multiline`].
+/// back to [`format_multiline`]. A blank line that has to be kept (see the
+/// module doc) also means `None`: it cannot be shown on one line.
 pub(super) fn try_single_line(
     element: &ast::JsxElement,
     indent: usize,
     source: &str,
     options: &Ctx,
 ) -> Result<Option<String>, FormatError> {
+    if blank_lines_before_children(element, source).contains(&true) {
+        return Ok(None);
+    }
     let mut out = String::new();
     for child in &element.children {
         match render_inline(child, indent, source, options)? {
@@ -149,9 +229,10 @@ pub(super) fn format_multiline(
     let child_indent = indent + options.indent_unit;
     let pad = " ".repeat(child_indent);
 
+    let blank_before = blank_lines_before_children(element, source);
     let mut out = String::new();
     let mut previous_was_text = false;
-    for child in &element.children {
+    for (index, child) in element.children.iter().enumerate() {
         match child {
             ast::JsxChild::Text(text) => {
                 out.push_str(&verbatim_text(text, source));
@@ -160,6 +241,11 @@ pub(super) fn format_multiline(
             other => {
                 let rendered = render_owned_line(other, child_indent, source, options)?;
                 if !previous_was_text {
+                    // The flags are all false whenever a text child exists, so
+                    // nesting this under `!previous_was_text` is only for clarity.
+                    if blank_before[index] {
+                        out.push('\n');
+                    }
                     out.push('\n');
                     out.push_str(&pad);
                 }
@@ -245,5 +331,55 @@ mod tests {
         let source = "fn f() { <div>\n    <a/>\n</div> }";
         let element = only_element(source);
         assert_eq!(verbatim_if_unmodeled_content(&element, source), None);
+    }
+
+    #[test]
+    fn a_blank_line_between_element_children_is_kept_once() {
+        let source = "fn f() { <div><a/>\n\n\n\n<b/></div> }";
+        let element = only_element(source);
+        let out = format_multiline(&element, 0, source, &Ctx::default()).unwrap();
+        assert_eq!(out, "\n    <a />\n\n    <b />\n");
+    }
+
+    #[test]
+    fn leading_and_trailing_blank_lines_are_dropped() {
+        let source = "fn f() { <div>\n\n<a/>\n\n</div> }";
+        let element = only_element(source);
+        let out = format_multiline(&element, 0, source, &Ctx::default()).unwrap();
+        assert_eq!(out, "\n    <a />\n");
+    }
+
+    #[test]
+    fn any_text_child_drops_every_blank_line() {
+        let source = "fn f() { <div><a/>\n\n<b/> <c/></div> }";
+        let element = only_element(source);
+        let out = format_multiline(&element, 0, source, &Ctx::default()).unwrap();
+        assert!(!out.contains("\n\n"), "{out:?}");
+    }
+
+    #[test]
+    fn an_explicit_space_island_counts_as_text() {
+        let source = "fn f() { <div><a/>\n\n{\" \"}<b/></div> }";
+        let element = only_element(source);
+        let out = format_multiline(&element, 0, source, &Ctx::default()).unwrap();
+        assert!(!out.contains("\n\n"), "{out:?}");
+    }
+
+    #[test]
+    fn a_kept_blank_line_rules_out_the_single_line_form() {
+        let source = "fn f() { <div><a/>\n\n<b/></div> }";
+        let element = only_element(source);
+        assert_eq!(
+            try_single_line(&element, 0, source, &Ctx::default()).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn line_breaks_counts_each_break_once() {
+        assert_eq!(line_breaks("\n  \n"), 2);
+        assert_eq!(line_breaks("\r\n\r\n"), 2);
+        assert_eq!(line_breaks("\r\r"), 2);
+        assert_eq!(line_breaks("   "), 0);
     }
 }

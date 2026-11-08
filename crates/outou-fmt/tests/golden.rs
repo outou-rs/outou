@@ -71,8 +71,36 @@ golden_test!(fragment_text, "fragment-text");
 golden_test!(fragment_comments, "fragment-comments");
 golden_test!(fragment_in_map, "fragment-in-map");
 golden_test!(
-    blank_lines_between_children_collapse,
-    "blank-lines-between-children-collapse"
+    blank_lines_between_children_kept,
+    "blank-lines-between-children-kept"
+);
+golden_test!(blank_lines_forces_multiline, "blank-lines-forces-multiline");
+golden_test!(
+    blank_lines_leading_trailing_dropped,
+    "blank-lines-leading-trailing-dropped"
+);
+golden_test!(
+    blank_lines_expression_children,
+    "blank-lines-expression-children"
+);
+golden_test!(
+    blank_lines_dropped_when_text_present,
+    "blank-lines-dropped-when-text-present"
+);
+golden_test!(
+    blank_lines_space_island_counts_as_text,
+    "blank-lines-space-island-counts-as-text"
+);
+golden_test!(blank_lines_in_fragment, "blank-lines-in-fragment");
+golden_test!(
+    blank_lines_whitespace_only_lines,
+    "blank-lines-whitespace-only-lines"
+);
+golden_test!(blank_lines_nested, "blank-lines-nested");
+golden_test!(blank_lines_around_comments, "blank-lines-around-comments");
+golden_test!(
+    blank_lines_in_text_kept_verbatim,
+    "blank-lines-in-text-kept-verbatim"
 );
 golden_test!(
     multiline_raw_string_in_island,
@@ -113,7 +141,17 @@ fn every_golden_directory_is_covered_by_a_case_above() {
         "already-formatted",
         "parse-error-refused",
         "placeholder-collision",
-        "blank-lines-between-children-collapse",
+        "blank-lines-between-children-kept",
+        "blank-lines-forces-multiline",
+        "blank-lines-leading-trailing-dropped",
+        "blank-lines-expression-children",
+        "blank-lines-dropped-when-text-present",
+        "blank-lines-space-island-counts-as-text",
+        "blank-lines-in-fragment",
+        "blank-lines-whitespace-only-lines",
+        "blank-lines-nested",
+        "blank-lines-around-comments",
+        "blank-lines-in-text-kept-verbatim",
         "multiline-raw-string-in-island",
         "multiline-string-in-island",
         "multiline-attr-string-in-nested-jsx",
